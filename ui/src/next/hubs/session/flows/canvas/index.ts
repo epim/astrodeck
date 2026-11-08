@@ -39,7 +39,7 @@ export {
   tapWireHint, formatEta, checksLabel, stageWord, framesWord,
   CHECKS_UNKNOWN, CHECKS_UNKNOWN_WHY, CHECKS_CLEAN_WHY, ETA_UNREPORTED, lossesWhy,
   PLAN_TITLE, tonightLockReason,
-  NODE_STATUS_WORD, NODE_STATUS_TONE, asNodeStatus,
+  NODE_STATUS_WORD, NODE_STATUS_TONE,
   // The compile-mark vocabulary, re-exported through `canvasModel` from the
   // one module that owns it (`../inspector/issues`) so the badge on a card and
   // the panel in the inspector cannot drift apart.

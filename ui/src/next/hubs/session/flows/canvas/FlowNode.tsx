@@ -9,16 +9,15 @@
 // node ARRAY and passes each node down as a prop, while this card subscribes
 // to its own status, its own selectedness and its own loss level with
 // selectors that return PRIMITIVES - zustand compares the selector's result
-// with Object.is, so selecting stage B cannot wake stage A. Nothing sends a
-// per-stage status (there is no `flow.node` topic, and nothing writes
-// `flows.statuses`, #464, canvasModel `asNodeStatus`), so the field alone reads
-// every stage idle, a live run of this flow included, which is false. The card
-// treats an unwritten status as ABSENT while the open flow's run is live and
-// draws no dot (`showStatus = written || !runLive`, the phone stage list's
-// rule), and says idle only where it is true; both added selectors are
-// booleans too, so a sequence tick inside the run wakes nobody. The status
-// selector is as narrow as the others so that a status feed, once there is
-// one, wakes one stage. `memo` then stops the surface's own re-renders walking
+// with Object.is, so selecting stage B cannot wake stage A. The engine's stage
+// statuses reach the card as `flows.statuses`, written from the sequence state
+// by the store's one subscription (there is no `flow.node` topic; #464, #1125),
+// and the card reads its own word through `useStageStatus`, the one selector
+// both canvases, the phone stage list and every wire share. It returns a string
+// or null, so a sequence tick inside the run wakes a card only when its own
+// word moves. Null is a stage the engine has said nothing about while the open
+// flow's run is live: the card draws no dot then, and says idle only where it
+// is true. `memo` then stops the surface's own re-renders walking
 // every card. Reaching for a `useFlowNode(id)` shape here
 // would undo all of it: it returns the node OBJECT, reference-equal only while
 // every writer maps just the node it touched.
@@ -47,14 +46,13 @@ import {
 } from "../../../../../components/flows/geometry";
 import type { FlowNodeRec } from "../../../../../components/flows/flowsTypes";
 import { progressChip } from "../../../../../components/flows/flowProgress";
-import { flowRunLive, knownSessions } from "../../../../../components/flows/flowRunState";
 import { withLoop, type LaneGraph } from "../../../../../components/flows/panelLane";
 import { targetFooter, targetLoops } from "../../../../../components/flows/targetSummary";
-import { useStore } from "../../../../../store";
+import { useStageStatus, useStore } from "../../../../../store";
 import { nav } from "../../../../router";
 import { ActionButton, Mono, Pill, StatusPill } from "../../../../ui";
 import {
-  NODE_STATUS_TONE, NODE_STATUS_WORD, RIG_VALUE_PREFIX, asNodeStatus, isLoss,
+  NODE_STATUS_TONE, NODE_STATUS_WORD, RIG_VALUE_PREFIX, isLoss,
   markTone, markWord, nodeMarkDetail, nodeMarkLevel, portAttr, rigValueFor,
 } from "./canvasModel";
 
@@ -310,23 +308,14 @@ function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTap
   // every poll and would re-render every card on the canvas four times a
   // minute. `progressChip` is the same: the chip STRING, not the progress
   // answer, which is a new object on every re-read.
-  const status = useStore((s) => asNodeStatus(s.flows.statuses[node.id]));
-  // WHAT THE DOT MAY SAY (#464 part A). `status` above is idle for every
-  // stage, since nothing writes `flows.statuses`, and through a live run of
-  // THIS flow that is false: the dot's name and tooltip read IDLE over a rig
-  // that is shooting. The phone stage list already treats the field as absent
-  // while its flow runs (`FlowStagesPhoneSheet` `StageRow`, S5, from the
-  // real-page probe) and this is its rule, word for word: a stage with no
-  // status of its own shows none while the open flow's run is live, and idle
-  // stays whenever nothing of this flow runs, where it is true. `flowRunLive`
-  // asks the session the sequence state writes against the sessions the slice
-  // knows as this flow's, so another flow's run, or none open, leaves idle
-  // standing. The marks-row pill below already prints only a non-idle word, so
-  // the dot was the reader that said it. Both are booleans (Object.is): a
-  // sequence tick inside the run wakes nobody.
-  const written = useStore((s) => s.flows.statuses[node.id] !== undefined);
-  const runLive = useStore((s) => flowRunLive(knownSessions(s.flows), s.sequence));
-  const showStatus = written || !runLive;
+  //
+  // WHAT THE DOT AND THE PILL SAY (#464, #1125): the stage's word from the one
+  // selector (`useStageStatus`): the engine's, while its run is live, idle where
+  // nothing of this flow runs, and null for a stage the engine has said nothing
+  // about through a live run, which draws no dot and no `data-status`.
+  const stage = useStageStatus(node.id);
+  const showStatus = stage !== null;
+  const status = stage ?? "idle";
   const selected = useStore((s) => s.flows.sel?.kind === "node" && s.flows.sel.id === node.id);
   const mark = useStore((s) => nodeMarkLevel(s.flows.compiled?.unmapped, node.type));
   const markWhy = useStore((s) => nodeMarkDetail(s.flows.compiled?.unmapped, node.type));

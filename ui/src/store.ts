@@ -7,13 +7,15 @@ import { useShallow } from "zustand/react/shallow";
 // Flows lives in its own slice module: store.ts is shared by every surface and
 // a 300-line domain addition here is 300 lines of merge surface for anyone else
 // working in ui/. See components/flows/flowsSlice.ts for the write discipline
-// that would let a node-status tick re-render one node instead of the canvas
-// if the rig ever sent one -- nothing does (#464: no topic carries a stage's
-// status), so every node reads idle through a live run.
+// that lets a node-status tick re-render one node instead of the canvas, and
+// the end of this file for where the stage statuses come from and the one
+// selector every pill, LED and wire reads them through (#464, #1125).
 import {
   createFlowsActions, FLOWS_INIT,
   type FlowsActions, type FlowsState,
 } from "./components/flows/flowsSlice";
+import { flowRunLive, knownSessions } from "./components/flows/flowRunState";
+import type { FlowNodeStatus } from "./components/flows/flowsTypes";
 import { runIsLive } from "./lib/lastSessionFrame";
 import type { ReactNode } from "react";
 import type {
@@ -2193,6 +2195,88 @@ export const useStore = create<AppState>((set, get, storeApi) => ({
     }
   },
 }));
+
+// ============================================================================
+// Stage status: ONE WRITER, ONE SELECTOR (#464, #742, #1125).
+//
+// THE WRITER is the engine: it publishes what each flow stage is doing as
+// `stages` on the sequence state (server `SequenceEngine._publish_stages`:
+// canvas node id to running, done, skipped or failed), at every transition,
+// so the WS event and the snapshot a reload reads carry the same answer.
+// `flows.statuses` is that answer in the canvases' own words (busy, ok, warn,
+// bad), kept by the one subscription below and by nothing else: it holds the
+// stages of the OPEN flow's live run, and is empty whenever there is none, so
+// a run of another flow, which may reuse a node id, paints nothing here.
+//
+// THE SELECTOR is `stageStatusOf`: every card's status word and LED, the
+// phone stage list's pill and every wire's source stage read it, on both
+// canvases. A stage the engine has said nothing about (an AUTOFOCUS node, a
+// REPORT) draws no status while the open flow's run is live (null), because
+// idle is false then, and reads idle where it is true.
+// ============================================================================
+const STAGE_WORDS: Record<string, FlowNodeStatus> = {
+  running: "busy", done: "ok", skipped: "warn", failed: "bad",
+};
+const NO_STATUSES: Record<string, string> = {};
+
+/** `flows.statuses` for this flow and this sequence state: the engine's
+ *  stages in the canvases' words while the rig's live run is the open flow's
+ *  (`flowRunLive` over its known sessions), and none otherwise. A word the
+ *  engine says that is not known here is left out, and reads as unwritten. */
+export function stageStatusesOf(
+  known: readonly string[], sequence: SequenceState | null | undefined,
+): Record<string, string> {
+  const stages = sequence?.stages;
+  if (!stages || !flowRunLive(known, sequence)) return NO_STATUSES;
+  const out: Record<string, string> = {};
+  for (const [node, word] of Object.entries(stages)) {
+    const status = STAGE_WORDS[word];
+    if (status) out[node] = status;
+  }
+  return out;
+}
+
+function sameStatuses(a: Record<string, string>, b: Record<string, string>): boolean {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((k) => a[k] === b[k]);
+}
+
+// Every write of `sequence` (the WS frame, the snapshot a reconnect lands) and
+// every change of the open flow's known sessions passes through here once; a
+// write that changes no stage writes nothing, so a frame tick wakes no card.
+useStore.subscribe((s, prev) => {
+  if (s.sequence === prev.sequence
+      && s.flows.sessionIds === prev.flows.sessionIds) return;
+  const next = stageStatusesOf(knownSessions(s.flows), s.sequence);
+  // A flows state with no `statuses` yet (a partial seed, a reset mid-write)
+  // holds none, and stays as it is while the run has none to write.
+  if (sameStatuses(s.flows.statuses ?? NO_STATUSES, next)) return;
+  useStore.setState((st) => ({ flows: { ...st.flows, statuses: next } }));
+});
+
+function asNodeStatus(raw: string): FlowNodeStatus {
+  return raw === "busy" || raw === "ok" || raw === "warn" || raw === "bad"
+    ? raw : "idle";
+}
+
+/** What a stage may say about itself, or null for nothing at all. The stage's
+ *  written status when it has one. Otherwise idle, which is true while the
+ *  open flow's run is not live, and null while it is, because no word is
+ *  better than a false IDLE over a rig that is shooting. A word the canvases
+ *  do not know reads as idle: an unknown word must not blank the status,
+ *  which would look like "no stage here". */
+export function stageStatusOf(
+  s: { flows: FlowsState; sequence: SequenceState }, nodeId: string,
+): FlowNodeStatus | null {
+  const written = s.flows.statuses[nodeId];
+  if (written !== undefined) return asNodeStatus(written);
+  return flowRunLive(knownSessions(s.flows), s.sequence) ? null : "idle";
+}
+
+/** `stageStatusOf` as a hook. It returns a string or null, never an object,
+ *  so a sequence tick inside a run wakes a card only when its own word moves. */
+export const useStageStatus = (nodeId: string): FlowNodeStatus | null =>
+  useStore((s) => stageStatusOf(s, nodeId));
 
 if (localStorage.getItem("astrodeck-night") === "1") {
   document.documentElement.classList.add("night");

@@ -17,9 +17,12 @@
 // canvas, and `store.ts` claimed a "node-status tick" does the same for one
 // node - both describing a write that does not exist, the #464 class exactly.
 //
-// THE FIX. All three now say the write discipline is what WOULD let such a
+// THE FIX. All three said the write discipline is what WOULD let such a
 // tick re-render one card/node, IF the rig ever sent one, and that nothing
-// does yet (#464) - a pure text scan, no DOM needed.
+// does yet (#464). WP 4.2 (#1125) then built the writer: the engine
+// publishes each stage's status and the store keeps it, so all three now
+// say how a stage's status reaches one card, and carry the marker
+// "(#464, #1125)" - a pure text scan, no DOM needed.
 //
 // Every mutant below was run in a private scratch copy of ui/ under the
 // session scratchpad, restored byte-identically (sha256 checked) afterwards,
@@ -69,11 +72,11 @@ const FILES: readonly { path: string; was: string }[] = [
 ];
 
 /** The marker every corrected comment now shares, verbatim: it names #464
- *  and says nothing writes the field yet. A mutant that puts the OLD
+ *  and #1125, the issue that built the writer. A mutant that puts the OLD
  *  sentence back removes this; a mutant that merely reworded the sentence
- *  without saying "#464" would still be caught by `was` being gone but is
+ *  without the marker would still be caught by `was` being gone but is
  *  not what #593 asks for, so both halves are checked. */
-const MARKER = "nothing does (#464";
+const MARKER = "(#464, #1125)";
 
 function read(rel: string): string {
   return fs.readFileSync(`${SRC}/${rel}`, "utf8");
@@ -120,7 +123,7 @@ test("all three now share the #464 marker the other four corrected comments use"
   // .tsx reworded to drop "#464" without putting the claim back - a comment
   // that says NEITHER thing would slip past the case above alone). Observed
   // (1 failed; this case):
-  //   x all three now share the #464 marker the other four corrected comments use: components/flows/FlowCanvas.tsx does not say "nothing does (#464": its comment is <the reworded text>
+  //   x all three now share the #464 marker the other four corrected comments use: components/flows/FlowCanvas.tsx does not say "(#464, #1125)"
   const bad: string[] = [];
   for (const f of FILES) {
     const text = read(f.path);

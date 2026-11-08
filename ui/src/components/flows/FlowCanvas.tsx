@@ -198,11 +198,10 @@ export default function FlowCanvas({ tier }: FlowCanvasProps) {
   // ── subscriptions, all narrow (§B.3) ────────────────────────────────────
   // The canvas is the ONE subscriber to the node array and passes each node down
   // as a prop; the cards are memo'd and read only their own status. That is the
-  // write discipline a `flow.node` status tick would ride on if the rig ever
-  // sent one -- nothing does (#464: no topic carries a stage's status, and the
-  // published sequence state never names one), so every card reads idle
-  // through a live run, and this subscription shape is what will let a status
-  // feed, once there is one, wake one card instead of the graph.
+  // write discipline a stage's status change rides on: the engine's stage
+  // statuses reach `flows.statuses` through the store's one subscription and
+  // each card reads its own word through `useStageStatus` (#464, #1125), so a
+  // stage changing word wakes one card instead of the graph.
   const nodes = useStore((s) => s.flows.graph.nodes);
   const edges = useStore((s) => s.flows.graph.edges);
   const pan = useStore(useShallow((s) => s.flows.pan));

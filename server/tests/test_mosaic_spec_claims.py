@@ -23400,7 +23400,8 @@ def test_the_owner_list_records_the_s7_orchestrator_rulings():
             (52, ("the sequence state and the compile's step-to-node mapping",
                   "(`showStatus = written || !runLive`)", "never the stage, "
                   "and no step id is published", "`to_plan._identify`",
-                  "The phone rule stands"))):
+                  "The phone rule stood then",
+                  "Built since (WP 4.2, #1125, Revision 12)"))):
         _says(_line(owner, f"{item}. "), phrases, f"owner list item {item}")
     # The closing note, with the collisions computed.
     note = _line(owner, "Items 43 to 52 are not the owner's rulings.")
@@ -23502,14 +23503,16 @@ def test_the_owner_list_records_the_s7_orchestrator_rulings():
     here = (_SERVER / "tests" / "test_probe_route_files_tracked.py").is_file()
     there = (_ROOT / "tools" / "ui_probe"
              / "test_probe_route_files_tracked.py").exists()
-    # Ruling 10's code: nothing writes flows.statuses (the slice's only
-    # "statuses:" are its type and its empty start), the phone's rule, and
-    # the node id taken off each step.
+    # Ruling 10's code, as WP 4.2 left it: the slice still writes no
+    # statuses (its only "statuses:" are its type and its empty start; the
+    # store's one subscription writes them from the sequence state), the
+    # phone stage list asks the one selector, and the node id is still taken
+    # off each step (now to become its stage).
     slice_ = _ui("components/flows/flowsSlice.ts")
     unwritten = (re.findall(r"\bstatuses: ", slice_)
                  == ["statuses: ", "statuses: "]
                  and "statuses: {}," in slice_)
-    phone = ("const showStatus = written || !runLive;" in _ui(
+    phone = ("useStageStatus(node.id)" in _ui(
         "next/hubs/session/flows/canvas/FlowStagesPhoneSheet.tsx"))
     from astrodeck.flows import to_plan as to_plan_mod
     popped = ('s.pop("node_id", None)' in inspect.getsource(
@@ -23517,8 +23520,8 @@ def test_the_owner_list_records_the_s7_orchestrator_rulings():
     got810 = (here, there, unwritten, phone, popped)
     assert got810 == (True, False, True, True, True), (
         f"(the guard in server/tests, a copy in tools/ui_probe, "
-        f"flows.statuses written by nothing, the phone's rule, the step's "
-        f"node id taken off) "
+        f"flows.statuses written by nothing in the slice, the phone's "
+        f"selector, the step's node id taken off) "
         f"= {got810}; owner list items 50 and 52 say so")
 
 
@@ -25321,11 +25324,12 @@ def test_9_and_s5_say_the_statuses_and_the_cite_as_s7_left_them():
     corrected a cite S5's rewrite of that header had moved (S7, #510, B17's
     spec half). Section 8's S5 narrows its #464 sentence to the canvas
     cards, the phone stage list showing no status while the run is live,
-    and records #464's deferral under S7 orchestrator ruling 10.
+    records #464's deferral under S7 orchestrator ruling 10, and, since
+    WP 4.2 (#1125), says the writer was built (Revision 12).
 
     The code: the line numbers of the file where the header says there is
-    no ``flow.node`` topic, no ``flow.log`` topic, computed; the phone's
-    rule; the canvas cards reading ``flows.statuses``.
+    no ``flow.node`` topic, no ``flow.log`` topic, computed; the phone
+    list and the canvas cards reading the one stage-status selector.
 
     RED under the FlowPhoneMonitor.tsx mutant "two lines added to the
     header" (a two-line comment inserted after its fourth line):
@@ -25337,11 +25341,12 @@ def test_9_and_s5_say_the_statuses_and_the_cite_as_s7_left_them():
     RED under the spec mutant "the #464 sentence as S5 left it" (its
     "every stage reads idle through a live run (#464)" put back):
 
-        AssertionError: section 8's S5 must say: "so every stage pill, LED and
-        wire on both canvases' cards reads idle through a live run, while the
-        phone stage list, under S5's rule, shows no status at all while the run
-        is live (#464, deferred under S7 orchestrator ruling 10, section 8's
-        S7)"
+        AssertionError: section 8's S5 must say: "`flows.statuses` was
+        written by nothing until WP 4.2, so every stage pill, LED and wire on
+        both canvases' cards read idle through a live run, while the phone
+        stage list, under S5's rule, showed no status at all while the run was
+        live (#464, deferred under S7 orchestrator ruling 10, section 8's S7;
+        built in WP 4.2, Revision 12)"
         assert False
     """
     # The header's comment lines, their markers off, read as one text, and
@@ -25362,18 +25367,20 @@ def test_9_and_s5_say_the_statuses_and_the_cite_as_s7_left_them():
                 "until S7 corrected it (S7, #510)"), "9's U-07 row")
     cards = [rel for rel in ("components/flows/FlowNodeCard.tsx",
                              "next/hubs/session/flows/canvas/FlowNode.tsx")
-             if "s.flows.statuses[node.id]" in _ui(rel)]
-    phone = ("const showStatus = written || !runLive;" in _ui(
+             if "useStageStatus(node.id)" in _ui(rel)]
+    phone = ("useStageStatus(node.id)" in _ui(
         "next/hubs/session/flows/canvas/FlowStagesPhoneSheet.tsx"))
     assert (len(cards), phone) == (2, True), (
-        f"(canvas cards reading flows.statuses, the phone's rule) = "
-        f"{(len(cards), phone)}; section 8's S5 says so")
+        f"(canvas cards reading the one stage-status selector, the phone "
+        f"list reading it) = {(len(cards), phone)}; section 8's S5 says so")
     not_built = _line(_section("S5:"), "**Not built in S5.**")
-    _says(not_built, ("so every stage pill, LED and wire on both canvases' "
-                      "cards reads idle through a live run, while the phone "
-                      "stage list, under S5's rule, shows no status at all "
-                      "while the run is live (#464, deferred under S7 "
-                      "orchestrator ruling 10, section 8's S7)",),
+    _says(not_built, ("`flows.statuses` was written by nothing until WP 4.2, "
+                      "so every stage pill, LED and wire on both canvases' "
+                      "cards read idle through a live run, while the phone "
+                      "stage list, under S5's rule, showed no status at all "
+                      "while the run was live (#464, deferred under S7 "
+                      "orchestrator ruling 10, section 8's S7; built in WP "
+                      "4.2, Revision 12)",),
           "section 8's S5")
     kept = "so every stage reads idle through a live run (#464)" in not_built
     assert not kept, ("section 8's S5 still says every stage reads idle; the "

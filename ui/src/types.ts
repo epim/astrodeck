@@ -931,6 +931,10 @@ export interface SequenceState {
       reason: string;
     };
   };
+  /** What each flow stage (canvas node id) is doing in this run: running,
+   *  done, skipped or failed (#464). Sent only for a run compiled from a flow,
+   *  and only for the stages it names. */
+  stages?: Record<string, string>;
 }
 
 /** `SequenceState.group`: the published state of the mosaic group being shot

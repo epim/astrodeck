@@ -1,0 +1,61 @@
+{
+  "recorded": "tests/test_w4_2_stage_status.py::test_the_recorded_stream_is_what_the_engine_publishes, a clocked simulator night of LANE_FLOW (TARGET n2, CAPTURE LOOP n3 L, CAPTURE LOOP n4 R, AUTOFOCUS n5, REPORT n12), the sequence payloads reduced to state, session and stages and de-duplicated",
+  "frames": [
+    {
+      "state": "running",
+      "session": {
+        "id": "dddd00244d5e4f38a570fea2bd96c391"
+      }
+    },
+    {
+      "state": "running",
+      "session": {
+        "id": "dddd00244d5e4f38a570fea2bd96c391"
+      },
+      "stages": {
+        "n3": "running",
+        "n2": "running"
+      }
+    },
+    {
+      "state": "running",
+      "session": {
+        "id": "dddd00244d5e4f38a570fea2bd96c391"
+      },
+      "stages": {
+        "n3": "done",
+        "n2": "running"
+      }
+    },
+    {
+      "state": "running",
+      "session": {
+        "id": "dddd00244d5e4f38a570fea2bd96c391"
+      },
+      "stages": {
+        "n3": "done",
+        "n2": "running",
+        "n4": "running"
+      }
+    },
+    {
+      "state": "running",
+      "session": {
+        "id": "dddd00244d5e4f38a570fea2bd96c391"
+      },
+      "stages": {
+        "n3": "done",
+        "n2": "done",
+        "n4": "done"
+      }
+    },
+    {
+      "state": "complete",
+      "stages": {
+        "n3": "done",
+        "n2": "done",
+        "n4": "done"
+      }
+    }
+  ]
+}

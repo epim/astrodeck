@@ -1391,6 +1391,11 @@ class Night:
         spin may begin at the first step, and stopped on the way out
         whatever the way out is."""
         budget = wall_budget_s(wall_s)
+        # A night a route would have started (`arm`, as FlowRig.night does)
+        # and that is run here instead had its watchdog orphaned by this one:
+        # still watching after the test, it fired in whatever test the worker
+        # ran next. Stop it first; this run's watchdog takes its place.
+        self.disarm()
         dog = _SpinWatchdog(self.spin_bound_s, "Night.run")
         self.watchdog = dog
         dog.start()
