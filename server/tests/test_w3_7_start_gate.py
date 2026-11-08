@@ -46,14 +46,22 @@ GATE = "_refuse_start_while_restart_pending"
 
 @pytest.fixture
 def pending(monkeypatch):
-    """Windows holds a restart, and the active hours are Windows' default
-    (08:00 to 17:00), so any night runs outside them. A function, called AFTER
-    ``_dormant``: the setup starts a night through the real route, and must not
-    meet the gate it is about to grade."""
+    """Windows holds a restart, and tonight runs outside the active hours. A
+    function, called AFTER ``_dormant``: the setup starts a night through the
+    real route, and must not meet the gate it is about to grade.
+
+    "Outside the active hours" is stated, not computed: the gate compares only
+    what is left of tonight, from the real now to dawn, with the hours in the
+    PC's own zone, so near dawn in the zone the suite runs in (UTC on CI) the
+    remainder falls inside Windows' default 08:00 to 17:00 and the gate rightly
+    refuses nothing. The hours arithmetic is test_w3_7_restart_state's, against
+    an explicit zone."""
     def stage():
         staged = {(_WU, None): True}
         monkeypatch.setattr(bootcause, "_registry_read",
                             lambda key, value=None: staged.get((key, value)))
+        monkeypatch.setattr(bootcause, "night_outside_active_hours",
+                            lambda *a, **k: True)
     return stage
 
 

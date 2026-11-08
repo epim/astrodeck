@@ -79,6 +79,14 @@ async def test_the_stored_acknowledgement_reaches_the_tick_through_the_real_gate
     pending = bootcause.RestartState(True, ("windows_update",),
                                      *bootcause.DEFAULT_ACTIVE_HOURS)
     monkeypatch.setattr(bootcause, "restart_state", lambda *a, **k: pending)
+    # The gate compares only what is left of tonight, from the real now to
+    # dawn at the hub's site, with the active hours in the PC's own zone, so
+    # near dawn in the zone the suite runs in (UTC on CI) that remainder is
+    # inside 08:00 to 17:00 and the gate rightly holds nothing. The hours
+    # arithmetic is test_w3_7_restart_state's, against an explicit zone; here
+    # the night is held outside the hours so the test grades the hold.
+    monkeypatch.setattr(bootcause, "night_outside_active_hours",
+                        lambda *a, **k: True)
     await arm.tick()
     assert not engine.running and arm._retry_at > 0.0, (
         "an unacknowledged pending restart did not hold auto-resume")
