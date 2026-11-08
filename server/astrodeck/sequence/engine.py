@@ -570,6 +570,17 @@ FLAT_METER_MAX_S = 8            # trial metering captures cap (belt-and-braces)
 #: between is a different flat. 5 keeps the drift inside the solver's own target
 #: band without spending more time metering than exposing.
 FLAT_RESOLVE_EVERY = 5
+#: The most the DUSK FLATS stage gives one turn of the rotator to a panel's
+#: angle (#783): the CAA is minutes-slow, a move against the approach
+#: direction is two legs, and each leg is bounded by the device's own
+#: ``MOVE_TIMEOUT_S`` (180 s). Past it the stage ends as any other failure of
+#: it does, and the night goes on to its lights.
+DUSK_FLATS_ROTATE_TIMEOUT_S = 400.0
+#: Where the twilight-sky flats point (`_sky_flat_field`): the altitude, in
+#: degrees, of the spot opposite the Sun, and the clearance it keeps from the
+#: mount's floor and zenith keep-out. High, because the sky is evenest there.
+SKY_FLAT_ALT_DEG = 75.0
+SKY_FLAT_MARGIN_DEG = 3.0
 DOME_OPEN_TIMEOUT_S = 180.0    # roll-off roof reopen (PRO-4 D3); mirrors roof.py's
                                # DOME_CLOSE_TIMEOUT_S — a real motor run is minutes
 DOME_QUERY_TIMEOUT_S = 30.0    # a single shutter_state query during reopen
@@ -11638,9 +11649,16 @@ class SequenceEngine:
         # re-solve goes on at its best estimate), so each says its own line,
         # once, with the solver's reason from here.
         self._flat_solve_reason = st.reason
+        self._flat_solve_exposure_s = st.exposure_s
         return st.exposure_s, st.converged
 
-    async def _run_calibration(self, ti: int, target: Target) -> None:
+    async def _run_calibration(self, ti: int, target: Target, *,
+                               sky_flat: bool = False) -> None:
+        # ``sky_flat`` is the DUSK FLATS stage's twilight-sky method. The sky
+        # darkens for as long as the set runs, so a re-meter that finds it too
+        # dark for the longest exposure ends the set there (see the re-solve
+        # below) instead of going on at an exposure that no longer reaches the
+        # ADU target. Every other caller leaves it off and runs as before.
         # `ti` is where the scheduler found `target` in the plan. The targets
         # the engine builds for itself (day darks, DUSK FLATS, cloud-hold
         # darks) are not in the plan and pass a placeholder (0, or the held
@@ -11826,6 +11844,18 @@ class SequenceEngine:
                                                f"(the sky has moved)")
                         solved_exp, resolved = await self._solve_flat_exposure(
                             step, target, start_exposure_s=solved_exp)
+                        if (not resolved and sky_flat
+                                and self._flat_solve_reason == "too_dim_at_max"):
+                            # THE SKY HAS GONE DARK UNDER THIS SET. Frames at
+                            # the longest exposure would sit below the ADU
+                            # target and drift darker still, each a different
+                            # flat, so the set ends here with what it has.
+                            bus.log("warning",
+                                    f"{target.name}: the sky is too dark for "
+                                    f"the longest flat exposure - the set "
+                                    f"stops at {i} of {step.count} flats",
+                                    "sequence")
+                            break
                         if not resolved:
                             # A set already under way goes on at the best
                             # estimate the solver has: its opening solve
@@ -15101,6 +15131,10 @@ class SequenceEngine:
     #: Read by the caller that has to say what an unconverged solve means.
     _flat_solve_reason: str = ""
 
+    #: The exposure the last `_solve_flat_exposure` ended on, which seeds the
+    #: next twilight-sky set: the sky is as bright as the last set left it.
+    _flat_solve_exposure_s: float | None = None
+
     #: The observing night (`night_key`) on which the DUSK FLATS stage last
     #: settled: shot, or said why it would not. The stage runs once per night
     #: on this engine, so a resume the same night does not walk the filters
@@ -15241,37 +15275,322 @@ class SequenceEngine:
                 recipes.append((filt, int(gain), int(offset), int(binning)))
         return recipes, missing
 
+    def _dusk_flat_angles(self) -> tuple[list[float | None], str]:
+        """``(angles, refusal)``: the rotator MECHANICAL angles to shoot one
+        flat set at, one per distinct panel angle of tonight's plan (#783), or
+        ``[None]`` for one set at the angle the rotator is already at.
+
+        A flat is matched on the metal's angle (a dust shadow follows the
+        metal, not the sky), and the plan states the SKY angle of each panel:
+        the ``rotation_deg`` of its light targets, which a rotating block's
+        members carry. Each is converted the way the calibration-health route
+        converts the same rows (``rotation.sky_to_mechanical`` on the rotator's
+        calibrated anchor and learned sign), then folded to its calibration
+        bin (``calibration.rotator_bin_deg``), so two panels one master would
+        serve are one set. The order is the plan's.
+
+        ``[None]`` when there is nothing to turn to: no rotator, or no panel
+        that names an angle.
+
+        A REFUSAL, in words, and no angles, when the rotator is there and the
+        plan names angles but the conversion cannot be trusted: its self-test
+        failed (D-05), its sign was never learned (R-4), or it was never
+        calibrated against the sky, so that the anchor is the bare live
+        reading and a number built on it would invent an angle. A flat at an
+        angle nobody can name is a flat nothing matches, so the stage shoots
+        none rather than one at wherever the rotator happens to be."""
+        plan, hub = self.plan, self.hub
+        skies = [t.rotation_deg for t in (plan.targets if plan else ())
+                 if not t.calibration and t.rotation_deg is not None]
+        rot = hub.devices.get("rotator")
+        if not skies or rot is None or not getattr(rot, "connected", False):
+            return [None], ""
+        if hub._rotation_trusted is False:
+            return [], ("the rotator's self-test found the camera does not "
+                        "reliably follow it (D-05), so it is not turned to "
+                        "the panels' angles")
+        sign = hub._rotator_sky_sign
+        if sign is None:
+            return [], ("the rotator's sky/mechanical sign has not been "
+                        "learned (R-4), so it is not turned to the panels' "
+                        "angles")
+        from ..calibration.keys import rotator_bin
+        from ..rotation import mod360, sky_to_mechanical
+        anchor_mech, anchor_offset = hub._rotator_sync_anchor(rot, math.nan)
+        if math.isnan(anchor_mech):
+            return [], ("the rotator has not been calibrated against the sky "
+                        "yet, so the panels' mechanical angles are not "
+                        "known")
+        width = float(config_store.cfg().calibration.rotator_bin_deg)
+        bins: dict = {}
+        for sky in skies:
+            mech = mod360(sky_to_mechanical(sky, anchor_mech, anchor_offset,
+                                            sign))
+            bins.setdefault(rotator_bin(mech, width), mech)
+        return list(bins.values()), ""
+
+    async def _dusk_flats_turn_rotator(self, mech: float) -> None:
+        """Turn the rotator to the mechanical angle ``mech``, one-sided like
+        every other rotator move (#526), bounded by
+        ``DUSK_FLATS_ROTATE_TIMEOUT_S``. A timeout is the stage's failure, not
+        the night's: it raises, and the stage's own handler says so."""
+        hub = self.hub
+        rot = hub.devices["rotator"]
+        now = float(await asyncio.wait_for(rot.get_mechanical_position(),
+                                           CALIBRATOR_CMD_TIMEOUT_S))
+        await asyncio.wait_for(
+            hub._approach_rotator_mechanical(
+                rot, mech, now, config_store.cfg().rotator,
+                hub._motion_epoch),
+            DUSK_FLATS_ROTATE_TIMEOUT_S)
+
+    def _sky_flats_window_closed(self, df) -> bool:
+        """Has the Sun fallen below the lower edge of the node's window? False
+        when the node names no window ("Now") and when the site is unknown,
+        since neither can say."""
+        if df.window_lo_deg is None:
+            return False
+        from ..site_gate import site_lat_lon
+        latlon = site_lat_lon(self.hub.site)
+        if latlon is None:
+            return False
+        return schedule.sun_altitude(*latlon, time.time()) < df.window_lo_deg
+
+    async def _wait_for_the_sky_flats_window(self, df) -> bool:
+        """Wait until the Sun falls to the window's upper edge, then say the
+        flats may start (True). False, said, when they may not: the Sun is
+        already below the window's lower edge tonight, or never reaches its
+        upper one.
+
+        The wait is `_wait_until`'s, so it is cancel-responsive and the safety
+        gate looks every tick. A node with no window ("Now") starts at once.
+        The caller has already checked that a site is saved.
+
+        Every line here is flagged ``site_derived``: its moment is the Sun
+        crossing one of the operator's own altitudes, which is the site, and
+        no figure of the Sun's altitude or the wait's length is said."""
+        if df.window_hi_deg is None or df.window_lo_deg is None:
+            return True
+        from ..site_gate import site_lat_lon
+        lat, lon = site_lat_lon(self.hub.site)
+        now = time.time()
+        if self._sky_flats_window_closed(df):
+            bus.log("info", f"DUSK FLATS (twilight sky): the Sun is already "
+                            f"below the window's lower edge "
+                            f"({df.window_lo_deg:g} degrees), so there is no "
+                            f"sky to shoot flats against tonight",
+                    "sequence", site_derived=True)
+            return False
+        if schedule.sun_altitude(lat, lon, now) > df.window_hi_deg:
+            opens = schedule.next_sun_event(lat, lon, df.window_hi_deg, now,
+                                            rising=False)
+            if opens is None:
+                bus.log("warning", f"DUSK FLATS (twilight sky): the Sun does "
+                                   f"not fall to {df.window_hi_deg:g} degrees "
+                                   f"here, so no flats are shot",
+                        "sequence", site_derived=True)
+                return False
+            bus.log("info", f"DUSK FLATS (twilight sky): waiting for the Sun "
+                            f"to fall to {df.window_hi_deg:g} degrees",
+                    "sequence", site_derived=True)
+            self._set_state(detail="DUSK FLATS: waiting for the sky's flat "
+                                   "window", site_derived=True)
+            await self._wait_until(opens)
+        return True
+
+    async def _sky_flats_roof_refusal(self) -> str:
+        """Why the sky cannot be shot through the roof, or "" when it can:
+        no roof or dome is connected, or it reads open. A roof that reads
+        anything else, or cannot be read at all, is not known to be open, and
+        a sky flat is never shot under a closed roof. Nothing here opens one:
+        that is the run's own opening of the observatory, not this stage's."""
+        dome = self.hub.devices.get("dome")
+        if dome is None or not getattr(dome, "connected", False):
+            return ""
+        try:
+            state = await asyncio.wait_for(dome.shutter_state(),
+                                           DOME_QUERY_TIMEOUT_S)
+        except Exception:                          # noqa: BLE001 - unreadable
+            return ("the roof's state cannot be read, so it is not known to "
+                    "be open")
+        if state is not DomeShutterState.OPEN:
+            return "the roof does not read open"
+        return ""
+
+    def _sky_flat_field(self) -> tuple[Target | None, str]:
+        """``(point, refusal)``: the twilight flat spot as a slew target, or
+        the reason there is none.
+
+        THE USUAL SPOT: high in the sky, opposite the Sun. The azimuth is the
+        Sun's plus 180 degrees, so the sky is as even and as dark as it gets
+        and the Sun is behind the tube's far side; the altitude is
+        ``SKY_FLAT_ALT_DEG`` unless the zenith keep-out is lower, and it must
+        clear the floor there (the configured minimum raised by the drawn
+        horizon and any no-go wedge at that azimuth) by
+        ``SKY_FLAT_MARGIN_DEG``. With no sky between the floor and the
+        ceiling the answer is a refusal, in words.
+
+        A calibration-flagged ``Target`` so the slew gate (`_mount_floor_verdict`)
+        can judge it like any other destination. No figure of it is ever
+        logged: the point opposite the Sun at a known time is the site."""
+        from ..catalog.coords import lst_hours, sun_altaz
+        from ..site_gate import site_lat_lon
+        latlon = site_lat_lon(self.hub.site)
+        if latlon is None:
+            return None, "no site is saved"
+        lat, lon = latlon
+        now = time.time()
+        az = (sun_altaz(lat, lon, now)[1] + 180.0) % 360.0
+        cfg = self._cfg if self._cfg is not None else config_store.cfg()
+        safety = cfg.safety
+        floor = schedule.effective_floor(safety.min_alt_deg, safety.horizon,
+                                         az, safety.nogo_box)
+        ceiling = schedule.effective_ceiling(safety.max_alt_deg)
+        alt = min(SKY_FLAT_ALT_DEG, ceiling - SKY_FLAT_MARGIN_DEG)
+        if alt < floor + SKY_FLAT_MARGIN_DEG:
+            return None, ("the mount's floor and zenith keep-out leave no sky "
+                          "to point at opposite the Sun")
+        phi, a, z = (math.radians(v) for v in (lat, alt, az))
+        dec = math.asin(math.sin(a) * math.sin(phi)
+                        + math.cos(a) * math.cos(phi) * math.cos(z))
+        cos_dec = max(1e-9, math.cos(dec))
+        hour_angle = math.degrees(math.atan2(
+            -math.sin(z) * math.cos(a) / cos_dec,
+            (math.sin(a) - math.sin(phi) * math.sin(dec))
+            / (math.cos(phi) * cos_dec)))
+        ra = (lst_hours(lon, now) - hour_angle / 15.0) % 24.0
+        return Target(name="flat field", ra_hours=ra, dec_deg=math.degrees(dec),
+                      calibration=True, center=False,
+                      autofocus_first=False), ""
+
+    def _skip_sky_flats(self, night: str, because: str) -> None:
+        """End the twilight-sky stage for the night without a flat, saying why
+        in words (no figure of the Sun or the sky): the night goes on."""
+        self._dusk_flats_night = night
+        bus.log("warning", f"DUSK FLATS (twilight sky): no flats are shot, "
+                           f"because {because}. The night goes on without "
+                           f"flats", "sequence")
+
+    async def _sky_flats_ready(self) -> tuple[str, Any, Target | None]:
+        """``(refusal, mount, point)``: why the sky flats cannot start, or ""
+        with the mount and the flat-field point to slew to.
+
+        The roof must read open. A mount that is connected must be slewable
+        (its position known), and the point opposite the Sun must exist, clear
+        the sun-avoidance gate (``hub._check_solar``, which a solar session
+        alone disarms) and the mount's own limits (`_mount_floor_verdict`: the
+        floor, the horizon, the wedges, the zenith keep-out, the pier guard).
+        No mount means nothing to point: the point is None and the flats are
+        shot where the lens points."""
+        refusal = await self._sky_flats_roof_refusal()
+        if refusal:
+            return refusal, None, None
+        tel = self.hub.devices.get("telescope")
+        if tel is None or not getattr(tel, "connected", False):
+            return "", None, None
+        if self._position_unknown():
+            return ("the mount's position is unknown, so it is not slewed "
+                    "anywhere", None, None)
+        point, refusal = self._sky_flat_field()
+        if point is None:
+            return refusal, None, None
+        try:
+            self.hub._check_solar(point.ra_hours, point.dec_deg)
+        except DeviceError:
+            return ("the sun-avoidance gate refuses the sky opposite the Sun "
+                    "as a place to point", None, None)
+        verdict = await self._mount_floor_verdict(point, projected=False)
+        if verdict is not None:
+            return (f"the mount's own limits refuse the sky opposite the Sun "
+                    f"({verdict.kind})", None, None)
+        return "", tel, point
+
+    async def _slew_to_the_flat_field(self, tel, point: Target) -> bool:
+        """Slew ``tel`` to ``point`` WITHOUT centring and turn tracking off,
+        so the stars drift between frames and a stack of the set rejects them.
+        Returns whether the mount was tracking before, which the stage hands
+        back after the set (`_dusk_flats`).
+
+        From home or park is allowed with no solve first: the slew unparks and
+        goes. The sun-avoidance gate and the mount's own limits have already
+        judged the point; the slew is bounded like every mount call."""
+        try:
+            was_tracking = bool(await _bounded(
+                tel.get_tracking(), MOUNT_QUERY_TIMEOUT_S,
+                "mount get_tracking"))
+        except SafetyAbort:
+            raise
+        except Exception:                          # noqa: BLE001 - unreadable
+            was_tracking = False
+        if await _bounded(tel.is_parked(), MOUNT_QUERY_TIMEOUT_S,
+                          "mount is_parked"):
+            await _bounded(tel.unpark(), PARK_TIMEOUT_S, "mount unpark")
+        getattr(self.hub, "invalidate_field_solve",
+                lambda _r: None)("the mount is slewing to the flat field")
+        await _bounded(slew_in_mount_frame(self.hub, tel, point.ra_hours,
+                                           point.dec_deg),
+                       SLEW_TIMEOUT_S, "slew to the flat field")
+        await _bounded(tel.set_tracking(False), MOUNT_QUERY_TIMEOUT_S,
+                       "mount set_tracking")
+        return was_tracking
+
     async def _dusk_flats(self) -> None:
-        """Shoot the flat set a flow's DUSK FLATS block asks for, once per
-        observing night, before the first light (#603 job B).
+        """Shoot the flat sets a flow's DUSK FLATS block asks for, once per
+        observing night, before the first light (#603 jobs B and C).
 
-        ONLY THE FLAT PANEL. 'cap' and 'sky' are carried in the plan and
-        reported here as not run yet (they need a bright sky and a wait for
-        the Sun, which is job C). A panel is a constant light source: the
-        stage does not wait for the node's Sun window, and runs whenever the
-        run reaches it. It never runs once a light frame has been taken
-        tonight (`_lights_taken_tonight`), and a library that already holds a
-        fresh full set for a filter skips that filter (`_dusk_flats_fresh`).
+        TWO OF THE NODE'S THREE METHODS RUN. The FLAT PANEL (job B) is a
+        constant light source: the stage does not wait for the node's Sun
+        window and runs whenever the run reaches it. The TWILIGHT SKY (job C)
+        meters the sky itself: it waits for the Sun to fall to the window's
+        upper edge, opens the dust cover (the cover is the one thing between
+        the sky and the sensor), meters through `_solve_flat_exposure` and
+        shoots at the metered exposure, re-meters every `FLAT_RESOLVE_EVERY`
+        frames as the sky darkens (`_run_calibration`), and STOPS, saying why,
+        when the sky is too dark for the longest exposure or the Sun has fallen
+        below the window's lower edge (checked before each set is started, so a
+        set begun inside the window is finished while the sky holds). The
+        TRANSLUCENT LENS CAP is carried in the plan and reported here as not
+        run yet.
 
-        WITHOUT A FLAT SOURCE it says so once and the night goes on. A failed
-        stage never stops the night, as the day darks do not; but a
-        ``SafetyAbort`` and a cancel propagate, so an unsafe trip mid-flats is
-        the night's end like any other, with the lamp off and the cover shut
-        by ``_run_calibration``'s own ``finally``.
+        THE SKY STAGE POINTS THE MOUNT AND CHECKS THE ROOF. Before it meters
+        it slews, without centring, to the twilight flat spot opposite the Sun
+        (`_sky_flat_field`) and turns tracking off for the sets, so the stars
+        drift between frames; the tracking it found is handed back once they
+        are done. The sun-avoidance gate and the mount's own limits judge the
+        point first, and a refusal skips the sky flats, saying so. It never
+        shoots under a roof that does not read open (`_sky_flats_roof_refusal`)
+        and never opens one: opening the observatory is the run's own step.
+
+        It never runs once a light frame has been taken tonight
+        (`_lights_taken_tonight`), and a library that already holds a fresh
+        full set for a filter at an angle skips that set (`_dusk_flats_fresh`).
+
+        ONE SET PER PANEL ANGLE (#783). A mosaic whose panels sit at several
+        position angles needs a flat at each, so the stage turns the rotator to
+        every distinct panel angle (`_dusk_flat_angles`) and shoots the filters
+        there; the frames carry the angle as ROTMECH. Where the angles cannot
+        be named it shoots none and says so. With no rotator, or a plan with
+        no angle, there is one set, at the angle the rotator is at.
+
+        WITHOUT A FLAT SOURCE (the panel method) it says so once and the night
+        goes on. A failed stage never stops the night, as the day darks do
+        not; but a ``SafetyAbort`` and a cancel propagate, so an unsafe trip
+        mid-flats is the night's end like any other, with the lamp off and the
+        cover shut by ``_run_calibration``'s own ``finally``.
 
         THE COVER IS LEFT AS IT WAS FOUND. A flip-flat's cover must be shut
         for its lamp to light the aperture (#194), and ``_panel_off_safe``
-        leaves it shut, so a cover that was OPEN when the stage began is
-        re-opened here once the set is done: otherwise the first light would
-        be taken through a shut cover, a whole night of black frames. Opening
-        a cover that was found shut is #601's (with the roof), not this
-        stage's. On an abort or a cancel nothing re-opens it: shut is the
-        safe state.
+        leaves it shut, so a cover that was OPEN when a panel stage began is
+        re-opened here once the sets are done: otherwise the first light would
+        be taken through a shut cover, a whole night of black frames. A panel
+        stage never opens a cover it found shut (that is #601's, with the
+        roof). A sky stage must open it to see the sky, and shuts it again
+        afterwards if it found it shut. On an abort or a cancel nothing moves
+        it: shut is the safe state, and the wind-down shuts it.
 
-        The flats are taken at the rotator's current angle, not at each
-        panel's (flats keyed by rotator angle is #176), and the panel is
-        driven as a dust-cover panel: the node does not say which placement it
-        is, and a dome-mounted or handheld panel cannot be driven from here.
+        The panel is driven as a dust-cover panel: the node does not say which
+        placement it is, and a dome-mounted or handheld panel cannot be driven
+        from here.
         """
         plan = self.plan
         df = getattr(plan, "dusk_flats", None)
@@ -15280,17 +15599,17 @@ class SequenceEngine:
         night = night_key(time.time())
         if self._dusk_flats_night == night:
             return
-        if df.method != "panel":
+        if df.method == "cap":
             self._dusk_flats_night = night
-            label = {"cap": "translucent lens cap",
-                     "sky": "twilight sky"}.get(df.method, df.method)
-            bus.log("warning", f"DUSK FLATS ({label}) is not run yet: only the "
-                               f"flat-panel method is, so this night goes on "
-                               f"without flats", "sequence")
+            bus.log("warning", "DUSK FLATS (translucent lens cap) is not run "
+                               "yet: only the flat-panel and twilight-sky "
+                               "methods are, so this night goes on without "
+                               "flats", "sequence")
             return
+        sky = df.method == "sky"
         cc = self.hub.calibrator
         cam = self.hub.devices.get("camera")
-        if cc is None or not getattr(cc, "connected", False):
+        if not sky and (cc is None or not getattr(cc, "connected", False)):
             self._dusk_flats_night = night
             bus.log("warning", "DUSK FLATS skipped: no flat panel is "
                                "connected, so the night goes on without flats",
@@ -15308,46 +15627,113 @@ class SequenceEngine:
                             "the first one", "sequence")
             return
 
-        cover_was_open = False
+        cover_was_open = cover_opened = False
+        restore_tracking = False
+        tel = point = None
         shot = skipped = unmetered = 0
+        stopped = ""
         try:
+            if sky:
+                from ..site_gate import site_lat_lon
+                if site_lat_lon(self.hub.site) is None:
+                    self._skip_sky_flats(night, "no site is saved, so neither "
+                                                "the Sun's window nor the sky "
+                                                "opposite it can be worked out")
+                    return
+                if not await self._wait_for_the_sky_flats_window(df):
+                    self._dusk_flats_night = night
+                    return
+                refusal, tel, point = await self._sky_flats_ready()
+                if refusal:
+                    self._skip_sky_flats(night, refusal)
+                    return
             recipes, missing = self._dusk_flat_recipes(df)
             for name in missing:
                 bus.log("warning", f"DUSK FLATS: filter '{name}' is not in "
                                    f"the wheel - no flats for it", "sequence")
+            angles, refusal = self._dusk_flat_angles()
+            if refusal:
+                bus.log("warning", f"DUSK FLATS: no flats are shot, because "
+                                   f"{refusal}; a set at the angle it happens "
+                                   f"to be at would match none of this plan's "
+                                   f"lights. The night goes on without flats",
+                        "sequence")
+                self._dusk_flats_night = night
+                return
             rotation = await self._dusk_flats_rotation()
-            rotating = any(getattr(g, "rotate", False)
-                           for g in (plan.groups if plan else ()))
-            bus.log("info",
-                    f"DUSK FLATS: {df.count} flats on each of {len(recipes)} "
-                    f"set(s) from the flat panel, before the first light. "
-                    f"The panel is driven as a dust-cover panel (the node "
-                    f"does not say which placement it is), the Sun window is "
-                    f"not waited for, and the flats are taken at the "
-                    f"rotator's current angle"
-                    + (" and not at each panel's: this plan rotates its "
-                       "mosaic panels (#176)" if rotating
-                       else (" (no rotator is connected)"
-                             if rotation is None else "")),
-                    "sequence")
-            if getattr(cc, "has_cover", False):
+            jobs = [(angle, recipe) for angle in angles for recipe in recipes]
+            turning = angles != [None]
+            where = (f"one set at each of the plan's {len(angles)} panel "
+                     f"angle(s)" if turning
+                     else "the rotator's current angle" + (
+                         " (no rotator is connected)" if rotation is None
+                         else ""))
+            if sky:
+                bus.log("info",
+                        f"DUSK FLATS (twilight sky): {df.count} flats on each "
+                        f"of {len(jobs)} set(s), metered against the sky to "
+                        f"{df.adu_target} ADU and re-metered as it darkens, "
+                        f"before the first light, at {where}. The mount is "
+                        f"slewed to the sky opposite the Sun without "
+                        f"centring and left untracked for the sets"
+                        + ("" if point is not None
+                           else " (no mount is connected, so the flats are "
+                                "shot where the lens points)")
+                        + "; the roof is not opened by this stage",
+                        "sequence")
+            else:
+                bus.log("info",
+                        f"DUSK FLATS: {df.count} flats on each of "
+                        f"{len(jobs)} set(s) from the flat panel, before the "
+                        f"first light. The panel is driven as a dust-cover "
+                        f"panel (the node does not say which placement it "
+                        f"is), the Sun window is not waited for, and the "
+                        f"flats are taken at {where}", "sequence")
+            has_cover = (cc is not None and getattr(cc, "connected", False)
+                         and getattr(cc, "has_cover", False))
+            cover_known = False
+            if has_cover:
                 try:
                     state = await asyncio.wait_for(cc.get_cover_state(),
                                                    CALIBRATOR_CMD_TIMEOUT_S)
                     cover_was_open = getattr(state, "value", state) == "open"
+                    cover_known = True
                 except Exception as exc:           # noqa: BLE001 - reported
                     bus.log("warning", f"DUSK FLATS: could not read the "
                                        f"cover state ({exc}) - it will be "
                                        f"left shut afterwards", "sequence")
-            level = (df.panel_brightness if df.panel_brightness is not None
-                     else max(1, int(getattr(cc, "max_brightness", 1) or 1)
-                              // 2))
+            if sky and has_cover and not cover_was_open:
+                await _bounded(self.hub.open_cover(), CALIBRATOR_CMD_TIMEOUT_S,
+                               "open cover")
+                cover_opened = cover_known
+            if point is not None:
+                restore_tracking = await self._slew_to_the_flat_field(
+                    tel, point)
+            level = None
+            if not sky:
+                level = (df.panel_brightness if df.panel_brightness is not None
+                         else max(1, int(getattr(cc, "max_brightness", 1) or 1)
+                                  // 2))
             per_filter: dict = {}
             for filt, *_rest in recipes:
                 per_filter[filt] = per_filter.get(filt, 0) + 1
-            for filt, gain, offset, binning in recipes:
+            # The sky's brightness carries from one set to the next, so each
+            # set after the first is metered from where the last one ended.
+            self._flat_solve_exposure_s = None
+            run = (functools.partial(self._run_calibration, sky_flat=True)
+                   if sky else self._run_calibration)
+            turned: float | None = None
+            for angle, (filt, gain, offset, binning) in jobs:
+                if sky and self._sky_flats_window_closed(df):
+                    stopped = ("the Sun has fallen below the window's lower "
+                               "edge")
+                    bus.log("info", f"DUSK FLATS (twilight sky): {stopped}, "
+                                    f"so no further set is started",
+                            "sequence", site_derived=True)
+                    break
+                at = rotation if angle is None else angle
                 fresh, have = self._dusk_flats_fresh(
-                    filt, gain, offset, binning, df.count, rotation)
+                    filt, gain, offset, binning, df.count, at)
                 name = filt or "no filter"
                 if fresh:
                     skipped += 1
@@ -15355,24 +15741,40 @@ class SequenceEngine:
                                     f"{have} fresh flats for {name} at gain "
                                     f"{gain} - skipping", "sequence")
                     continue
+                if angle is not None and angle != turned:
+                    await self._dusk_flats_turn_rotator(angle)
+                    turned = angle
                 tag = f" g{gain}" if per_filter[filt] > 1 else ""
+                tag += f" at {angle:.1f} deg" if angle is not None else ""
+                seed = ((self._flat_solve_exposure_s if sky else None)
+                        or self._DUSK_FLATS_SEED_S)
                 flat_target = Target(
                     name=f"dusk flats {name}{tag}", ra_hours=0.0, dec_deg=0.0,
                     calibration=True, center=False, autofocus_first=False,
                     steps=[ExposureStep(
-                        filter=filt, exposure_s=self._DUSK_FLATS_SEED_S,
+                        filter=filt, exposure_s=seed,
                         gain=gain, offset=offset, binning=binning,
                         count=df.count, frame_type="Flat",
                         adu_target=df.adu_target, panel_brightness=level)])
-                await self._run_calibration(0, flat_target)
+                await run(0, flat_target)
                 # A SET THE EXPOSURE WOULD NOT METER IS NOT A SET SHOT (#841):
                 # `_run_calibration` shoots none of a step whose solve did not
                 # converge, and says why, so the closing line counts it apart.
-                if self._done.get(f"{flat_target.id}:"
-                                  f"{flat_target.steps[0].id}", 0) > 0:
+                done = self._done.get(f"{flat_target.id}:"
+                                      f"{flat_target.steps[0].id}", 0)
+                too_dark = (sky and done < df.count
+                            and self._flat_solve_reason == "too_dim_at_max")
+                if done > 0:
                     shot += 1
-                else:
+                elif not too_dark:
                     unmetered += 1
+                if too_dark:
+                    stopped = "the sky is too dark for the longest exposure"
+                    bus.log("warning", f"DUSK FLATS (twilight sky): "
+                                       f"{stopped}, so the stage stops here "
+                                       f"with {shot} set(s) shot",
+                            "sequence", site_derived=True)
+                    break
         except SafetyAbort:
             raise
         except asyncio.CancelledError:
@@ -15381,14 +15783,16 @@ class SequenceEngine:
             bus.log("warning", f"DUSK FLATS stopped after {shot} set(s): "
                                f"{exc} - the night goes on without the rest",
                     "sequence")
-            # A failure ahead of the lamp-on leaves `_run_calibration`'s own
-            # finally with nothing to turn off, and one in the middle of it
-            # leaves the lamp state unknown: ask for off, best effort.
-            await self._panel_off_safe()
+            if not sky:
+                # A failure ahead of the lamp-on leaves `_run_calibration`'s
+                # own finally with nothing to turn off, and one in the middle
+                # of it leaves the lamp state unknown: ask for off, best
+                # effort.
+                await self._panel_off_safe()
         # Reached only when the stage ended on its own (an abort or a cancel
         # left above): the night is going on to its lights.
         self._dusk_flats_night = night
-        if cover_was_open:
+        if cover_was_open and not sky:
             try:
                 await _bounded(self.hub.open_cover(), CALIBRATOR_CMD_TIMEOUT_S,
                                "open cover")
@@ -15399,10 +15803,33 @@ class SequenceEngine:
                                  f"dust cover shut, and the lights that "
                                  f"follow would be taken through it: {exc}",
                         "sequence")
+        if restore_tracking:
+            try:
+                await _bounded(tel.set_tracking(True), MOUNT_QUERY_TIMEOUT_S,
+                               "mount set_tracking")
+            except SafetyAbort:
+                raise
+            except Exception as exc:               # noqa: BLE001 - reported
+                bus.log("error", f"TRACKING NOT RESTORED - DUSK FLATS turned "
+                                 f"the mount's tracking off for the sky and "
+                                 f"could not turn it back on: {exc}",
+                        "sequence")
+        if cover_opened:
+            try:
+                await _bounded(self.hub.close_cover(),
+                               CALIBRATOR_CMD_TIMEOUT_S, "close cover")
+            except SafetyAbort:
+                raise
+            except Exception as exc:               # noqa: BLE001 - reported
+                bus.log("error", f"COVER NOT CLOSED - DUSK FLATS opened the "
+                                 f"dust cover for the sky and could not shut "
+                                 f"it again: {exc}", "sequence")
         bus.log("info", f"DUSK FLATS: {shot} set(s) shot, {skipped} skipped "
                         f"(the library had them)"
                         + (f", {unmetered} not shot (the exposure would not "
-                           f"meter)" if unmetered else ""), "sequence")
+                           f"meter)" if unmetered else "")
+                        + (f"; stopped early: {stopped}" if stopped else ""),
+                "sequence")
 
     async def _stand_down_guider(self) -> bool:
         """Stop guiding, leave the mount tracking. Best-effort and never raises:

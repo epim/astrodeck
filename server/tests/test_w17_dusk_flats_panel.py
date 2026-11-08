@@ -492,9 +492,12 @@ async def test_a_failure_before_the_first_frame_does_not_stop_the_night(
 
 # --------------------------------------------------- the methods not run yet
 
-@pytest.mark.parametrize("method", ["cap", "sky"])
+@pytest.mark.parametrize("method", ["cap"])
 async def test_the_other_methods_are_carried_and_reported_not_run(
         sim_hub, monkeypatch, method):
+    """Only the translucent lens cap is still not run. The twilight-sky
+    method runs since WP 4.1b (#603 job C); ``test_w4_1b_sky_flats.py`` and
+    ``test_w4_1b_sky_pointing.py`` hold it."""
     lines = _log_spy(monkeypatch)
     _, w = await _run(sim_hub, _plan(_flats(method=method)), monkeypatch)
     assert w.saved_flats() == [] and not w.at("lamp_on"), w.events
