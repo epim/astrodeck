@@ -36,11 +36,13 @@ verbatim:
 """
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 import astrodeck.hub as hub_module
 from astrodeck.hub import Hub
-from astrodeck.sequence.engine import SequenceEngine
+from astrodeck.sequence.engine import GuideVerdict, SequenceEngine
 from astrodeck.sequence.models import ExposureStep, SequencePlan, Target
 from _simhub import SUN_PROOF_TARGET
 
@@ -85,10 +87,23 @@ async def test_unguided_frame_rejected_when_ceiling_set(tmp_path, monkeypatch):
         f"an unguided frame passed the RMS ceiling: rejected={eng._rejected}")
 
 
-@pytest.mark.asyncio
-async def test_a_guided_frame_is_not_rejected_by_the_same_ceiling(
-        tmp_path, monkeypatch):
-    """CONTROL: the same ceiling, but the frame WAS guided -- accepted."""
+async def _guided_frame(tmp_path, monkeypatch, *, lone_sample: bool,
+                        pin_verdict: bool) -> SequenceEngine:
+    """Shoot one frame that WAS guided under a 1.0 arcsec ceiling.
+
+    #1119: since #1096 the gate does not read ``_guide_rms``; it judges the
+    guider's own samples stamped inside the frame's exposure (``_frame_verdict``).
+    The sim guider's stream is then the gate's input, and on a loaded runner
+    that stream is sparse: the first sample after a gap reads large (measured:
+    9 of 90 frames over the ceiling with the guide loop paced at 250 ms, so one
+    sample falls in the exposure; none of 240 at full speed). That was the CI
+    flake ("a guided frame under the ceiling was rejected: 1", seen 3 times in
+    two days on Linux runners, never alone).
+
+    ``lone_sample`` forces that interleaving: the guider reports exactly one
+    sample inside the exposure, 1.4 arcsec out. ``pin_verdict`` is the
+    isolation: the test states the verdict the gate reads instead of leaving it
+    to the sim's noise."""
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
     hub = Hub()
     await hub.connect_sim()
@@ -98,13 +113,62 @@ async def test_a_guided_frame_is_not_rejected_by_the_same_ceiling(
         return True
     monkeypatch.setattr(eng, "_frame_was_guided", _was_guided)
     monkeypatch.setattr(eng, "_guide_rms", lambda: 0.5)   # well under the ceiling
+    if pin_verdict:
+        monkeypatch.setattr(
+            eng, "_guide_verdict",
+            lambda lo, hi: GuideVerdict(0.5, True, 12, 1.0))
+    if lone_sample:
+        real_stats = hub.guider.stats
+
+        def _one_sample_in_the_exposure():
+            return dataclasses.replace(real_stats(), recent=[
+                {"t": eng._frame_started_at + 0.001, "ra": 1.2, "dec": 0.8}])
+        monkeypatch.setattr(hub.guider, "stats", _one_sample_in_the_exposure)
 
     eng.start(_plan(guide=True, max_guide_rms=1.0, dither_every=0,
                     autofocus_every=0, meridian_flip=False))
     await eng._task
+    return eng
+
+
+@pytest.mark.asyncio
+async def test_a_guided_frame_is_not_rejected_by_the_same_ceiling(
+        tmp_path, monkeypatch):
+    """CONTROL: the same ceiling, but the frame WAS guided -- accepted."""
+    eng = await _guided_frame(tmp_path, monkeypatch, lone_sample=False,
+                              pin_verdict=True)
 
     assert eng._rejected == 0, (
         f"a guided frame under the ceiling was rejected: {eng._rejected}")
+
+
+@pytest.mark.asyncio
+async def test_the_control_holds_when_the_guider_gives_one_bad_sample(
+        tmp_path, monkeypatch):
+    """#1119, the forced interleaving: a sparse guide stream leaves one
+    over-ceiling sample in the exposure. The control states its own verdict,
+    so the sim's noise cannot reject the frame."""
+    eng = await _guided_frame(tmp_path, monkeypatch, lone_sample=True,
+                              pin_verdict=True)
+
+    assert eng._rejected == 0, (
+        f"the control's frame was judged on the sim's lone sample: "
+        f"{eng._rejected}")
+
+
+@pytest.mark.asyncio
+async def test_the_gate_judges_the_samples_in_the_exposure_not_guide_rms(
+        tmp_path, monkeypatch):
+    """#1119, the premise the control rests on: with the verdict left to the
+    guider, one over-ceiling sample in the exposure rejects the frame whatever
+    ``_guide_rms`` says. This is why the control above pins the verdict and
+    patching ``_guide_rms`` alone does not."""
+    eng = await _guided_frame(tmp_path, monkeypatch, lone_sample=True,
+                              pin_verdict=False)
+
+    assert eng._rejected == 1, (
+        f"the gate did not judge the exposure's own sample: {eng._rejected}")
+    assert eng._reject_reason == "guide_rms", eng._reject_reason
 
 
 @pytest.mark.asyncio
