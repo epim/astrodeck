@@ -173,6 +173,12 @@ export const sessionStackImageUrl = (
     + (channel ? `&channel=${encodeURIComponent(channel)}` : "")
     + (panel ? `&panel=${encodeURIComponent(panel)}` : ""));
 
+/** The whole mosaic on one picture (`GET /api/sequence/stack/mosaic.jpg`).
+ *  `seq` is the LATEST panel's: a frame landing on any panel changes this
+ *  picture, so it is the only cache key that moves when it should. */
+export const assembledImageUrl = (seq: number, size = 1200): string =>
+  u(`/api/sequence/stack/mosaic.jpg?size=${Math.round(size)}&seq=${seq}`);
+
 /** "3h 12m" / "48m" / "40s": integration time, at the precision it is worth. */
 export function fmtIntegration(seconds: number): string {
   const s = Math.max(0, Math.round(seconds));

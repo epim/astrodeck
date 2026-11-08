@@ -143,6 +143,7 @@ from ..calibration import CalibrationLibrary, MatchTolerance
 from ..calibration.keys import mech_angle_from_header
 from ..calibration.matcher import LightNeed
 from ..imaging import build_caption, compose_share_jpeg, fmt_share_date, to_png
+from ..imaging import mosaic_preview
 from ..mount_offset import nudge as nudge_offset
 from ..mount_offset import parse_nudge
 from ..mount_offset import (POSITION_UNKNOWN_CODE, POSITION_UNKNOWN_DETAIL,
@@ -9142,6 +9143,56 @@ def create_app(*, bind_host: str | None = None,
             headers["X-Stack-Panel"] = quote(
                 str(meta.get("panel", "") or ""), safe="")
         return Response(jpeg, media_type="image/jpeg", headers=headers)
+
+    # CAP_VIEW_PREVIEW like the route above: the same pixels of the sky, laid
+    # side by side. Nothing in the answer is a coordinate: the headers are
+    # counts, and the placement table the picture is drawn from stays here.
+    @app.get("/api/sequence/stack/mosaic.jpg",
+             dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
+    @declare(CAP_VIEW_PREVIEW)
+    async def session_stack_mosaic(size: int = 1600):
+        """Every mosaic panel's live stack placed by WCS on one picture
+        (#779, #172 part B), north up and east to the left.
+
+        A RENDER, never a stack: the panels' running means are read and
+        resampled, and nothing is folded into the stacker. The panels are
+        placed by the plan that owns the stack's run (the live session, else
+        the stored one that lists the run among its nights): 404 when nothing
+        is stacked, and 404 in its own words when no plan places the panels.
+        A panel of that mosaic with no stack, or released by the memory
+        budget and not restarted, is a black footprint outlined, never a stale
+        last render.
+
+        ``X-Stack-Seq`` is the stacker's counter READ BEFORE the panels are,
+        so a frame landing mid-render makes the next poll fetch again rather
+        than leaving the old picture labelled new. ``X-Stack-Panels`` counts
+        the panels drawn from a stack and ``X-Stack-Holes`` the outlined ones.
+        The long edge is bounded at 2048: the picture is never finer than the
+        finest panel's own grid either."""
+        capped = max(256, min(2048, int(size)))
+        stack = hub.session_stack
+        seq = stack.seq
+        panels = await asyncio.to_thread(stack.panel_planes)
+        if not panels:
+            raise HTTPException(404, "nothing stacked yet")
+        session = await asyncio.to_thread(
+            mosaic_preview.session_of_run, stack.session,
+            engine._session if engine.running else None,
+            session_store.load_all)
+        table = (mosaic_preview.placements_for(session.plan, set(panels))
+                 if session is not None else [])
+        if not table:
+            raise HTTPException(
+                404, "no mosaic plan owns this stack, so its panels cannot "
+                     "be placed")
+        jpeg, meta = await asyncio.to_thread(
+            mosaic_preview.assemble, table, panels, capped)
+        return Response(jpeg, media_type="image/jpeg", headers={
+            "Cache-Control": "no-store",
+            "X-Stack-Seq": str(seq),
+            "X-Stack-Panels": str(meta["stacked"]),
+            "X-Stack-Holes": str(meta["holes"]),
+        })
 
     # ---- live-preview routes (live-preview spec §4.4) ---------------------
     # Canonical URL: the client builds `/api/preview/{id}` and reads `mime` from
