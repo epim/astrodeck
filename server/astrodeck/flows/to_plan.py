@@ -745,8 +745,9 @@ def _identify(target: dict, entry: dict, *, flow_id: str, is_pool: bool,
     target's.
 
     Every step arrives carrying its stage's ``node_id`` (the compile put it
-    there); it is taken off here whatever happens, because it is a compile
-    fact and not an ``ExposureStep`` field.
+    there); it becomes the step's ``stage`` here whatever happens, and the
+    block's own ``node_id`` becomes the target's ``block``: the names the
+    run uses to publish what each stage is doing (#464).
 
     NOTHING TO KEY ON, NOTHING KEYED. With no ``flow_id`` (an unsaved preview,
     a graph-less caller) or an entry with no ``node_id`` (a compiled dict built
@@ -761,6 +762,9 @@ def _identify(target: dict, entry: dict, *, flow_id: str, is_pool: bool,
     beside two M31s cannot collide with the second copy's suffix."""
     stages = [str(s.pop("node_id", None) or "") for s in target["steps"]]
     node_id = str(entry.get("node_id") or "")
+    target["block"] = node_id or None
+    for stage, step in zip(stages, target["steps"]):
+        step["stage"] = stage or None
     if tid is None and (not flow_id or not node_id):
         return
     if tid is None and is_pool:

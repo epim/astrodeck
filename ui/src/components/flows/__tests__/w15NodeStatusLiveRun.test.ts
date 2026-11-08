@@ -1,24 +1,22 @@
 // Copyright (c) 2026 James Penick
 // SPDX-License-Identifier: Apache-2.0
-// w15NodeStatusLiveRun.test.ts - a stage card stops claiming IDLE through a
-// live run of its own flow, when nothing has written the stage's status, on
-// BOTH canvases, MOUNTED over the real store (backlog plan WP-111, #464 part
-// A; S5's phone rule, FlowStagesPhoneSheet.tsx `showStatus = written ||
-// !runLive`, applied to the two other readers).
+// w15NodeStatusLiveRun.test.ts - a stage card says nothing about its status
+// through a live run of its own flow when the engine has said nothing about
+// the stage, and says what it said when it has, on BOTH canvases, MOUNTED over
+// the real store (backlog plan WP-111, #464 part A; since WP 4.2, #1125, the
+// rule lives in the one selector `stageStatusOf`, store.ts, and the engine
+// writes the statuses it reads: w4_2StageStatusReplay.test.tsx grades those
+// from a recorded stream).
 //
 //   Run directly:  node --import ./test-css-stub.mjs --import tsx src/components/flows/__tests__/w15NodeStatusLiveRun.test.ts   (from ui/)
 //   Also run by `npm test` (run-tests.mjs) and type-checked by `tsc -b`.
 //
-// THE DEFECT (#464). Nothing writes `flows.statuses`: the engine publishes no
-// in-flight stage, so every stage's status reads the default, idle, and through
-// a live run of THIS flow that is false. The phone stage list already treated
-// the field as absent while its flow runs (S5, found by the real-page probe:
-// TARGET, FILTER CYCLE and SESSION REPORT all IDLE while the rig shot panel
-// 1-1). The classic card's LED (`<Led state="off" label="idle">`) and the
-// #/next card's dot (`title="IDLE"`, `aria-label="stage IDLE"`, a hollow ring)
-// still said it. Parts B and C (the engine publishes the stage and the slice
-// writes `busy`) are later; #464 stays open, and this file grades only the
-// false-claim half.
+// THE RULE (#464). A stage the engine has not named (an AUTOFOCUS, a REPORT)
+// has no status of its own, and through a live run of THIS flow its default,
+// idle, is false: the phone stage list found it first (S5: TARGET, FILTER CYCLE
+// and SESSION REPORT all IDLE while the rig shot panel 1-1). So while the open
+// flow's run is live such a stage draws no dot, and idle stays whenever nothing
+// of this flow runs, where it is true.
 //
 // WHAT IS GRADED. Each case mounts a classic card and a #/next card for each of
 // two stages, and reads everything a card says about its status: its text, its
@@ -30,65 +28,43 @@
 //   2. no run: both canvases say IDLE as they always did, where it is true;
 //   3. a live run of ANOTHER flow, and a live run while no flow is open: the
 //      same, IDLE is true of this flow;
-//   4. a written status outranks the rule, per stage: n1 reads BUSY through
-//      the live run while n2, unwritten, reads nothing;
+//   4. a written status outranks the rule, per stage: the engine's `stages`
+//      say n1 is running, so n1 reads BUSY through the live run while n2,
+//      unnamed, reads nothing;
 //   5. the run ending brings IDLE back;
 //   6. the re-render discipline: a sequence tick inside a live run re-renders
-//      neither card (the two new subscriptions are booleans), counted through
+//      neither card (the selector answers a string or null), counted through
 //      `def.sum` as flowNodeDom.test.tsx does.
 //
-// Every mutant below was run from a byte backup of the file it edits (kept
-// in the worktree, deleted after), restored and sha256-compared, with the
-// mutant's text grepped out of the file. The failures each produced are
-// quoted verbatim (the first line of each failing case, then its expected and
-// got lines where they are short).
+// Every mutant below was run from a byte backup of store.ts, restored and
+// sha256-compared. The first failing line of each case is quoted.
 //
-// MUTANT "classic card drops the guard" (FlowNodeCard.tsx `const showStatus =
-// written || !runLive;` made `= true`: the card as it was). Observed, 4/6:
+// MUTANT "the live run says idle" (`stageStatusOf` ending `return "idle";`,
+// the card as it was before WP-111). Observed, 3/6 failing:
 //   x a live run of the open flow with nothing written: neither canvas draws a dot or says IDLE: the classic card for n1 draws a status dot through a live run of its own flow
-//     expected false
-//     got      true
-//   x a written status outranks the rule per stage: n1 reads BUSY through the live run, n2 reads nothing: the classic LED of the unwritten stage, beside a written one
-// MUTANT "next card drops the guard" (FlowNode.tsx, the same). Observed, 3/6:
-//   x a live run of the open flow with nothing written: neither canvas draws a dot or says IDLE: the next card for n1 draws a status dot through a live run of its own flow
-//   x a written status outranks the rule per stage: n1 reads BUSY through the live run, n2 reads nothing: the #/next dot of the unwritten stage, beside a written one
+//   x a written status outranks the rule per stage: ...: the classic LED of the unwritten stage, beside a written one
 //   x the run ending brings IDLE back: precondition: no dot through the live run
-// MUTANT "card shows only a written status" (`= written;` in place of
-// `written || !runLive`, so IDLE vanishes where it is true). Observed, 3/6
-// in each file, cases 2, 3 and 5:
-//   classic: x no run: both canvases say IDLE where it is true: the classic card's LED name with no run
+// MUTANT "only a written status shows" (`? null : null`, so IDLE vanishes
+// where it is true). Observed, 3/6 failing, cases 2, 3 and 5:
+//   x no run: both canvases say IDLE where it is true: the classic card's LED name with no run
 //     expected "idle"
 //     got      undefined
-//   next: x no run: both canvases say IDLE where it is true: the #/next dot's accessible name with no run
-//     expected "stage IDLE"
-//     got      undefined
-// MUTANT "runLive ignores the session" (`useStore((s) => s.sequence?.state ===
-// "running")` in place of `flowRunLive(knownSessions(...), ...)`: another
-// flow's run claims this one's). Observed, 5/6 in each file:
-//   classic: x a live run of ANOTHER flow, or with no flow open, leaves IDLE standing: the classic LED through another flow's run: nothing of THIS flow is running, so idle is true
+// MUTANT "the live check ignores the session" (`s.sequence?.state ===
+// "running"` in place of `flowRunLive(knownSessions(...), ...)`: another flow's
+// run claims this one's). Observed, 1/6 failing:
+//   x a live run of ANOTHER flow, or with no flow open, leaves IDLE standing: the classic LED through another flow's run: nothing of THIS flow is running, so idle is true
 //     expected "idle"
 //     got      undefined
-//   next: x a live run of ANOTHER flow, or with no flow open, leaves IDLE standing: the #/next dot through another flow's run
-//     expected "stage IDLE"
-//     got      undefined
-// MUTANT "ignores a written status" (`const written = false;`). Observed,
-// 5/6 in each file:
-//   classic: x a written status outranks the rule per stage: n1 reads BUSY through the live run, n2 reads nothing: the classic LED of the written stage
+// MUTANT "ignores a written status" (the `written !== undefined` line of
+// `stageStatusOf` removed). Observed, 2/6 failing:
+//   x a written status outranks the rule per stage: n1 reads BUSY through the live run, n2 reads nothing: the classic LED of the written stage
 //     expected "busy"
 //     got      undefined
-//   next: x a written status outranks the rule per stage: n1 reads BUSY through the live run, n2 reads nothing: the #/next dot's name for the written stage
-//     expected "stage BUSY"
-//     got      undefined
-// MUTANT "selects the sequence object, not a boolean" (`useStore((s) =>
-// (flowRunLive(...) ? s.sequence : null)) !== null`, one line in either
-// file). Observed, 5/6 in each file:
+// MUTANT "the hook subscribes to the sequence object" (`useStageStatus` also
+// selecting `s.sequence`). Observed, 1/6 failing:
 //   x a sequence tick inside a live run re-renders neither card: renders caused by two sequence ticks of the same live run: a subscription returned the sequence object, not a boolean
 //     expected 0
-//     got      4
-// MUTANT "next card keeps data-status idle on the root" (FlowNode.tsx
-// `data-status={showStatus ? status : undefined}` made `data-status={status}`).
-// Observed, 5/6:
-//   x a live run of the open flow with nothing written: neither canvas draws a dot or says IDLE: the next card for n1 says IDLE through a live run: CAPTURE LOOPrunall doneframe gradedpass doneL · 120s · g100 · ×24 | idle | Edit CAPTURE LOOP parameters | Edit parameters
+//     got      8
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -225,11 +201,10 @@ const RUN = (sid: string, extra: Partial<SequenceState> = {}): SequenceState => 
 } as SequenceState);
 const IDLE_RUN: SequenceState = { state: "idle" };
 
-/** The store as the open flow `f1` with its known sessions (or none open),
- *  the given sequence state, and the given written statuses. */
+/** The store as the open flow `f1` with its known sessions (or none open)
+ *  and the given sequence state, whose `stages` the engine wrote. */
 function stage(opts: {
   open?: boolean; sessionIds?: string[]; sequence?: SequenceState;
-  statuses?: Record<string, string>;
 }): void {
   act(() => {
     useStore.setState({
@@ -239,7 +214,6 @@ function stage(opts: {
         record: opts.open === false ? null : REC,
         graph: REC.graph,
         sessionIds: opts.sessionIds ?? [],
-        statuses: opts.statuses ?? {},
       },
     } as any);
   });
@@ -301,7 +275,7 @@ test("a live run of ANOTHER flow, or with no flow open, leaves IDLE standing", (
 // ========================================= 4. a written status outranks it
 
 test("a written status outranks the rule per stage: n1 reads BUSY through the live run, n2 reads nothing", () => {
-  stage({ sessionIds: ["s1"], sequence: RUN("s1"), statuses: { n1: "busy" } });
+  stage({ sessionIds: ["s1"], sequence: RUN("s1", { stages: { n1: "running" } } as any) });
   mount();
   const led = dot("classic", "n1");
   eq(led?.getAttribute("aria-label"), "busy", "the classic LED of the written stage");
@@ -338,12 +312,10 @@ test("a sequence tick inside a live run re-renders neither card", () => {
   eq(renders - before, 0,
     "renders caused by two sequence ticks of the same live run: a subscription returned the sequence object, not a boolean");
 
-  // The counter does see a card render: a status written to n1 re-renders n1
-  // on both canvases and neither n2.
+  // The counter does see a card render: the engine saying n1 is running
+  // re-renders n1 on both canvases and neither n2.
   const mid = renders;
-  act(() => {
-    useStore.setState({ flows: { ...useStore.getState().flows, statuses: { n1: "busy" } } } as any);
-  });
+  setSequence(RUN("s1", { stages: { n1: "running" } } as any));
   eq(renders - mid, 2, "precondition: writing n1's status re-renders n1 on both canvases and nothing else");
 });
 

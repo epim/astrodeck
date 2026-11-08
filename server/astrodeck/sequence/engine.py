@@ -1830,6 +1830,11 @@ class SequenceEngine:
         #: from the records whose night is tonight's. A later night's run
         #: reads none of them, so the step is tried again then.
         self._set_aside: dict[str, str] = {}
+        #: What each flow stage and block is doing, by canvas node id: "running",
+        #: "done", "skipped" or "failed" (#464, #1125). `_publish_stages` is its
+        #: one writer and `start()` empties it; the sequence state carries it as
+        #: ``stages``.
+        self._stage_status: dict[str, str] = {}
         #: What this run's opening flat solves found, same key: None for a
         #: step whose exposure metered, the solver's word for why for one that
         #: did not (#846). `_run_calibration` fills it, `start()` empties it,
@@ -2573,6 +2578,7 @@ class SequenceEngine:
         # has none. The night is asked of this module's clock, the one every
         # record was stamped with.
         self._set_aside = {}
+        self._stage_status = {}
         self._flat_metered = {}
         self._set_aside_targets = {}
         self._set_aside_meta = {}
@@ -11928,7 +11934,7 @@ class SequenceEngine:
             for si, step in steps:
                 if f"{target.id}:{step.id}" in self._set_aside:
                     continue
-                await self._run_step(ti, si, target, step)
+                await self._run_staged_step(ti, si, target, step)
             return
 
         quota = self.plan is not None and self.plan.count_mode == "accepted" \
@@ -11950,8 +11956,9 @@ class SequenceEngine:
             rounds += 1
             before = _pass_counter()
             for si, step in pending:
-                await self._run_step(ti, si, target, step,
-                                     max_frames=max(1, int(step.per_visit or 1)))
+                await self._run_staged_step(
+                    ti, si, target, step,
+                    max_frames=max(1, int(step.per_visit or 1)))
             if _pass_counter() == before:
                 names = ", ".join(s.filter or "no filter" for _, s in pending)
                 bus.log("warning",
@@ -12037,7 +12044,8 @@ class SequenceEngine:
                     if _past_deadline(step):
                         return
                     before = _pass_counter()
-                    await self._run_step(ti, si, target, step, max_frames=1)
+                    await self._run_staged_step(ti, si, target, step,
+                                                max_frames=1)
                     if _pass_counter() == before:
                         # Took nothing (a discarded frame in attempts mode,
                         # or the step's guard set it aside): the next step,
@@ -12063,14 +12071,16 @@ class SequenceEngine:
             for si, step in pending:
                 per = max(1, int(step.per_visit or 1))
                 if visit.deadline_ts is None:
-                    await self._run_step(ti, si, target, step, max_frames=per)
+                    await self._run_staged_step(ti, si, target, step,
+                                                max_frames=per)
                     continue
                 for _ in range(per):
                     if not _left(step):
                         break
                     if _past_deadline(step):
                         return
-                    await self._run_step(ti, si, target, step, max_frames=1)
+                    await self._run_staged_step(ti, si, target, step,
+                                                max_frames=1)
             rounds += 1
             if _pass_counter() == before:
                 names = ", ".join(s.filter or "no filter" for _, s in pending)
@@ -12084,6 +12094,74 @@ class SequenceEngine:
                                    elapsed_s=time.time() - started,
                                    complete=complete):
                 return
+
+    async def _run_staged_step(self, ti: int, si: int, target: Target, step,
+                               **bound: int) -> None:
+        """Shoot this step (`_run_step`, handed ``bound``, its ``max_frames``
+        when the caller bounds the visit), and say what its flow stage and
+        block are doing before and after (#464, #1125). A step with no
+        ``stage`` (a plan not made from a flow) says nothing.
+
+        A step that raises FAILS its stage and block, unless the exception only
+        moves the scheduler on (`StopTarget`, `JumpTarget`: the panel is
+        deferred or the target skipped, and neither is a failure)."""
+        self._say_stages(target, step)
+        try:
+            await self._run_step(ti, si, target, step, **bound)
+        except (StopTarget, JumpTarget):
+            raise
+        except Exception:
+            self._publish_stages({node: "failed"
+                                  for node in (step.stage, target.block) if node})
+            raise
+        self._say_stages(target, step)
+
+    def _say_stages(self, target: Target, step) -> None:
+        """Publish what this step's stage and its target's block are doing now.
+        The stage owns every step of the plan compiled from its node (a FILTER
+        CYCLE is one step a slot, on every target it feeds) and the block owns
+        every step of every target compiled from its node (a mosaic's panels, a
+        pool's members)."""
+        plan = self.plan
+        if plan is None or not (step.stage or target.block):
+            return
+        words: dict[str, str] = {}
+        if step.stage:
+            words[step.stage] = self._stage_word(
+                [(t, s) for t in plan.targets for s in t.steps
+                 if s.stage == step.stage])
+        if target.block:
+            words[target.block] = self._stage_word(
+                [(t, s) for t in plan.targets if t.block == target.block
+                 for s in t.steps])
+        self._publish_stages(words)
+
+    def _stage_word(self, owned: list[tuple[Target, Any]]) -> str:
+        """What a stage that owns these (target, step) pairs is doing: done when
+        every step is complete, skipped when everything still owed is set aside
+        for tonight (the ledger keeps it owed), else running."""
+        owed = [(t, s) for t, s in owned if not self._step_complete(t, s)]
+        if not owed:
+            return "done"
+        if all(f"{t.id}:{s.id}" in self._set_aside
+               or t.id in self._set_aside_targets for t, s in owed):
+            return "skipped"
+        return "running"
+
+    def _publish_stages(self, words: dict[str, str]) -> None:
+        """THE ONE WRITER of ``stages`` (#464, #1125): the canvases' pills, LEDs
+        and wires read it off the sequence state. Published only when a word
+        changed, and only while the run is live: a publish after the terminal
+        state would repeat it, and the alert dispatcher reads every terminal
+        ``sequence`` event as the run ending."""
+        changed = {n: w for n, w in words.items()
+                   if self._stage_status.get(n) != w}
+        if not changed:
+            return
+        self._stage_status = {**self._stage_status, **changed}
+        if (self.running and not self._aborting
+                and self.state.get("state") not in _TERMINAL_STATES):
+            self._set_state(stages=dict(self._stage_status))
 
     async def _run_step(self, ti: int, si: int, target: Target, step,
                         max_frames: int | None = None) -> None:

@@ -101,7 +101,7 @@ import { replayNotice } from "../../../../../components/flows/replayNotice";
 import { laneTail, loopSource, panelLane } from "../../../../../components/flows/panelLane";
 import { LOOP_CHIP_WORDS, targetLoops } from "../../../../../components/flows/targetSummary";
 import { accessPhrase, useCapability } from "../../../../../lib/caps";
-import { useStore } from "../../../../../store";
+import { useStageStatus, useStore } from "../../../../../store";
 import { nav } from "../../../../router";
 import { useBreakpoint } from "../../../../breakpoint";
 import { NxIcon } from "../../../../icons";
@@ -121,7 +121,7 @@ import { emptyLogText } from "./FlowLogStrip";
 import { FlowTapWireBar } from "./FlowTapWireBar";
 import {
   ADD_STAGE_LABEL, LOG_TONE, NODE_STATUS_TONE, NODE_STATUS_WORD,
-  NO_WIRES_TEXT, RIG_VALUE_PREFIX, asNodeStatus, formatEta, framesWord, logTail,
+  NO_WIRES_TEXT, RIG_VALUE_PREFIX, formatEta, framesWord, logTail,
   logTime, markTone, markWord, nodeMarkDetail, nodeMarkLevel, rigValueFor,
   saveLockReason, saveStateTone, saveStateWord, stageWord,
   tonightLockReason, wireRemoveLabel, wireRowLabel,
@@ -306,7 +306,7 @@ const HISTORY_ROW_STYLE = { display: "flex", gap: 8, flexShrink: 0 } as const;
 
 // -------------------------------------------------------------- a stage row
 
-function StageRow({ node, nodes, edges, openId, runLive }: {
+function StageRow({ node, nodes, edges, openId }: {
   node: FlowNodeRec;
   /** The whole graph, from the sheet's two subscriptions. Passed rather than
    *  read here so a wire added anywhere re-renders one list, not sixteen - and
@@ -315,21 +315,17 @@ function StageRow({ node, nodes, edges, openId, runLive }: {
   edges: readonly FlowEdgeRec[];
   /** The flow id the route names, carried into every sheet this row opens. */
   openId: string;
-  /** This flow's run is live on the rig (`useFlowRunReadouts().fed`), read
-   *  once by the sheet and handed down, as the graph is. */
-  runLive: boolean;
 }): JSX.Element {
-  const status = useStore((s) => asNodeStatus(s.flows.statuses[node.id]));
-  // WHAT THE STAGE'S PILL MAY SAY (#189 S5, found by the real-page probe,
-  // routes_s5_s6.json). Nothing writes `flows.statuses`: no topic carries a
-  // stage's status (see the header on `flow.node`), so every stage reads the
-  // default, IDLE, and through a live run of THIS flow that is false. The
-  // probe saw TARGET, FILTER CYCLE and SESSION REPORT all IDLE while the rig
-  // shot panel 1-1. So while this flow runs, a stage with no status of its
-  // own shows none, and the readouts above say what the run is doing; IDLE
-  // stays whenever nothing of this flow runs, where it is true.
-  const written = useStore((s) => s.flows.statuses[node.id] !== undefined);
-  const showStatus = written || !runLive;
+  // WHAT THE STAGE'S PILL MAY SAY (#189 S5, #464, #1125): the stage's word from
+  // the one selector the canvas cards and the wire layers read too
+  // (`useStageStatus`). The engine's, while this flow's run is live. IDLE where
+  // nothing of this flow runs, where it is true. Null for a stage the engine
+  // has said nothing about through a live run (the real-page probe saw TARGET,
+  // FILTER CYCLE and SESSION REPORT all IDLE while the rig shot panel 1-1),
+  // which shows no pill; the readouts above say what the run is doing.
+  const stage = useStageStatus(node.id);
+  const showStatus = stage !== null;
+  const status = stage ?? "idle";
   // The same three primitives the canvas card subscribes to, and the same
   // words: a stage that reads FROM THE RIG on a tablet must not read something
   // else in the list a phone opens.
@@ -782,7 +778,7 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
             <div className="nx-flow-stages">
               {blocks.map((b) => {
                 if (b.kind === "row") {
-                  return <StageRow key={b.node.id} node={b.node} nodes={nodes} edges={edges} openId={want} runLive={readouts.fed} />;
+                  return <StageRow key={b.node.id} node={b.node} nodes={nodes} edges={edges} openId={want} />;
                 }
                 if (b.kind === "rail") {
                   return (
@@ -793,7 +789,7 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
                       data-rail-from={b.target.id}
                       data-rail-to={b.tail.id}
                     >
-                      <StageRow node={b.target} nodes={nodes} edges={edges} openId={want} runLive={readouts.fed} />
+                      <StageRow node={b.target} nodes={nodes} edges={edges} openId={want} />
                       <div
                         role="group"
                         aria-label={`${LOOP_RAIL_LABEL}: the stages shot on each panel`}
@@ -804,7 +800,7 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
                           <Mono size={10} tone="warn">{LOOP_RAIL_LABEL}</Mono>
                         </span>
                         {b.lane.map((n) => (
-                          <StageRow key={n.id} node={n} nodes={nodes} edges={edges} openId={want} runLive={readouts.fed} />
+                          <StageRow key={n.id} node={n} nodes={nodes} edges={edges} openId={want} />
                         ))}
                       </div>
                     </div>

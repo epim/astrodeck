@@ -38,14 +38,14 @@
 // selectors that return a string and a boolean. So selecting a wire re-renders
 // the wire that was selected and the one that now is, and nothing else, and the
 // pending wire — which changes on every pointermove — is a separate component
-// so dragging one wire does not re-path the other twenty. Nothing writes a
-// stage's status today (`flows.statuses`, #464: no topic carries it, and the
-// published sequence state never names the stage), so every wire reads idle
-// and that selector wakes none; it is kept narrow so that a status feed, once
-// there is one, re-renders one stage's outgoing wires and not the layer.
+// so dragging one wire does not re-path the other twenty. The stage's status
+// is the engine's, through the store's one selector (`useStageStatus`, #464,
+// #1125), so a stage changing word re-renders that stage's outgoing wires and
+// not the layer; a stage the engine has said nothing about reads null there,
+// and a wire reads it as idle.
 import { memo } from "react";
 import type { MouseEvent as RMouseEvent } from "react";
-import { useStore } from "../../store";
+import { useStageStatus, useStore } from "../../store";
 import { NODE_DEFS } from "./nodeDefs";
 import {
   cardBox, edgePath, portPos, type CardBox, type EdgeMode, type FlowTier, type LoopArc,
@@ -246,8 +246,8 @@ interface FlowWireProps {
 function FlowWire({ edgeId, fromNode, d, kind, running, hitW, select }: FlowWireProps) {
   // A string and a boolean. zustand compares the selector's RESULT with
   // Object.is, so selecting another wire cannot reach this one, nor could a
-  // status written for another stage (nothing writes one today, #464).
-  const status = useStore((s) => s.flows.statuses[fromNode] ?? "idle");
+  // status the engine writes for another stage.
+  const status = useStageStatus(fromNode) ?? "idle";
   const selected = useStore(
     (s) => s.flows.sel?.kind === "edge" && s.flows.sel.id === edgeId);
 
@@ -315,7 +315,7 @@ interface FlowLoopArcProps extends FlowWireProps {
 function FlowLoopArc({
   edgeId, fromNode, d, kind, running, hitW, select, chip, chipX, chipY,
 }: FlowLoopArcProps) {
-  const status = useStore((s) => s.flows.statuses[fromNode] ?? "idle");
+  const status = useStageStatus(fromNode) ?? "idle";
   const selected = useStore(
     (s) => s.flows.sel?.kind === "edge" && s.flows.sel.id === edgeId);
 
@@ -438,8 +438,7 @@ export default function FlowWireLayer({
   const nodes = useStore((s) => s.flows.graph.nodes);
   const edges = useStore((s) => s.flows.graph.edges);
   // A string, so the layer re-renders once when a run starts or ends. A
-  // stage's status is each wire's own read (`FlowWire`), never the layer's;
-  // nothing writes one today (#464).
+  // stage's status is each wire's own read (`FlowWire`), never the layer's.
   const phase = useStore((s) => s.flows.run.phase);
   // Read once and handed down: one subscription for the whole layer instead of
   // one per wire, and the action's identity is stable so `memo` still holds.

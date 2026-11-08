@@ -71,6 +71,13 @@ class ExposureStep(BaseModel):
     # one pass, not a total: count=45, per_visit=1 means "one L every time
     # round, forty-five times".
     per_visit: int = Field(1, gt=0, le=1000)
+    # The flow STAGE (canvas node id) this step was compiled from, which the
+    # run names when it publishes what that stage is doing (#464, #1125).
+    # None for a plan not made from a flow. EXCLUDED FROM EVERY DUMP, so no
+    # stored plan, plan response or plan hash moves; a plan read back from a
+    # session file therefore names no stage, and a run resumed from one
+    # publishes no stage status.
+    stage: str | None = Field(None, exclude=True)
 
 
 class Schedule(BaseModel):
@@ -147,6 +154,11 @@ class Target(BaseModel):
     # while 0, like ``SequencePlan.skipped_ids``, so every plan without a bound
     # dumps byte for byte as before the field existed.
     max_time_min: int = Field(0, ge=0, le=1440)
+    # The flow BLOCK (the TARGET or POOL node id) this target was compiled
+    # from; every panel of a mosaic and every member of a pool names its
+    # block's. None for a plan not made from a flow, and excluded from every
+    # dump (see ``ExposureStep.stage``).
+    block: str | None = Field(None, exclude=True)
     # --- acquisition order (additive; "blocks" is what every existing plan does)
     #
     # "blocks" runs each step to completion before the next: 45 L, then 45 R,
