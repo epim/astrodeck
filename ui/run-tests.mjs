@@ -48,13 +48,24 @@
 
 import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { execFile } from "node:child_process";
-import { tmpdir } from "node:os";
+import { availableParallelism, tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
-//: enough to keep the box busy without oversubscribing a CI runner
-const CONCURRENCY = 8;
+const MAX_CONCURRENCY = 8;
+
+/** How many files run at once: one per core the process may use, at most
+ *  MAX_CONCURRENCY, at least one. Every child is CPU-bound (tsx transpiles
+ *  it, then it computes), and the 60 s budget is wall clock, so a child that
+ *  shares its core is slowed in proportion. A fixed 8 on a 4-vCPU hosted
+ *  runner made pano `align.test.ts`, about 10 s of CPU alone, overrun the
+ *  budget twice in a row (#1184); it was read as a freeze after a clean tally
+ *  but its output ended at the twelfth of its seventeen cases. */
+export function concurrencyFor(cores) {
+  return Math.max(1, Math.min(MAX_CONCURRENCY, cores));
+}
+export const CONCURRENCY = concurrencyFor(availableParallelism());
 const TIMEOUT_MS = 60_000;
 // How long a child that has written `__EXITING__` (so `process.exit()` has been
 // called) is given to actually finish before the runner kills it (#664 Part B).
@@ -119,9 +130,15 @@ export function parseCounts(text) {
  *  they assert, and print "OK" or "all assertions passed" only if they reach
  *  the end. For those the CHILD'S EXIT CODE is the signal — a failed assertion
  *  throws, the import rejects, and the child dies nonzero. Recognised by the
- *  phrase so that a file which prints nothing still counts as unscorable. */
+ *  phrase so that a file which prints nothing still counts as unscorable.
+ *
+ *  The phrase must be a line of its own ("OK", "name: OK") or the words "all
+ *  assertions passed". The word "ok" inside any other line does not count
+ *  (#1184): a PASS line such as "a blank image gives ok: false" made a child
+ *  that was still inside its cases look finished, so a timeout there was
+ *  called a freeze after a clean tally and retried. */
 export function assertionStyle(text) {
-  return /\bOK\b|all assertions passed/i.test(text);
+  return /^(?:\S+: )?OK\s*$/m.test(text) || /all assertions passed/i.test(text);
 }
 
 /** Whether one file's run counts as green. `err` is the `execFile` callback's
