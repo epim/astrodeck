@@ -28,7 +28,8 @@ from typing import Any
 from uuid import uuid4
 
 import pydantic_core
-from pydantic import BaseModel, Field, ValidationError, model_serializer
+from pydantic import (BaseModel, Field, ValidationError, model_serializer,
+                      model_validator)
 
 from .. import hub as _hubmod
 from ..events import night_key
@@ -297,6 +298,53 @@ class Session(BaseModel):
     # session queued behind the same A replaces the first. Additive with
     # SESSION_SCHEMA still 1; a build that predates it ignores the key.
     queued_behind: str | None = None
+    # THE NAMES A FLOW'S PLAN CARRIES, KEPT BESIDE IT (#1231). A flow's compile
+    # names the stage (canvas node id) of every step and the block of every
+    # target, on ``ExposureStep.stage`` and ``Target.block``, so the run can
+    # publish what each is doing (#464, #1125). Both are excluded from every
+    # dump, which keeps every stored plan, plan hash and frozen-plan identity
+    # where it was; so a plan read back from this file named nothing, and the
+    # night usually run (an auto-resumed one) published no stage status.
+    # ``flow_blocks`` is ``{target_id: block}`` and ``flow_stages`` is
+    # ``{"target_id:step_id": stage}``, the engine's own key for a step. Written
+    # by ``note_stages`` on every save, from the plan being saved, so a flow run,
+    # a CONTINUE that replans from the flow and a plan replaced by one no flow
+    # compiled each leave the record true to the plan; applied to the plan when
+    # the session is built (``_name_the_stages``), which is every reader.
+    # Typed ``Any`` beneath the key, as ``group_pier`` is, so a hand edit can
+    # make no file fail validation; a value that is not a name is ignored.
+    # Additive with SESSION_SCHEMA still 1: a build that predates them ignores
+    # the keys (no ``extra="forbid"``), and this build reads a file without
+    # them as naming nothing, which is today's behaviour for it.
+    flow_blocks: dict[str, Any] = Field(default_factory=dict)
+    flow_stages: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _name_the_stages(self) -> "Session":
+        """Put the recorded names back on the plan's targets and steps, where
+        the plan names nothing. A plan that already names its own (one a flow
+        has just compiled) is left alone."""
+        if not (self.flow_blocks or self.flow_stages):
+            return self
+        for target in self.plan.targets:
+            block = self.flow_blocks.get(target.id)
+            if target.block is None and isinstance(block, str) and block:
+                target.block = block
+            for step in target.steps:
+                stage = self.flow_stages.get(f"{target.id}:{step.id}")
+                if step.stage is None and isinstance(stage, str) and stage:
+                    step.stage = stage
+        return self
+
+    def note_stages(self) -> None:
+        """Record the names the plan carries, replacing what was recorded:
+        the plan is the truth, and a plan with no names (the Plan editor's,
+        or one a PATCH put in place of the flow's) leaves nothing recorded
+        that could be applied to ids it does not own."""
+        self.flow_blocks = {t.id: t.block for t in self.plan.targets if t.block}
+        self.flow_stages = {f"{t.id}:{s.id}": s.stage
+                            for t in self.plan.targets for s in t.steps
+                            if s.stage}
 
     # ---- nights and arming (derived; nothing here is written) --------------
     def observing_nights(self) -> list[str]:
@@ -1385,6 +1433,7 @@ class SessionStore:
         whose stamp matches no record, which is read."""
         with self._write_lock:
             session.updated_ts = time.time()
+            session.note_stages()
             path = self._path(session.id)
             is_new = not path.exists()
             write_private_text_atomic(path, session_text(session))
