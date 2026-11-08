@@ -44,8 +44,8 @@ from ..alerting import STAGE_FRAME_DEADMAN, STAGE_FRAME_HEARTBEAT
 from ..catalog.coords import angular_sep_deg
 from ..config import DEFAULT_MAX_GUIDE_RMS, config_store, frames_payload
 from .. import capture_geometry, naming, site_horizon, tracking_probe
-from ..devices.base import (DeviceError, DomeShutterState, GotoNotArrived,
-                            PierSide, SyncRefused, SyncUnverified,
+from ..devices.base import (DeviceError, DomePolicy, DomeShutterState,
+                            GotoNotArrived, PierSide, SyncRefused, SyncUnverified,
                             is_present, position_known_for_motion,
                             quotable_sync_reply, rig_position_known)
 from ..mount_offset import (POSITION_UNKNOWN_MOTION_DETAIL,
@@ -3854,6 +3854,10 @@ class SequenceEngine:
                     bus.log("warning", warning, "sequence")
                 if geometry_note:
                     bus.log("warning", geometry_note, "sequence")
+                # THE OBSERVATORY IS OPEN, AND THE DOME FOLLOWS THE MOUNT,
+                # BEFORE ANYTHING SLEWS (#601, #602): a resumed night used to
+                # shoot through the cover the last wind-down closed.
+                await self._open_the_observatory()
                 self._start_watchdog()
 
                 # WHY THIS IS ONE DECISION AND NOT TWO. "The cooler never
@@ -22296,6 +22300,36 @@ class SequenceEngine:
                 f"minutes (this is said now and at most every "
                 f"{SPARSE_RESWEEP_LOG_EVERY_S / 60:.0f} minutes after)",
                 "sequence")
+
+    async def _open_the_observatory(self) -> None:
+        """Bind the dome to the mount, then open the roof and the dust cover,
+        before the run's first slew (#601, #602, #192). Raises ``DeviceError``,
+        naming the device, when one does not confirm: a night of frames shot
+        through a shut cover, or with the dome looking away from the mount, is
+        worse than a run that does not start. That is an error ending, not an
+        unsafe one: nothing has moved yet and there is nothing to park.
+
+        A rig with no roof and no cover is never asked anything, so its run is
+        what it always was; so is a plan with no light frames in it (darks are
+        shot with the cover shut, and nothing in it wants the sky). The roof's
+        travel waits on the safety gate, so a closed roof is not opened into
+        rain. Binding and the roof's timeout follow the plan's DOME CONTROL
+        block (`SequencePlan.dome`, read through `DomePolicy.from_plan`); a
+        plan without one reads as the node's own defaults."""
+        plan = self.plan
+        if plan is None or plan.total_lights() <= 0:
+            return
+        from .roof import bind_dome, open_for_the_night
+        dome = self.hub.devices.get("dome")
+        policy = DomePolicy.from_plan(plan.dome or {})
+        reason = await bind_dome(dome, log=bus.log, policy=policy)
+        if reason is None:
+            reason = await open_for_the_night(
+                dome, self.hub.devices.get("covercalibrator"), log=bus.log,
+                policy=policy,
+                before_roof=lambda: self._safety_gate(context="roof"))
+        if reason is not None:
+            raise DeviceError(reason)
 
     async def _panel_off_safe(self) -> None:
         """Best-effort flat-panel-off (PRO-5): an aborted/failed run must NEVER

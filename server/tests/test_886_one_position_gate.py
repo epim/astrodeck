@@ -46,7 +46,8 @@ import astrodeck.sequence.engine as engine_mod
 import astrodeck.sequence.roof as roof_mod
 from astrodeck.auth import (principal_for_role, reset_active_provider,
                             set_active_provider)
-from astrodeck.devices.base import RIG_DOUBT_ATTR, rig_position_known
+from astrodeck.devices.base import (RIG_DOUBT_ATTR, DomeShutterState,
+                                   rig_position_known)
 from astrodeck.devices.sim import SimTelescope
 from astrodeck.mount_offset import (POSITION_UNKNOWN_CODE,
                                     POSITION_UNKNOWN_MOTION_DETAIL)
@@ -630,9 +631,14 @@ async def test_control_a_known_position_parks_and_closes(
 
 class _NoParkRoof:
     """A connected roof that clears the tube wherever it points
-    (``requires_park_before_close`` False)."""
+    (``requires_park_before_close`` False). It reads OPEN and has a name: a
+    run's start reads the roof before the first slew (WP 4.4, #601)."""
     connected = True
     requires_park_before_close = False
+    name = "no-park roof"
+
+    async def shutter_state(self):
+        return DomeShutterState.OPEN
 
 
 def _recorded_close(monkeypatch) -> list[str]:

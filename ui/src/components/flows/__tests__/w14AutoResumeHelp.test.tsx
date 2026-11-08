@@ -360,6 +360,31 @@ test("classic: a field with help is not one <label> around the icon", () => {
   eq(text(lab), AUTO_RESUME_LABEL, "the select is named by the owner's label, and only by it");
 });
 
+// WP 4.4 (#601, #192): WHAT THE BUBBLE ON SCREEN PROMISES ABOUT THE ROOF AND
+// THE COVER. The server opens a motorized roof and dust cover before the
+// night's first slew (`sequence/roof.py open_for_the_night`, at a run start and
+// in ResumeArm's recovery) and does nothing else for them, so the last sentence
+// says that and no more: not the owner's "dome control ... respond to the
+// day/night cycle as well as weather events", and not the "does not yet open"
+// it replaced. RED if either returns, observed against a copy of the help whose
+// last sentence was put back to "It does not yet open the dome or the flat
+// panel's cover for the night.": the bubble's last sentence is not the one the
+// engine keeps.
+for (const which of ["classic", "next"] as const) {
+  test(`${which}: the bubble's last sentence says the roof and cover open before the first slew, and no more`, () => {
+    mount(which);
+    press(which, infoButton());
+    const shown = text(bubble());
+    const last = shown.split(". ").pop();
+    eq(last, "On a rig with a motorized roof or dust cover, it opens them before the first slew of the night, on a resume as on a first start.",
+      "the bubble's last sentence is not the one the engine keeps");
+    assert(!/does not yet open/i.test(shown), "the bubble still says the roof and cover are not opened");
+    assert(!/dome control|flat panel|day\/night|weather events/i.test(shown),
+      "the bubble promises the dome or the flat panel respond to the night or the weather");
+    closeBubble();
+  });
+}
+
 // ------------------------------------------------------------------- report
 act(() => { root.unmount(); });
 const total = passed + failed;

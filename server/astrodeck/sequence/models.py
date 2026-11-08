@@ -626,18 +626,30 @@ class SequencePlan(BaseModel):
     # without the block dumps byte for byte as before). ``SequenceEngine.
     # _dusk_flats`` reads it once a night, before the first light.
     dusk_flats: DuskFlatsPlan | None = None
+    # --- the DOME CONTROL block, as the engine reads it (#602, WP 4.4;
+    # ADDITIVE, and ABSENT from the dump while None, like ``dusk_flats``, so
+    # every plan without the node dumps byte for byte as before). It is the
+    # compiled ``automation["dome"]`` block (``DomePolicy.to_plan()``: the
+    # azimuth choice and the shutter timeout; its ``on_unsafe`` is read and
+    # discarded by ``DomePolicy.from_plan``). ``SequenceEngine.
+    # _open_the_observatory`` and ``ResumeArm._recover`` read it through
+    # ``DomePolicy.from_plan``; None reads as the node's own defaults, the
+    # policy of a rig with no DOME CONTROL node.
+    dome: dict | None = None
 
     @model_serializer(mode="wrap")
     def _omit_an_empty_skip(self, handler: SerializerFunctionWrapHandler):
         """The dump without ``skipped_ids`` when it is empty, and without
-        ``dusk_flats`` when it is None, whatever the mode, and nested in a
-        ``Session`` too. A wrap serializer, so every other field, and the JSON
-        schema, are pydantic's own."""
+        ``dusk_flats`` or ``dome`` when they are None, whatever the mode, and
+        nested in a ``Session`` too. A wrap serializer, so every other field,
+        and the JSON schema, are pydantic's own."""
         out = handler(self)
         if isinstance(out, dict) and not out.get("skipped_ids"):
             out.pop("skipped_ids", None)
         if isinstance(out, dict) and out.get("dusk_flats") is None:
             out.pop("dusk_flats", None)
+        if isinstance(out, dict) and out.get("dome") is None:
+            out.pop("dome", None)
         return out
 
     def total_frames(self) -> int:

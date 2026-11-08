@@ -1999,13 +1999,14 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
             off = int(_finite(raw))
             if off:
                 t += f" ({_signed(off, '+.0f')} min)"
-        # NOT ", opens the dome and binds it to the mount" (#192): nothing in
-        # the engine drives either at arm time - the only open_shutter call is
-        # the reopen after an unsafe close (opt-in, off by default), and
-        # DomePolicy.apply_binding has no caller - so this clause said
-        # something the run would not do. A DOME node's safety effect (the
-        # unsafe-close path) is covered by the "2. the dome" STORY row rather
-        # than repeated here.
+        # NOT ", opens the dome and binds it to the mount" (#192): this is a
+        # function of the flow alone, and the open and the binding happen only
+        # on a rig that HAS a roof or a rotating dome (WP 4.4, #601, #602:
+        # `SequenceEngine._open_the_observatory`, before the first slew, by the
+        # node's own block when the flow has one). A brief that says so for
+        # every flow promises a roof to a rig with none. A DOME node's safety
+        # effect (the unsafe-close path) is covered by the "2. the dome" STORY
+        # row rather than repeated here.
         # THE CLAUSE FOLLOWS THE ENGINE (#192, #603 job A), not the node: no
         # stage runs a DUSK FLATS block, so ", and shoots N flats per filter
         # (...) in the twilight window" promised frames the run would not
@@ -2782,9 +2783,9 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
                          "press RUN, and stops when you stop it", TONE_DIM))
 
     # 2. the dome, which is not the flow's to countermand. NOT "opens,
-    #    azimuth bound to the mount" (#192): nothing drives either - the only
-    #    open_shutter call is the reopen after an unsafe close, opt-in and off
-    #    by default, and DomePolicy.apply_binding has no caller. The close
+    #    azimuth bound to the mount" (#192): the run does both before its first
+    #    slew (WP 4.4, #601, #602), but only a rig with a roof or a rotating
+    #    dome, which this answer, a function of the flow, cannot know. The close
     #    half is what the compile actually enforces: to_plan refuses a DOME
     #    node with a connected dome unless close_dome_on_unsafe is set, so for
     #    any flow that runs with one, this sentence's remainder holds.

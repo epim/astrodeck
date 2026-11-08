@@ -18,11 +18,14 @@ WHAT FAILS, AND WHAT EACH FAILURE MEANS
 * a row whose sentence is no longer shipped: the copy changed under the row;
 * a row that cites a test that does not exist (file, class or function): the
   row is a claim that a test keeps the promise, and no test does;
-* the last sentence is a promise about what the code does NOT do (#192: it does
-  not yet open the dome or the flat panel's cover for the night). It cannot cite
-  a behaviour test, so its row is a check that the thing is still unbuilt. It
-  turns red the day #601 lands, and that is the day this sentence is replaced by
-  the owner's: the tooltip must say what the code does.
+* the last sentence says what the code does for the roof and the dust cover
+  (#601, WP 4.4: with a motorized roof or cover, both are opened before the
+  night's first slew, at a run start and in ResumeArm's recovery), and its row
+  cites the tests that open them. Until #601 it said the opposite, "does not
+  yet open", and its row was a check that nothing opened them; the day the
+  opening landed that check went red and the sentence was replaced. The
+  owner's own sentence (dome control and the flat panel responding to the
+  day/night cycle and the weather) stays out of the copy: it is still untrue.
 
 THE INTERIM TEXT versus THE OWNER'S. The owner's text, quoted in the spec
 (Revision 2, ruling 7) and in #195, is the TARGET wording. The shipped text
@@ -56,10 +59,7 @@ NODE_DEFS_TS = SERVER.parent / "ui" / "src" / "components" / "flows" / "nodeDefs
 LABEL = "Automatic resume on subsequent nights until capture quota is fulfilled"
 
 #: sentence -> the tests of the behaviour it describes, as ``file::[Class::]name``
-#: under ``server/tests``. A sentence that describes something the code does
-#: NOT do cites ``UNBUILT`` instead (see the module docstring).
-UNBUILT = "this file::test_nothing_opens_the_dome_or_the_cover_for_the_night"
-
+#: under ``server/tests``.
 CLAIMS: dict[str, list[str]] = {
     # RESUMES ON LATER NIGHTS, when the window opens, until nothing is owed.
     "When on, AstroDeck resumes this flow automatically on subsequent nights, "
@@ -115,9 +115,23 @@ CLAIMS: dict[str, list[str]] = {
         "test_w14_autoresume_option.py::"
         "test_an_off_flow_keeps_its_arming_for_every_other_ending",
     ],
-    # WHAT IT DOES NOT DO (#192, #601 to #603 open).
-    "It does not yet open the dome or the flat panel's cover for the night.": [
-        UNBUILT,
+    # THE ROOF AND THE COVER OPEN BEFORE THE FIRST SLEW (#601, WP 4.4).
+    "On a rig with a motorized roof or dust cover, it opens them before the "
+    "first slew of the night, on a resume as on a first start.": [
+        # a run start opens the cover, and the roof, before the mount slews
+        "test_w4_4_observatory_envelope.py::"
+        "test_a_sim_night_opens_the_cover_before_the_first_slew",
+        "test_w4_4_observatory_envelope.py::"
+        "test_a_closed_roof_is_opened_before_the_first_slew",
+        # a rig with neither is never asked
+        "test_w4_4_observatory_envelope.py::"
+        "test_a_rig_without_actuators_runs_as_it_always_did",
+        # a resume's recovery opens both before it solves or slews
+        "test_w4_4_observatory_envelope.py::"
+        "test_a_resumed_night_opens_the_roof_and_cover_in_recovery",
+        # one that will not open is refused by name, and nothing moves
+        "test_w4_4_observatory_envelope.py::"
+        "test_a_cover_that_will_not_open_stops_the_run_before_it_slews",
     ],
 }
 
@@ -150,8 +164,6 @@ def _tree(path: Path) -> ast.Module:
 
 def exists(test_id: str) -> str | None:
     """None when ``file::[Class::]name`` names a test that exists, else why not."""
-    if test_id == UNBUILT:
-        return None
     parts = test_id.split("::")
     path = TESTS / parts[0]
     if not path.is_file():
@@ -237,16 +249,17 @@ def test_the_shipped_text_does_not_promise_what_192_says_it_cannot():
     for phrase, why in (
         ("resumes at sunset", "the window opens at the rig's twilight angle "
                               "plus the offset, or at a clock time (#191)"),
-        ("flat panel, dome control", "nothing opens the roof or the cover for "
-                                     "the night, the dome is never bound, and "
-                                     "dusk flats do not run (#192, #601-#603)"),
+        ("flat panel, dome control", "the roof and the cover are opened for "
+                                     "the night and the dome is bound, but "
+                                     "neither follows the day/night cycle or "
+                                     "the weather (#192)"),
         ("respond to the day/night cycle", "nothing does (#192)"),
         ("all work", "nothing does (#192)"),
     ):
         assert phrase not in text, f"the tooltip says {phrase!r}: {why}"
 
 
-# ------------------------------------------------- the one row about what is unbuilt
+# ------------------------------------------ where a roof or a cover is opened
 
 #: The calls that open a roof or a dust cover, by name.
 _OPENERS = {"open_cover", "open_shutter", "open_roof", "open_dome"}
@@ -279,39 +292,35 @@ def _opener_calls(path: Path) -> list[tuple[str, str]]:
     return found
 
 
-def test_nothing_opens_the_dome_or_the_cover_for_the_night():
-    """The row for "It does not yet open the dome or the flat panel's cover for
-    the night." The sentence is true while nothing in the run path opens a roof
-    or a dust cover: ``SequenceEngine`` opens the roof in ONE place, the
-    reopen after an unsafe close (``_await_safe_and_reopen``, opt-in), and
-    neither it, ``ResumeArm`` nor ``DuskArm`` opens either for the night
-    (#601, #602, #603 open; backlog ruling D-16 (owner-approved 2026-09-30)
-    builds it only for a rig with an actuated cover or roof).
+def test_a_roof_or_cover_is_opened_only_where_the_copy_accounts_for_it():
+    """The last sentence of the copy says the roof and cover open before the
+    night's first slew. They are opened in ONE module, ``sequence/roof.py``
+    (``open_for_the_night``), which ``SequenceEngine._open_the_observatory``
+    calls at a run start and ``ResumeArm._recover`` calls in its recovery
+    (#601, WP 4.4). Anywhere else that opens one is something the sentence does
+    not account for, so it fails here until the copy and its row do.
 
-    WHEN THIS GOES RED, #601 (or a sibling) has landed: replace the tooltip's
-    last sentence with the owner's, clause by clause, and move this row to the
-    tests of the behaviour that now exists.
-
-    DELIBERATE PIN CHANGE, BACKLOG WP-134 (#603 job B, wave 17): the DUSK
-    FLATS stage (``_dusk_flats``) re-opens the dust cover AFTER its flats, but
-    only a cover that was open when the stage began: the flats leave it shut
-    (``_panel_off_safe``), and the lights that follow must not be taken
-    through it. That is restoring what it found, not opening the cover for the
-    night, and the tooltip stays true: ``test_w17_dusk_flats_panel.py::
-    test_a_cover_that_was_shut_is_left_shut`` holds the other half. So the
-    one extra opener is listed, by its function, and any other new one still
-    fails here."""
+    The engine's two direct openers are not for the night, and are listed by
+    their function: the reopen after an unsafe close (``_await_safe_and_reopen``,
+    opt-in), and the DUSK FLATS stage (``_dusk_flats``, backlog WP-134), which
+    re-opens the dust cover AFTER its flats, only a cover that was open when the
+    stage began (the flats leave it shut and the lights that follow must not be
+    taken through it): restoring what it found, held by
+    ``test_w17_dusk_flats_panel.py::test_a_cover_that_was_shut_is_left_shut``.
+    ``ResumeArm`` and ``DuskArm`` open nothing themselves."""
     root = SERVER / "astrodeck"
     engine = _opener_calls(root / "sequence" / "engine.py")
     assert engine == [("open_shutter", "_await_safe_and_reopen"),
                       ("open_cover", "_dusk_flats")], (
         f"the engine opens a roof or cover somewhere new: {engine}; the "
-        f"tooltip says it does not yet open the dome for the night")
+        f"tooltip does not account for it")
+    assert _opener_calls(root / "sequence" / "roof.py") == [
+        ("open_cover", "_open_cover")]
     for rel in ("sequence/resume_arm.py", "dusk_arm.py"):
         calls = _opener_calls(root / rel)
         assert calls == [], (
-            f"{rel} opens a roof or cover ({calls}): #601 has landed, so the "
-            f"tooltip's last sentence is no longer true")
+            f"{rel} opens a roof or cover ({calls}) itself: they open through "
+            f"roof.open_for_the_night, and the tooltip accounts for that one")
 
 
 # --------------------------------------------------------------- the parser

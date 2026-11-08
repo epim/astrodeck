@@ -7891,13 +7891,12 @@ def create_app(*, bind_host: str | None = None,
             closes_on_unsafe=bool(_safety.close_dome_on_unsafe))
         if blocking:
             raise HTTPException(409, detail={
-                "detail": "this flow's DOME CONTROL node cannot be honoured "
-                          "yet — the plan carries no dome policy, and this "
-                          "rig's safety settings do not close the roof on an "
-                          "unsafe reading either, so nothing would shut the "
-                          "shutter in the rain. Turn on 'close dome on unsafe' "
-                          "in Settings > Safety (the Remote preset sets it), "
-                          "or remove the dome node to run without a roof.",
+                "detail": "this flow has a DOME CONTROL node, and this rig's "
+                          "safety settings do not close the roof on an unsafe "
+                          "reading, so nothing would shut the shutter in the "
+                          "rain. Turn on 'close dome on unsafe' in Settings > "
+                          "Safety (the Remote preset sets it), or remove the "
+                          "dome node to run without a roof.",
                 "code": "dome_unmapped", "unmapped": blocking})
         # `losses`, not `unmapped`: a note-level entry says the drawn thing IS
         # honoured elsewhere in the engine, so gating on it would make the
@@ -10124,12 +10123,13 @@ def create_app(*, bind_host: str | None = None,
                 # no proof the roof clears the tube.
                 #
                 # ASKED WHATEVER THE LINK SAYS (#888 round 3): a dropped link
-                # is the reset case itself, and `close_observatory` asks no
-                # parked state of a mount that is not connected, so this arm
-                # is the only thing holding a needs-park roof open then. The
-                # tracking stop sends nothing over a dead link and its
-                # read-back says so. A roof that already reads closed is
-                # closed: nothing pages.
+                # is the reset case itself. `close_observatory` reopens a
+                # dropped link once and reads the park state (ruling D-B,
+                # #893), but a mount that was reset reads "parked" at home
+                # wherever the tube is, so what it reads is no proof: this arm
+                # is what holds a needs-park roof open then. The tracking stop
+                # sends nothing over a dead link and its read-back says so. A
+                # roof that already reads closed is closed: nothing pages.
                 if tel is not None and not position_known_for_motion(hub, tel):
                     await engine._quiet_stop_for_unknown_position(
                         ROOF_CLOSE_WITHOUT_PARK, "The roof close")

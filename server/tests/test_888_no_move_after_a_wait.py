@@ -141,18 +141,41 @@ async def test_a_dropped_link_does_not_close_a_needs_park_roof_on_reopen(
     assert len(_left_open(bus_lines)) == 1, bus_lines
 
 
-async def test_control_a_dropped_link_with_a_known_position_closes(
+async def test_control_a_dropped_link_with_a_known_position_closes_over_a_confirmed_park(
         sim_hub, monkeypatch):
-    """CONTROL. The same close with the position known: the roof closes as
-    it did before #888 (``close_observatory``'s own rule for a mount that is
-    not connected)."""
+    """CONTROL. The same close with the position known and the link down:
+    `close_observatory` reopens the link once and reads the park (ruling D-B,
+    #893, WP 4.4). The mount reads parked, so the roof closes. It used to close
+    here without asking anything of a mount that was not connected, which this
+    control pinned as today's behaviour and did not endorse."""
     tel = sim_hub.devices["telescope"]
     _Mount(tel, monkeypatch)
     e = SequenceEngine(sim_hub)
+    tel.rig.parked = True
     monkeypatch.setattr(tel, "connected", False)
     roof = _RealRoof()
     assert await e._close_for_reopen(roof, _REASON) is True
     assert roof.closes == 1
+
+
+async def test_a_dropped_link_with_a_known_position_does_not_close_an_unparked_tube(
+        sim_hub, monkeypatch, bus_lines):
+    """The other half of the control (D-B): the link reopens and the mount
+    reads NOT parked, so the roof is not commanded to close and the refusal is
+    said at error level."""
+    tel = sim_hub.devices["telescope"]
+    _Mount(tel, monkeypatch)
+    e = SequenceEngine(sim_hub)
+    tel.rig.parked = False
+    monkeypatch.setattr(tel, "connected", False)
+    roof = _RealRoof()
+    try:
+        assert await e._close_for_reopen(roof, _REASON) is False
+    finally:
+        _end_retry(e)
+    assert roof.closes == 0, f"the roof closed over the tube: {roof.closes}"
+    assert any(lvl == "error" and "REFUSED" in m
+               for lvl, m, _s in bus_lines), bus_lines
 
 
 def test_a_dropped_link_does_not_close_a_needs_park_roof_from_the_route(

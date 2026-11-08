@@ -1041,14 +1041,17 @@ def dusk_flats_plan(block: Mapping | None, *,
 
 def _automation(compiled: dict, out: list[dict], *,
                 closes_on_unsafe: bool = False) -> None:
-    """Report the automation blocks, none of which ``SequencePlan`` can hold.
+    """Report what of the automation blocks the run does not honour.
 
     These are NOT equivalent losses and are not reported as if they were.
     Losing ``dusk_flats`` means no flats. Losing ``calibration_queue`` means the
-    library does not top up. Losing ``dome`` means a shutter the graph promised
-    would close on unsafe does not exist at run time - and ``DomePolicy``'s own
+    library does not top up. The ``dome`` block is carried into the plan
+    (``SequencePlan.dome``) and the run binds and opens by it; what the plan
+    cannot give a rig is the node's promise to close on unsafe, which rides
+    ``close_dome_on_unsafe`` and nothing in the graph - and ``DomePolicy``'s own
     docstring is emphatic that the roof must never be talked out of shutting.
-    That one is ``danger``, and :func:`blocking_reasons` picks it up.
+    A rig that does not close on unsafe is ``danger``, and
+    :func:`blocking_reasons` picks it up.
     """
     # THE CAMPAIGN BLOCK REACHES MORE THAN THIS NOTE USED TO ADMIT, and
     # over-reporting a loss is the same defect as hiding one. It said the run
@@ -1085,31 +1088,32 @@ def _automation(compiled: dict, out: list[dict], *,
 
     auto = compiled.get("automation") or {}
     if "dome" in auto:
-        # SPLIT ON WHAT THE RIG WILL ACTUALLY DO. This said "nothing will bind
-        # the dome or close it on an unsafe reading" at DANGER, unconditionally.
-        # The close half is false on any rig with `close_dome_on_unsafe` set
-        # (the Remote preset sets it): the engine routes a connected dome
-        # through `roof.close_observatory` on the unsafe teardown, so the node's
-        # one non-negotiable promise is kept - by config rather than by the
-        # node. Saying otherwise sends someone out to a roof that shut hours ago.
-        #
-        # What is genuinely lost either way is the node's own azimuth binding
-        # and shutter timeout: `DomePolicy.apply_binding` and
-        # `DomePolicy.from_plan` have no callers anywhere in the server.
+        # SPLIT ON WHAT THE RIG WILL ACTUALLY DO. The node's own azimuth
+        # choice and shutter timeout now reach the run (WP 4.4, #602:
+        # `to_sequence_plan` carries the block into `SequencePlan.dome`, and
+        # the engine binds and opens by it), so neither is a loss. What the
+        # node promises beyond that is that the roof closes on an unsafe
+        # reading, and that is kept by CONFIG, not by the node: the engine
+        # routes a connected dome through `roof.close_observatory` on the
+        # unsafe teardown only on a rig with `close_dome_on_unsafe` set (the
+        # Remote preset sets it). Saying "will not close" on a rig that closes
+        # sends someone out to a roof that shut hours ago; saying "will close"
+        # on one that does not leaves the roof open in the rain.
         if closes_on_unsafe:
             out.append(_note(
                 "automation.dome",
                 "the roof WILL close on an unsafe reading - this rig's safety "
-                "settings do that for every run, over a parked mount. What "
-                "this node adds does not reach the engine: its azimuth binding "
-                "and shutter timeout are dropped, so a dome that tracks the "
-                "mount will not be told to"))
+                "settings do that for every run, over a parked mount. The "
+                "node's azimuth choice and shutter timeout reach the run: the "
+                "dome is bound (or left in manual) and the roof opened before "
+                "the first slew"))
         else:
             out.append(_note(
                 "automation.dome",
-                "the dome policy compiled correctly but the engine cannot act "
-                "on it yet, so nothing will bind the dome or close it on an "
-                "unsafe reading during this run", "danger"))
+                "the node's azimuth choice and shutter timeout reach the run, "
+                "but nothing will close the roof on an unsafe reading: this "
+                "rig's safety settings do not ('close dome on unsafe' is off)",
+                "danger"))
     if "dusk_flats" in auto:
         out.extend(_dusk_flats_notes(auto["dusk_flats"]))
     if "calibration_queue" in auto:
@@ -2099,6 +2103,12 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
     }
     if _count_mode(built, unmapped) == "accepted":
         fields["count_mode"] = "accepted"
+    # THE DOME CONTROL BLOCK (#602): the azimuth choice and shutter timeout the
+    # node compiled, for `SequenceEngine._open_the_observatory` and
+    # `ResumeArm._recover` to read through `DomePolicy.from_plan`.
+    dome_block = (compiled.get("automation") or {}).get("dome")
+    if dome_block is not None:
+        fields["dome"] = dict(dome_block)
     if groups:
         fields["groups"] = groups
     if left_out:
@@ -2238,8 +2248,8 @@ def blocking_reasons(unmapped: list[dict], *, dome_connected: bool,
                      closes_on_unsafe: bool = False) -> list[dict]:
     """The subset of ``unmapped`` that should stop a run from starting.
 
-    ONE ENTRY QUALIFIES TODAY: a dome policy that the engine cannot act on,
-    when a dome is actually connected. A roof is the only thing in this list
+    ONE ENTRY QUALIFIES TODAY: a DOME CONTROL node on a rig that will not close
+    the roof on an unsafe reading, when a dome is actually connected. A roof is the only thing in this list
     whose absence can damage equipment - everything else costs frames.
 
     ``dome_connected`` is why this is not decided inside
@@ -2253,9 +2263,7 @@ def blocking_reasons(unmapped: list[dict], *, dome_connected: bool,
     if closes_on_unsafe:
         # THE ROOF WILL CLOSE, so refusing the run protects nothing.
         #
-        # The plan still cannot carry the compiled DomePolicy - that part of the
-        # refusal was true - but the sentence that followed it was not: the
-        # engine passes `cfg.safety.close_dome_on_unsafe` into the unsafe
+        # The engine passes `cfg.safety.close_dome_on_unsafe` into the unsafe
         # wind-down, which routes a connected dome through
         # `roof.close_observatory` (never over an unparked mount). So on a rig
         # with that setting on, the DOME CONTROL node's one non-negotiable
@@ -2263,8 +2271,9 @@ def blocking_reasons(unmapped: list[dict], *, dome_connected: bool,
         #
         # Blocking anyway made the advice actively wrong: "remove the dome node"
         # changes nothing about whether the roof closes and throws away the
-        # operator's stated intent. What remains unhonoured is the node's
-        # azimuth binding and shutter timeout, and that is a note, not a wall.
+        # operator's stated intent. The node's azimuth choice and shutter
+        # timeout reach the run either way (`SequencePlan.dome`), so there is
+        # nothing else of the node left to report as lost.
         return []
     return [u for u in unmapped if u["key"] == "automation.dome"]
 

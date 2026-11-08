@@ -8,8 +8,8 @@ connected. The 409 said:
     "the plan carries no dome policy, so nothing would close the shutter on an
      unsafe reading. Remove the dome node to run the rest of the flow."
 
-The first clause is true - `SequencePlan` has nowhere to put the compiled
-`DomePolicy`. The second is FALSE on any rig with `close_dome_on_unsafe` set
+The first clause was true then - `SequencePlan` had nowhere to put the compiled
+`DomePolicy` (it has now, WP 4.4: `SequencePlan.dome`). The second is FALSE on any rig with `close_dome_on_unsafe` set
 (the Remote preset sets it): `engine._run` passes that flag into the unsafe
 wind-down, which routes a connected dome through `roof.close_observatory` -
 never over an unparked mount. The node's one non-negotiable promise is kept, by
@@ -25,10 +25,11 @@ FAIL-CLOSED IS PRESERVED. With the setting off the block still fires, because
 then the sentence is true. What changes is the advice: turn the setting on, not
 delete the node.
 
-WHAT IS GENUINELY LOST EITHER WAY is the node's own azimuth binding and shutter
-timeout. `DomePolicy.apply_binding` and `DomePolicy.from_plan` have no callers
-anywhere in the server, so a dome that should track the mount will not be told
-to. That is a note, not a wall.
+WP 4.4 (#602) RE-PINNED THE LAST PARAGRAPH. What used to be lost either way,
+the node's own azimuth binding and shutter timeout, now reaches the run through
+`SequencePlan.dome`, so the note says that and no longer calls it a loss; the
+sentinel at the bottom now holds the callers of `from_plan` and `apply_binding`
+to the places that read the plan.
 """
 from __future__ import annotations
 
@@ -83,7 +84,7 @@ class TestTheNoteSaysWhichHalfIsLost:
         _p, un = self._campaign(False)
         row = [u for u in un if u["key"] == "automation.dome"][0]
         assert row["level"] == "danger"
-        assert "close it on an unsafe reading" in row["detail"]
+        assert "nothing will close the roof on an unsafe reading" in row["detail"]
 
     def test_with_the_setting_on_it_stops_claiming_the_roof_stays_open(self):
         _p, un = self._campaign(True)
@@ -93,12 +94,17 @@ class TestTheNoteSaysWhichHalfIsLost:
             "someone out to a shutter that shut hours ago")
         assert "WILL close" in row["detail"]
 
-    def test_it_still_names_what_IS_lost(self):
-        """The guard against the fix becoming an overclaim in the other
-        direction. Binding and timeout genuinely do not reach the engine."""
-        _p, un = self._campaign(True)
-        detail = [u for u in un if u["key"] == "automation.dome"][0]["detail"]
-        assert "binding" in detail and "timeout" in detail, detail
+    def test_it_names_what_now_REACHES_the_run(self):
+        """Re-pinned by WP 4.4 (#602): it used to name the node's binding and
+        timeout as LOST. They reach the run now (`SequencePlan.dome`), so the
+        row says so, in both settings, and does not call them dropped."""
+        for closes in (True, False):
+            _p, un = self._campaign(closes)
+            detail = [u for u in un
+                      if u["key"] == "automation.dome"][0]["detail"]
+            assert "azimuth choice" in detail and "shutter timeout" in detail
+            assert "reach the run" in detail, detail
+            assert "dropped" not in detail, detail
 
     def test_the_dome_row_never_disappears(self):
         """Whichever way the setting is set, the operator is told something
@@ -109,25 +115,29 @@ class TestTheNoteSaysWhichHalfIsLost:
                 f"the dome node vanished from the report at closes={closes}")
 
 
-class TestTheThingsNothingHonoursStayHonest:
-    def test_apply_binding_and_from_plan_have_no_callers(self):
-        """The claim the note rests on, checked rather than remembered. If
-        either grows a caller, the note's "binding is dropped" clause becomes
-        the next stale sentence and this test is what says so.
+class TestTheDomePolicyIsReadOnlyWhereThePlanIsRead:
+    def test_apply_binding_and_from_plan_have_only_the_callers_that_read_the_plan(
+            self):
+        """Re-pinned by WP 4.4 (#602). It held that neither function had a
+        caller, as the sentinel for the unmapped note that said binding was
+        dropped. They have callers now, and the note says the node reaches the
+        run; this holds the callers to the three places that should have them,
+        so a fourth reader of the block, or the binding called from somewhere
+        that does not read the plan, is seen:
 
-        THE AST, NOT A SUBSTRING SEARCH. The first version grepped the text and
-        failed instantly - on the comment in `to_plan.py` that names these two
-        functions while explaining that nothing calls them. That is defect #197
-        in this repo's own backlog ("test_routes_have_callers is fooled by a
-        path inside a comment"), reproduced from scratch, which is a fair
-        indication of how easy the mistake is. Attribute nodes cannot appear in
-        a comment.
+        * ``SequenceEngine._open_the_observatory`` and ``ResumeArm._recover``
+          read the plan's block (``from_plan``);
+        * ``roof.bind_dome`` binds (``apply_binding``).
+
+        THE AST, NOT A SUBSTRING SEARCH: the first version of the original
+        grepped the text and failed on a comment (#197). Attribute nodes
+        cannot appear in a comment.
         """
         import ast
         import pathlib
         root = pathlib.Path(__file__).resolve().parents[1] / "astrodeck"
         watched = {"apply_binding", "from_plan"}
-        hits: list[str] = []
+        hits: set[str] = set()
         for p in root.rglob("*.py"):
             if p.name == "base.py" and p.parent.name == "devices":
                 continue          # the definitions themselves
@@ -137,10 +147,6 @@ class TestTheThingsNothingHonoursStayHonest:
                 continue
             for node in ast.walk(tree):
                 if isinstance(node, ast.Attribute) and node.attr in watched:
-                    hits.append(f"{p.name}:{node.lineno} .{node.attr}")
-        # `from_plan` is a common enough name that a same-named method elsewhere
-        # would be a false positive; report what was found rather than a bare
-        # count so the next reader can tell the two apart.
-        assert not hits, (
-            f"something now reaches the dome binding path, so the unmapped "
-            f"note claiming it is dropped has gone stale: {hits}")
+                    hits.add(f"{p.name} .{node.attr}")
+        assert hits == {"engine.py .from_plan", "resume_arm.py .from_plan",
+                        "roof.py .apply_binding"}, hits

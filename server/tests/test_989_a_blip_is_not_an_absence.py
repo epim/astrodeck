@@ -475,21 +475,37 @@ async def test_the_roof_refuses_while_the_mount_link_is_still_down(build):
     assert any("REFUSED" in m for _l, m, _s in seen), seen
 
 
-async def test_control_a_mount_nobody_connected_is_not_asked(build):
-    """CONTROL: the contract test_888 pins stays: a mount that is not connected
-    and not in doubt (never connected, disconnected on purpose) is not asked,
-    and the roof closes.
+async def test_control_a_mount_nobody_connected_is_reopened_once_and_read(build):
+    """CONTROL, re-pinned by WP 4.4 (ruling D-B, #893). It used to pin that a
+    mount that is not connected and not in doubt (never connected,
+    disconnected on purpose) was not asked and the roof closed. A roof that
+    needs a parked tube now never closes without a confirmed park, whatever
+    the link says: the link is reopened once and the park read. This mount
+    reopens and reads parked, so the roof closes, and it was asked.
 
     MUTANT M20 "everything counts as present": ``is_present`` in base.py made
-    ``return True``: RED (observed), the roof refused.
+    ``return True``: the link is never reopened, ``assert tel.connected`` RED.
     """
-    server = FakeAlpaca(atpark=False)
+    server = FakeAlpaca(atpark=True)
     tel = build("telescope", server, connected=False)
     roof, (_seen, log) = _Roof(), _lines()
 
     assert await close_observatory(roof, tel, log=log) is True
     assert roof.closed is True
-    assert server.calls == []
+    assert tel.connected is True, "the link was never reopened"
+    assert server.calls, "the park state was never read"
+
+
+async def test_a_mount_nobody_connected_that_reads_unparked_keeps_the_roof_open(
+        build):
+    """The same mount reading NOT parked after the reopen: refuse."""
+    server = FakeAlpaca(atpark=False)
+    tel = build("telescope", server, connected=False)
+    roof, (seen, log) = _Roof(), _lines()
+
+    assert await close_observatory(roof, tel, log=log) is False
+    assert roof.closed is False
+    assert any("REFUSED" in m for _l, m, _s in seen), seen
 
 
 # ==========================================================================

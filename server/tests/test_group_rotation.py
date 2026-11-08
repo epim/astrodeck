@@ -190,6 +190,12 @@ async def test_a_plan_without_groups_runs_byte_for_byte_as_before(
     plan = (_golden_as_recorded() if name == "golden"
             else plain_mosaic_plan())
     t0 = GOLDEN_T0 if name == "golden" else T0
+    # A RIG WITH NO ROOF AND NO COVER, which is what the trace was recorded on
+    # (WP 4.4, #601): a run now opens a shut cover and a closed roof before its
+    # first slew and says so on the log, lines the recorded trace never held.
+    # A rig with neither is asked nothing, and its run is what it always was.
+    group_hub.devices.pop("covercalibrator", None)
+    group_hub.devices.pop("dome", None)
     night = await _night(group_hub, monkeypatch, plan, wall_s=120.0, t0=t0)
     assert night.done, f"premise: the run ended: {night.trace[-3:]}"
     got, want = night.trace_text(), _expected_trace(name)
