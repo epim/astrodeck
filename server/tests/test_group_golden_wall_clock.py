@@ -140,6 +140,10 @@ async def test_the_golden_night_is_the_same_at_every_hour_of_the_wall_clock(
         "premise: the hub was connected under the shifted wall clock")
     assert abs(_where(_golden_ra()) - WALL[wall]) < 1.0 / 60.0, (
         "premise: the wall clock puts NGC 7331 where the case says")
+    # The golden is about the wall clock, not the envelope (WP 4.4): a run now
+    # opens a shut cover and says so, which the recorded trace never held.
+    group_hub.devices.pop("covercalibrator", None)
+    group_hub.devices.pop("dome", None)
     night = await _run(group_hub, monkeypatch, _golden_as_recorded(),
                        GOLDEN_T0)
     assert night.done, f"premise: the run ended: {night.trace[-3:]}"

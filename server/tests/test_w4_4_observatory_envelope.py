@@ -418,8 +418,47 @@ async def test_a_roll_off_roof_has_nothing_to_bind_and_says_so():
     await rig["dome"].connect()
     logs, log = _spy()
 
-    assert await bind_dome(rig["dome"], log=log) is None
+    assert await bind_dome(rig["dome"], log=log,
+                           policy=DomePolicy()) is None
     assert any("no bindable azimuth" in msg for _l, msg, _s in logs), logs
+
+
+async def test_with_no_policy_a_roll_off_roof_is_not_worth_a_line():
+    """No DOME CONTROL node, so the operator never chose "Slave to mount":
+    "has no effect" would describe nothing they did. Silent, and nothing is
+    commanded.
+
+    MUTANT S1 "always the node's policy" (the engine passes
+    ``DomePolicy.from_plan({})`` for a plan with no block, see the engine
+    test below): the line is said every night, RED.
+    """
+    rig = build_sim_rig()
+    await rig["dome"].connect()
+    logs, log = _spy()
+
+    assert await bind_dome(rig["dome"], log=log, policy=None) is None
+    assert logs == [], logs
+
+
+async def test_with_a_nodes_policy_a_roll_off_roof_says_it_has_no_effect():
+    """A node was drawn and its Slave to mount cannot take: say so."""
+    rig = build_sim_rig()
+    await rig["dome"].connect()
+    logs, log = _spy()
+
+    assert await bind_dome(rig["dome"], log=log, policy=DomePolicy()) is None
+    assert any("no bindable azimuth" in msg for _l, msg, _s in logs), logs
+
+
+async def test_with_no_policy_a_bindable_dome_is_bound_with_the_defaults():
+    rig = build_sim_rig()
+    dome = SimRotatingDome(rig["_rig"])
+    await dome.connect()
+    logs, log = _spy()
+
+    assert await bind_dome(dome, log=log, policy=None) is None
+    assert await dome.get_bound() is True
+    assert any("bound" in msg for _l, msg, _s in logs), logs
 
 
 async def test_a_dome_that_claims_to_bind_and_refuses_is_a_refusal():
@@ -1070,6 +1109,29 @@ async def test_the_nodes_manual_choice_reaches_the_run(sim_hub, temp_store):
     assert engine.state.get("state") == "complete", engine.state
     assert await rotating.get_bound() is False, (
         "the dome was bound though the node says Manual")
+
+
+async def test_a_run_with_no_dome_node_says_nothing_of_a_dome_that_cannot_bind(
+        sim_hub, temp_store, bus_lines):
+    """The sim roof is a roll-off roof. A plan with no DOME CONTROL node says
+    nothing about binding it; the same plan with the node says it has no
+    effect.
+
+    MUTANT S1 "always the node's policy" (``_open_the_observatory`` passing
+    ``DomePolicy.from_plan(plan.dome or {})``): the first half is RED.
+    """
+    _safety(temp_store, enabled=False, min_alt_deg=0.0)
+    engine = SequenceEngine(sim_hub)
+    engine.start(_compiled_plan())
+    assert await _wait_for(lambda: not engine.running), engine.state
+    assert not [m for _l, m, _s in bus_lines if "bindable azimuth" in m], (
+        bus_lines)
+
+    bus_lines.clear()
+    engine = SequenceEngine(sim_hub)
+    engine.start(_compiled_plan_with_a_dome())
+    assert await _wait_for(lambda: not engine.running), engine.state
+    assert [m for _l, m, _s in bus_lines if "bindable azimuth" in m], bus_lines
 
 
 async def test_the_nodes_shutter_timeout_reaches_the_run(

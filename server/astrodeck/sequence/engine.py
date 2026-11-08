@@ -22321,7 +22321,10 @@ class SequenceEngine:
             return
         from .roof import bind_dome, open_for_the_night
         dome = self.hub.devices.get("dome")
-        policy = DomePolicy.from_plan(plan.dome or {})
+        # None without a DOME CONTROL node: nobody chose "Slave to mount", so a
+        # dome that cannot bind is not worth a line every night (`bind_dome`).
+        policy = (DomePolicy.from_plan(plan.dome) if plan.dome is not None
+                  else None)
         reason = await bind_dome(dome, log=bus.log, policy=policy)
         if reason is None:
             reason = await open_for_the_night(

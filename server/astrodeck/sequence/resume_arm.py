@@ -2484,7 +2484,8 @@ class ResumeArm:
             reason = await open_for_the_night(
                 self.hub.devices.get("dome"),
                 self.hub.devices.get("covercalibrator"), log=bus.log,
-                policy=DomePolicy.from_plan(session.plan.dome or {}))
+                policy=(DomePolicy.from_plan(session.plan.dome)
+                        if session.plan.dome is not None else None))
             if reason is not None:
                 return reason
 

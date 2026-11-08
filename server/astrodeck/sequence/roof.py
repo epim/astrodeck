@@ -259,13 +259,18 @@ async def bind_dome(
     """Put a dome's azimuth under the mount (#602), through
     ``DomePolicy.apply_binding``, and say what that did.
 
-    None when it did, or when there is nothing to bind: a roll-off roof has no
-    azimuth and the line says so, a rig with no dome is not asked. A dome that
+    None when it did, or when there is nothing to bind: a rig with no dome is
+    not asked, and a roll-off roof has no azimuth. With a ``policy`` (the
+    plan carried a DOME CONTROL node) that roof's line says the node's
+    "Slave to mount" has no effect; with none (no node, so nobody chose it)
+    it is silent, and a dome that can bind is still bound by the defaults. A dome that
     claims it can bind and then refuses is the reason this returns, naming it:
     an OTA that spends the night looking at the dome wall while every readout
     says bound is the failure a refusal is for. Never raises for a device that
     fails."""
     if dome is None or not is_present(dome):
+        return None
+    if policy is None and not getattr(dome, "can_bind", False):
         return None
     try:
         line = await asyncio.wait_for(
