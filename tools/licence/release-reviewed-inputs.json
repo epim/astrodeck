@@ -44,14 +44,14 @@
     },
     {
       "path": "server/astrodeck/api/app.py",
-      "sha256": "3b3d4403ab178ddacf9dad9f9f53bc0cc908605ac509ae98968d7cf2428eafa6",
-      "review": "Read the complete diff from b3ce0f1b: horizon_bins carried through the location create, update, apply and active-site write-through routes (#1117); the stacking-bundle routes build the bundle on a worker thread with a light_rotator_angle reader of the ROTMECH FITS card (#784, #825); the calibration health route computes a flow's demand once per revision through DemandCache (#827); the flow progress route adds owes_more for a complete session (#778, #1112); trust_position audit lines carry category attest (#794). First-party route code; astropy is already a dependency and is imported lazily as elsewhere in the file.",
+      "sha256": "3a0cdbe042f32f763b4a21a122152d000e4d0ab081abe580e466685321a6b7c2",
+      "review": "Read the complete diff from the 0.3.47 reviewed state. Application routes and wiring: the start routes refuse while a Windows restart is pending unless acknowledged and a new POST /api/rig/restart/acknowledge route (#1076); GET and POST /api/locations/horizon-suggestion (learned horizon, view.site_derived only, #599); GET /api/sequence/stack/mosaic.jpg (#779); the frames CSV columns derived from FrameRecord (#795); max_time_min on the flow wizard body (#1094); follow_solver on the WCS stamp body (#826); the retry-set-aside route resolves against the card's plan (#809); halt reasons passed to bump_motion_epoch. First-party code and comments only, no dependency or data.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
       "path": "server/astrodeck/config.py",
-      "sha256": "5d2e183ad9fcf878b3eebdc10a1978d97cd630ad412b8cc68265523ecc2ae9de",
-      "review": "Read the complete diff from b3ce0f1b: SafetyConfig gains horizon_bins (sanitized on load, a note beside the horizon and not a safety input, #1117), set_safety drops bins that arrive with a changed line, and a load-time warning names an unusable dead-man's-switch url without printing it (#831). First-party; the horizon_bins sanitizer is imported lazily from locations.",
+      "sha256": "8e061b6ffe5331e7ca923a9eae72927d855775fbda35d578e35dd2193c401aad",
+      "review": "Read the complete diff from the 0.3.47 reviewed state. WCS stamping follows the plate solver until the operator changes it (#826, owner ruling D-I): a solve_saved_lights_by_hand field with a before-validator that reads an older config's stored value as the evidence, _solver_configured (ASTAP found) and _follow_the_solver on every load path, and set_wcs_stamp takes follow_solver. First-party code; the one import is the project's own find_astap.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
@@ -68,8 +68,8 @@
     },
     {
       "path": "server/astrodeck/hub.py",
-      "sha256": "17e74cd28a00f5dfb1cffbbeca0c395661235bc4cc0504d0cd8e3cc88468ed91",
-      "review": "Read the complete diff from b3ce0f1b: two plate-solve wheel-return warnings are reworded to say the focus offset follows the filter the solve left loaded (#817), and a camera-rotation warning is shown only for a guider that guides through the imaging sensor, via _rotation_touches_guide_calibration (#1066). First-party.",
+      "sha256": "d6930e294d7e38ab7b60213082cab66250de5163cae9cee7130751062ea5004a",
+      "review": "Read the complete diff from the 0.3.47 reviewed state. Hub gains HALT_* causes with bump_motion_epoch(cause) and operator_halted_since (WP 3.1, #880), arm_refusal and acknowledge_restart for a pending Windows restart (#1076), and a restart block in poll_status. First-party code and comments; the restart facts come from bootcause.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
@@ -80,20 +80,20 @@
     },
     {
       "path": "server/astrodeck/sequence/engine.py",
-      "sha256": "2fa78cab050dc09caa0f8482807bc55943fdbe17c6c23070b4bb63958c719b66",
-      "review": "Read the complete diff from b3ce0f1b: guide-RMS verdicts over the frame's own exposure samples, a hold and bounded retry spells while guiding is over the ceiling, and a settle wait after a guiding start (#1096); frame classification names the cause of a failed centring and stops a target on a missing plate solver (#1108, #1093, #721); ledger entries carry eccentricity, reject reason and guide verdict (#1095); the angle check uses allowed_error (#787, #828); inactive-guider words (#1078). First-party engine logic.",
+      "sha256": "5b9bd8461d81d070fdcede66aba48b4ee5922fe1e16c6fc71f8f6226e7989019",
+      "review": "Read the complete diff from the 0.3.47 reviewed state (about 720 added lines). Engine logic and operator-facing text only: the recovery ladder at a centring (_recover_centring, home leg, imports sequence/recovery.py, #1109), the operator-halt pause (D-A, #880), the target maximum time (TargetTimeUp, _enforce_time_bound, planned endings promote the queued session, #1094, #598), flow stage status publishing (#464, #1125), opening the dome and roof before the first slew (#601, #602), mosaic and panel ids on frame records (#796), and horizon-learner calls (#599). First-party code; no new dependency, data or third-party text.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
       "path": "server/astrodeck/sequence/resume_arm.py",
-      "sha256": "8226aaf99ea103532a54bc3a44035bd722db001af122ef5b47c807499ade0d5a",
-      "review": "Read complete immutable 6e8..e764 diff: removes an obsolete exception fallback that returned ready from gating_status. Existing scheduling logic; no third-party material.",
+      "sha256": "040a885c0859dfbe8d14e339beee301ecfb9a3d62d5a3e9bc56aad0decc96115",
+      "review": "Read the complete diff from b3ce0f1b (the ledger row for this path was an older review and does not match the 0.3.47 tree, so the base is the comparison). Auto-resume gains the pending Windows restart hold (#1076), opens the roof and dust cover before the first solve (#601, #192), and an operator halt under its re-centre disarms the session (#880, D-A) through a shared _write_disarm. First-party code and text.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
       "path": "server/astrodeck/sequence/session.py",
-      "sha256": "ff6b8fc69a9f8b3fb313ec103cac5073124ccf5188ada630e4962a63e1eab490",
-      "review": "Read the complete diff from b3ce0f1b: SessionFrame gains reject_reason and guide_verdict, omitted from the file when absent by a wrap serializer (#1095, #1096); Session gains owed_under and owes_more; a docstring is updated (#778, #1112). First-party.",
+      "sha256": "4e9c137d80eb990a6b8535106f12650d982f909d73be387ebadcd831d5fc2212",
+      "review": "Read the complete diff from the 0.3.47 reviewed state. Adds mosaics_of(plan) and a mosaics list on a session's index row for the shelf card's chip (#188); it imports naming.panel_label. First-party code.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
@@ -182,8 +182,8 @@
     },
     {
       "path": "ui/src/next/hubs/session/flows/canvas/FlowStagesPhoneSheet.tsx",
-      "sha256": "cf93a2436885f8ceace952f23345b107ea84597d4e2da4ce14df17cf4bb746fd",
-      "review": "Read the complete diff from b3ce0f1b: adds UNDO and REDO ActionButtons above ADD STAGE in the phone stages sheet, on the store's flowsUndo and flowsRedo with undoReason and redoReason (#771). First-party.",
+      "sha256": "a8d772cbc367ddf562a67910c26250139857dd6f457efb6b27184f4805fff179",
+      "review": "Read the complete diff from the 0.3.47 reviewed state. StageRow reads its status through useStageStatus and no longer takes a runLive prop (#464, #1125). First-party code.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
@@ -194,8 +194,8 @@
     },
     {
       "path": "ui/src/next/hubs/settings/tuning/files/filesModel.ts",
-      "sha256": "9b3a5e5bad859d576e55854066deb752624a9442a7d581188104ca3deeb9c47f",
-      "review": "Read complete immutable 6e8..e764 diff: removes the duplicate naming sample and uses shared synthetic PREVIEW_SAMPLE. No external material.",
+      "sha256": "4cd6d3cfc5ed1bab65705e983729758a9a883fff382614c720261a2fbac78ae8",
+      "review": "Read the complete diff from b3ce0f1b (the ledger row for this path was an older review, so the base is the comparison). The WCS stamp help sentence drops 'so it is off by default' and a comment points at the shared follows-the-solver wording (#826). First-party copy.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
@@ -246,8 +246,8 @@
     },
     {
       "path": "ui/src/components/flows/FlowCanvas.tsx",
-      "sha256": "ec94a3b64cccfb6f23f8daa9c23967a4fb008905d69823b114e9b50d0e67b0cd",
-      "review": "Read the complete diff from b3ce0f1b: the canvas key handler goes through the new editorKeyAction (lib/keys.ts) instead of testing e.key directly, so Ctrl+F and Ctrl+Backspace are the browser's (#769), and the float's UNDO/REDO pair is replaced by the shared FlowHistoryButtons component. First-party editor logic; the pre-existing comment text moved with it."
+      "sha256": "fa474c6e4079fe83f535855c6d9014674ce6daf1784be7546aef317f229d3fdf",
+      "review": "Read the complete diff from the 0.3.47 reviewed state. One comment block rewritten: stage status now reaches the cards through useStageStatus (#464, #1125). Comment-only change; first-party."
     },
     {
       "path": "ui/src/components/flows/FlowHistoryButtons.tsx",
@@ -261,8 +261,8 @@
     },
     {
       "path": "ui/src/components/flows/FlowWizard.tsx",
-      "sha256": "4a4a687a216cc132e474c900629363087b30d4ac3028c161dce9d11b3e1acac8",
-      "review": "Read the complete diff from b3ce0f1b: adds two answers to the classic Send to Flow wizard, HOW DOES THE NIGHT END (Dawn or Clock time with an HH:MM field) and Automatic resume (On or Off), reusing the #/next wizardModel constants and wizardBody, and blocks GENERATE with nightGap when a Clock time stop has no time (#718). First-party React and copy."
+      "sha256": "a3dc7210713d8cd7572596c358f162a58459176ccfbd86d100990fc535830120",
+      "review": "Read the complete diff from the 0.3.47 reviewed state. The classic wizard asks MOST MINUTES ON THE TARGET for a single target (asksMaxTime, nightGap takes the kind, #1094). First-party code and copy."
     },
     {
       "path": "ui/src/components/flows/runCopy.ts",
@@ -271,18 +271,18 @@
     },
     {
       "path": "ui/src/components/flows/wizard/nightAnswers.ts",
-      "sha256": "f7df821449eeb97537b149fdf74e0292ee39935fc5ba506d1e531267ba5ecb8e",
-      "review": "New file, read in full: a dependency-free leaf holding CLOCK_TIME, DUSK_STOPS, clockOf and NEED_STOP_CLOCK, moved out of wizardModel.ts so the NEW FLOW sheets share them without the framing imports (#718). First-party, project header, imports nothing."
+      "sha256": "c87d8548c814059e786273155a89cbb0e23cfbf6bf18dfbcacf4528c52826af2",
+      "review": "Read the complete diff from the 0.3.47 reviewed state. Adds MAX_TIME_MAX_MIN, maxTimeOf, maxTimeUnreadable and NEED_MAX_TIME for the target time bound answer (#1094). First-party code."
     },
     {
       "path": "ui/src/components/flows/wizard/wizardModel.ts",
-      "sha256": "790ce55373e659a0f6ee8e25f0cdfff2db766c257765d95a7386decfeeab485f",
-      "review": "Read the complete diff from b3ce0f1b: the four constants above are deleted here and re-exported from the new nightAnswers.ts leaf; no behaviour change. First-party."
+      "sha256": "e15db184fad1495d911250337e3ff8dbeaee105dcd6b9011b5e525b1e2fc3181",
+      "review": "Read the complete diff from the 0.3.47 reviewed state. The wizard answers gain maxTime, validated, sent as max_time_min for non-mosaic flows and shown in nightWords (#1094). First-party code."
     },
     {
       "path": "ui/src/lib/flowsApi.ts",
-      "sha256": "e577fbfa06c0a4436428bbf0da65366b2ff989d34cfeaaac5ca34d1d53ee4a4b",
-      "review": "Read the complete diff from b3ce0f1b: FlowProgressSession gains an optional owes_more boolean with its doc comment (server field added by #778, #1112). First-party type."
+      "sha256": "3bbe21ac9ff5ead08739e359f2bdc38edc451f9252daa86744276fdbda17df22",
+      "review": "Read the complete diff from the 0.3.47 reviewed state. The wizard body type gains max_time_min with its doc comment (#1094). First-party typing."
     },
     {
       "path": "ui/src/lib/keys.ts",
@@ -291,18 +291,18 @@
     },
     {
       "path": "ui/src/next/hubs/session/flows/canvas/FlowCanvasSurface.tsx",
-      "sha256": "dec92550fbaab85ba586c58fb32ebb67b739ae127328df4ff8fd9d0f04c1b1ca",
-      "review": "Read the complete diff from b3ce0f1b: the #/next canvas key handler goes through editorKeyAction and a switch on the action, with fit alone allowed under a sheet (#769). First-party."
+      "sha256": "01d018ce76dda4acdaf114955af53766bf65fb0c7e508a93cf4f1f3b9313c5b0",
+      "review": "Read the complete diff from the 0.3.47 reviewed state. One comment block rewritten: stage statuses reach the cards through useStageStatus (#464, #1125). Comment-only; first-party."
     },
     {
       "path": "ui/src/next/hubs/session/flows/create/wizard.tsx",
-      "sha256": "a69252e053d4aab3beafdf4973a4cb67e624faa24b83839d7607dcae482fd50b",
-      "review": "Read the complete diff from b3ce0f1b: the #/next NEW FLOW sheet gains the two night questions (how the night ends, Automatic resume) as Segmented controls with a stop-clock field, and posts wizardBody (#718). First-party React and copy."
+      "sha256": "97040d3c5e1fb3cf7e83acdf7ec509969f125a4f6064db74ae3fc7100ae591b6",
+      "review": "Read the complete diff from the 0.3.47 reviewed state. The new-flow wizard asks MOST MINUTES ON THE TARGET for a single target (asksMaxTime, nightGap takes the kind, #1094). First-party code and copy."
     },
     {
       "path": "ui/src/next/hubs/session/flows/create/wizardModel.ts",
-      "sha256": "356e0a45d557b62e1d2278208a17e64a8ec199eca8b3e89a302642df73c88ed9",
-      "review": "Read the complete diff from b3ce0f1b: adds NightAnswers, NIGHT_DEFAULTS, STOP_SUB, RESUME_SUB, nightGap and wizardBody, which sends the night answers only when they differ from DUSK WINDOW's defaults (#718). First-party pure logic."
+      "sha256": "062e9aab4e3918a3fdcbeacaef40cee21987f17cde1786f258e1414408adbe93",
+      "review": "Read the complete diff from the 0.3.47 reviewed state. Adds the maxTime answer, asksMaxTime, the unreadable-bound gap and max_time_min in the generated body (#1094). First-party code."
     },
     {
       "path": "ui/src/next/hubs/sky/frame/FramingCard.tsx",
@@ -316,8 +316,8 @@
     },
     {
       "path": "ui/src/next/hubs/sky/sheets/horizon.tsx",
-      "sha256": "f16429f438b77f3dcaeb7d5b2390f94905f223f285b1c96e8cd41c3445d9c7e5",
-      "review": "Read the complete diff from b3ce0f1b: the horizon sheet loads, saves and draws the per-bin status of a scanned line (horizonBins), drops it when the line is edited by hand, marks unmeasured bins on the strip, and words the view-angle source as measured, your estimate or estimated (#904, #903, #1117). First-party React."
+      "sha256": "8a161f1189ae639be3ca57f780af95f4008b71bfc052715fdc3dc287599ee8a7",
+      "review": "Read the complete diff from the 0.3.47 reviewed state. The horizon sheet mounts HorizonSuggestionOffer and reloads its line after an accept (#599), and finishes the scan's north before the picture and line are read (sweep.finishNorth, declination only for a role that may see precise coordinates, #905). First-party code."
     },
     {
       "path": "ui/src/next/hubs/sky/sheets/horizonBins.ts",
@@ -326,8 +326,8 @@
     },
     {
       "path": "ui/src/next/hubs/sky/sheets/photosphere.ts",
-      "sha256": "c559cc194b7cad36ee2c453365b117d5386168028cc1d4a3f93e2e4bb893fbf1",
-      "review": "Read the complete diff from b3ce0f1b: frames whose overlap test cannot decide are held and counted only once a later frame vouches for them (#904), bin sampling spans the whole bin width with 36 subcolumns (#900), the lens view angle records its source default, user-estimate or measured and stored lens profiles migrate (#903), the alignment report carries a capture-log summary (#902), and SkyTrace carries bins. First-party scanner logic with its own constants; no external algorithm or data."
+      "sha256": "e31baaaae1933dd6dad9ade37b12c68e4449d6e6217aae6f69ae105151b09e98",
+      "review": "Read the complete diff from the 0.3.47 reviewed state. The panorama scanner measures a frame the overlap cannot decide on by its pose when the pose descends from a recent image-confirmed frame and the sky below it is blue and as bright (poseVouch, consistentWithSky, #1179), and finishNorth turns the saved azimuths by the robust mean of the compass offsets (#905), reported without the declination. First-party algorithm code; thresholds are the project's own measured constants."
     },
     {
       "path": "ui/src/next/hubs/sky/sheets/quick.tsx",
@@ -396,8 +396,8 @@
     },
     {
       "path": "server/astrodeck/flows/compile.py",
-      "sha256": "cb9ad5c10baecd315cd6df362bf73cf3d7f9433c4fa15520dacd7beb49c839f8",
-      "review": "Read the complete diff from b3ce0f1b: a docstring about the campaign until shape is reworded to say the to_plan note was deleted with the shape (#772). Comment only."
+      "sha256": "ba599d62fff4987e67648fad3e6382b951010d5f4a19d0078490006e69e6a197",
+      "review": "Read the complete diff from the 0.3.47 reviewed state. The target entry carries max_time_min when the block's maxTime is a positive finite number (#1094); flows without it compile as before. First-party code."
     },
     {
       "path": "server/astrodeck/flows/continuation.py",
@@ -411,13 +411,13 @@
     },
     {
       "path": "server/astrodeck/flows/to_plan.py",
-      "sha256": "d73544776af16cbf70c845be9e0ab4143b36936e757f433f9f71b8d7630932e0",
-      "review": "Read the complete diff from b3ce0f1b: the campaign note loses its nights_30 branch (that shape no longer exists, #772) and the park-and-close loss note names the Settings > Safety 'Close roof at end-of-night' option. First-party copy."
+      "sha256": "20b264fc41d8ac1f761c2da0b5e63452a8ef0448e90985d8a5dcf80a7ba0c389",
+      "review": "Read the complete diff from the 0.3.47 reviewed state. Carries the target's max_time_min (_time_bound, bounded to 1440, #1094), stamps each step's stage and the target's block from node ids (#464), and carries the DOME CONTROL block into SequencePlan.dome (#602) with the dome notes reworded to match. First-party code and message text."
     },
     {
       "path": "server/astrodeck/flows/tonight.py",
-      "sha256": "9cc8295e61e35aedcc6c45e06bf5d25160b10df790745f7a73d7b10adac5cfcc",
-      "review": "Read the complete diff from b3ce0f1b: the CAMPAIGN tab, the brief and the story's dawn row read the night's shape from one NightFacts taken off the compiled plan (night_facts, _wind_down, _story_darks, _dawn_note) instead of three graph readings (#1112, #819, #775). First-party; the old _DAWN constants are removed."
+      "sha256": "399eaac8f053129b18118a222be8c2983408837fcd20f18a8be52e266c8cf3e9",
+      "review": "Read the complete diff from the 0.3.47 reviewed state. Comment and brief-text corrections only: the dome open and binding claims now say they happen on a rig with a roof or rotating dome (WP 4.4, #601, #602). First-party prose."
     },
     {
       "path": "server/astrodeck/focus/autofocus.py",
@@ -426,8 +426,8 @@
     },
     {
       "path": "server/astrodeck/guide/flight_recorder.py",
-      "sha256": "ba6111d28e2657754a187fc7707fb7735b96d5b499e5778daa95350c9522db77",
-      "review": "Read the complete diff from b3ce0f1b: begin_cycle records the guide star's hfr and flux, and note_model_step fills the mount-model rate from the driver's differences, leaving it null for a disturbed or over-long window (#1071, #1089). First-party."
+      "sha256": "a8adaa5462bf636c099dbd78a66ac6c0d67ab50afb5aff92d2fc9c36f7a18fa4",
+      "review": "Read the complete diff from the 0.3.47 reviewed state. flush() gains a 10 s timeout and drops finished writes from _pending itself so it cannot spin on done futures (#1162). First-party code."
     },
     {
       "path": "server/astrodeck/imaging/frame_class.py",
@@ -446,8 +446,8 @@
     },
     {
       "path": "server/astrodeck/sequence/bundle.py",
-      "sha256": "5cebb5460be3c23a40e0d3c5b14cca8e41d99703dacc8a1935ce9ab29093a451",
-      "review": "Read the complete diff from b3ce0f1b: stacking bundles group lights by rotator-angle bin, ask the library for the flat at the group's circular-mean angle, withhold a flat when the angle is unknown and the library's flats are keyed by angle, and put the angle in the manifest (#784, #825, #188). First-party."
+      "sha256": "5e94e96226e42a0420f07a359e2565aa08633e6f2fe92bdbecf06f1126f293a1",
+      "review": "Read the complete diff from the 0.3.47 reviewed state. Calibration bundle groups key on a mosaic's id (report.mosaic_key) instead of its label, name per-mosaic folders by label with a numeric suffix when two mosaics share one, and carry mosaic_id and panel_id into the manifest and CSV-side records (#796). First-party code."
     },
     {
       "path": "server/astrodeck/sequence/group_rules.py",
@@ -456,18 +456,298 @@
     },
     {
       "path": "server/astrodeck/sequence/models.py",
-      "sha256": "18eeed0ce754cf939013e05e6f371e819ded5fdda53ffe236bef4034c53db309",
-      "review": "Read the complete diff from b3ce0f1b: one comment on TargetGroup.rotate is reworded (members of a fixed block carry no rotation). Comment only."
+      "sha256": "47241558afa36efbd27c4b0fcd23d539e75be8e6245f3c6d79dbc6a6cff6eb1d",
+      "review": "Read the complete diff from the 0.3.47 reviewed state. Plan models gain ExposureStep.stage and Target.block (excluded from dumps, #464), Target.max_time_min with a serializer that omits it at 0 (#1094), SequencePlan.dome omitted when None (#602), and the unbounded-stop check counts the time bound. First-party pydantic models."
     },
     {
       "path": "server/astrodeck/sequence/report.py",
-      "sha256": "7ca60929ebd45ebecba78f7a25be4bb04cacbae7ae5ea7f99554b9d7c403b950",
-      "review": "Read the complete diff from b3ce0f1b: flush rewrites one fresh snapshot, awaited, when no write is running and the newest snapshot built is not the one on disk, so the report on disk holds everything recorded (#1099). First-party."
+      "sha256": "c6d351eb1fbaedcae283e4998de69cdbde3cb6abaca7de7f1aa1e1bedae29b70",
+      "review": "Read the complete diff from the 0.3.47 reviewed state. FrameRecord and the target breakdown gain mosaic_id and panel_id, per-target rows are keyed by (name, panel_id), and a mosaic_key helper is the one definition of same-mosaic (#796). First-party code."
     },
     {
       "path": "server/astrodeck/sun_watch.py",
       "sha256": "0a55584fc69cab08f090e2a5cdef69910d02084c12e9f0e8f26e15c21283b9bc",
       "review": "Read the complete diff from b3ce0f1b: sun-watch holds can be flagged site_derived, and the blind-in-daylight and position-unknown-in-daylight errors are published with bus.log_with_alert so they still page without carrying the site-derived moment to a viewer (D-H, #748). First-party."
+    },
+    {
+      "path": "server/astrodeck/bootcause.py",
+      "sha256": "b89bd4556b4ecbcf224ce69dd1e31ecd03df612cf9a6656d0403d21cb9590788",
+      "review": "Read the complete diff from b3ce0f1b. Adds a read-only winreg look (one function, KEY_READ) at the Windows pending-restart markers and Windows Update active hours, with RestartState, restart_state, active_hours and night_outside_active_hours, so the arm gate can refuse a night Windows may restart under (#1076). First-party code; the registry key paths are Windows facts, no third-party text or data."
+    },
+    {
+      "path": "server/astrodeck/catalog/panel_csv.py",
+      "sha256": "b48dbf061030403d6446df3cc985927d68c24101fb80b9b49fc8b7e98e111d30",
+      "review": "Read the complete diff from b3ce0f1b. The panel CSV export and import are reshaped to the Telescopius column shape (#830): header names, RA and Dec mark characters, a Center row and arcmin and percent units are constants, and the importer reads those marks and skips the centre row. The docstring cites the public forum post (forum.telescopius.com) whose pasted header and three rows are the only sample; those rows are not in this file (the sample is a test fixture) and the file carries only format facts, so it is first-party code. Recorded; flagged to the owner for awareness only."
+    },
+    {
+      "path": "server/astrodeck/devices/backends/asiair_backend.py",
+      "sha256": "9bd6a3eab79f7b4704144f8dda72eda19b24dae229524de68c24ca29478b6d13",
+      "review": "Read the complete diff from b3ce0f1b. The ASIAIR link gains a lock-free _Link.download for the FITS fetch and the camera cancels an in-flight download in abort_exposure, so an abort never waits behind a transfer; the failure mapping moves into _Link._failure unchanged. First-party code and comments; no new dependency or protocol text."
+    },
+    {
+      "path": "server/astrodeck/devices/base.py",
+      "sha256": "704b29742b6d44c431533e90597a839c78346179c4d939bf7cc415d7024904b7",
+      "review": "Read the complete diff from b3ce0f1b. One comment block of nine lines saying where the dome open and binding are called from the engine and ResumeArm (#601, #602); no code change. First-party prose."
+    },
+    {
+      "path": "server/astrodeck/flows/doctor.py",
+      "sha256": "0eb15a169c365d29d4c8337f4669fae622b935f512cb6c3c8cafcb5dbde3fbea",
+      "review": "Read the complete diff from b3ce0f1b. A _time_bounded helper so a plan whose every counted target has a maximum time is not reported as unbounded, plus a warning that a maximum time on a mosaic block is unused (#1094). First-party code and message text."
+    },
+    {
+      "path": "server/astrodeck/flows/nodes.py",
+      "sha256": "03653f2688fbd337925bcfbde267de21b96cb7bcbb546b75805cd479f8fdc423",
+      "review": "Read the complete diff from b3ce0f1b. The target block default gains maxTime: 0 with a comment (#1094, owner ruling D-D). First-party data default."
+    },
+    {
+      "path": "server/astrodeck/flows/wizard.py",
+      "sha256": "c4e9470f50e38726d51afbfe27b4e190d943dd33345c69405e4bd2e0e7434122",
+      "review": "Read the complete diff from b3ce0f1b. Adds MAX_TIME_MAX_MIN, checked_max_time and _door_max_time so the wizard's max_time_min answer is a whole number of minutes from 0 to 1440, refused for pool and mosaic kinds, and written to the TARGET's maxTime (#1094, owner ruling D-D). First-party validation code."
+    },
+    {
+      "path": "server/astrodeck/imaging/mosaic_preview.py",
+      "sha256": "5853ae0bfa015d6ea6ff5f1febc74c6ff1441f541c71091dec380456b0b8075a",
+      "review": "New file, read in full (380 lines). First-party: lays each mosaic panel's live stack on one canvas by the plan's footprints (gnomonic projection through catalog.framing, a direct-linear-solve homography, bilinear resampling with a feathered blend and one stretch) and renders a JPEG with holes outlined (#779, #172 part B). Imports only numpy, Pillow and AstroDeck modules; no copied code, no embedded data, carries the project header."
+    },
+    {
+      "path": "server/astrodeck/imaging/sessionstack.py",
+      "sha256": "8c672aac2364899bcde0d9a8afade81a75abeff3a6bcbd8370449b06a460ae59",
+      "review": "Read the complete diff from b3ce0f1b. The stacker's memory budget is per panel and releases a panel to restart on a coarser grid (MIN_STACK_SIDE), the enabled switch and generation are re-read under the lock (#1213), refused first frames are counted, mix_channels is factored out of compose with a coverage map, and panel_planes is a read-only accessor for the mosaic preview. First-party code."
+    },
+    {
+      "path": "server/astrodeck/imaging/stackbackfill.py",
+      "sha256": "9de3edccbc6c429e60e165256f5e592f6e2904a9b84c2f156c2e524bbe9ff2f7",
+      "review": "Read the complete diff from b3ce0f1b. The backfill passes its generation to the stacker and stops the pass with error 'stopped' when the stack refused a frame because it was switched off or reset (#1213). First-party code."
+    },
+    {
+      "path": "server/astrodeck/remote/relay_client.py",
+      "sha256": "52b2635604bb84b78941bce935a03790facf0a10caec9323f7ec7f3d0be5690f",
+      "review": "Read the complete diff from b3ce0f1b. RelayClient takes an optional beacon_source and _pong_header adds the rig_beacon text to each PONG only when it is exactly the closed vocabulary (#606); run_relay_client passes it through. First-party code, no new dependency."
+    },
+    {
+      "path": "server/astrodeck/rig_beacon.py",
+      "sha256": "4a25a5fc3f4a7bef5fed7486929c1a3ad667ac153ea873fc614f5d1dad939939",
+      "review": "Read the complete diff from b3ce0f1b. The status beacon grammar gains two optional keys, log (epoch seconds of the newest non-site-derived log line) and pending (yes or no for a pending Windows restart), via extend(); the validating regex and renderer follow, and the docstring points at relay/relay/rig_status.py (#606, #1076). First-party code."
+    },
+    {
+      "path": "server/astrodeck/sequence/coverage.py",
+      "sha256": "4351b174440d8558767dadbc8c191bf793118723dea553d9810cabf8b9e2e3fd",
+      "review": "Read the complete diff from b3ce0f1b. Renames the private _planned_angle and _field to public planned_angle and group_field (their bodies are unchanged) so the mosaic preview can reuse them. First-party rename."
+    },
+    {
+      "path": "server/astrodeck/sequence/recovery.py",
+      "sha256": "69495cf0c8dfb0b23b1a7efd4607fc1470c28f91ec1eec8f53fa0ea9e6b4dc65",
+      "review": "New file, read in full (131 lines). First-party: a pure state machine (trusted, suspect, lost, paused_by_operator) with five events and the actions the engine takes, one retry then one home leg per target per night (#1109, #1098, #857, #880). Standard library only, no I/O, carries the project header."
+    },
+    {
+      "path": "server/astrodeck/sequence/roof.py",
+      "sha256": "c594f089ddc485eb719c6d7896004047b2521b83854a2ebdfdd195063cd29916",
+      "review": "Read the complete diff from b3ce0f1b. close_observatory now reopens a dropped mount link once and refuses unless the park state is read and the position is known (owner ruling D-B, #893), and the module adds open_for_the_night, _open_cover and bind_dome for the roof, dust cover and dome binding (#601, #602, #192). First-party code over the existing device roles; no new dependency."
+    },
+    {
+      "path": "server/astrodeck/site_horizon.py",
+      "sha256": "c3ad6e49aaab62f03b5fcfb1dd32ea3a1a5067108c5ff06cd204953ee3c4000b",
+      "review": "New file, read in full (379 lines). First-party: a per-process, in-memory learner that bins obstructed and clear centring frames by azimuth and proposes a raised horizon line that only an operator's accept writes (#599, #1093, ruling D-07). Standard library plus AstroDeck modules; privacy design (bins never persisted or logged, counts only) is stated in its docstring; carries the project header."
+    },
+    {
+      "path": "ui/src/api/backends.ts",
+      "sha256": "a1773491b47c2fcfde1494f8bee3890f0730c2007ff4283bb750e105135975cd",
+      "review": "Read the complete diff from b3ce0f1b. setWcsStampConfig's body type gains an optional follow_solver flag with a doc comment (#826). First-party typing."
+    },
+    {
+      "path": "ui/src/api/horizonSuggestion.ts",
+      "sha256": "0b39a4efb481f9c7394d5ab5edb23c3390f45f0505dfd603dfcc21ee6832408e",
+      "review": "New file, read in full (46 lines). First-party client types and two calls (getHorizonSuggestion, acceptHorizonSuggestion) for the learned-horizon routes (#599); carries the project header; no data."
+    },
+    {
+      "path": "ui/src/api/sessionStack.ts",
+      "sha256": "ad253f6f9d26b309e53879c90984d033b6d07297750fa0164af58258badac4b7",
+      "review": "Read the complete diff from b3ce0f1b. Adds assembledImageUrl for GET /api/sequence/stack/mosaic.jpg (#779). First-party, six lines."
+    },
+    {
+      "path": "ui/src/components/PanelPicker.tsx",
+      "sha256": "3476f857ffce2ef4f6b9e69ae0e9c7cf28656558af24442fb11a052d39dbcea0",
+      "review": "New file, read in full (114 lines). First-party React: usePanelPin and the PanelPicker chip row (one chip per mosaic panel, plus ASSEMBLED where a surface can draw the whole mosaic) over the shared stackView store (#781, #1113). Carries the project header; inline styles from the app's own colour variables, no assets."
+    },
+    {
+      "path": "ui/src/components/atlas/FovOverlay.tsx",
+      "sha256": "ec2d9df74bec24fb82b23de941dcbdae2faa2a67b62910b39f3f32b380c89e5a",
+      "review": "Read the complete diff from b3ce0f1b. The object-size ellipse can be drawn with its true minor axis turned by the catalogue position angle (objectPaDeg, #181). First-party SVG code."
+    },
+    {
+      "path": "ui/src/components/atlas/PanelLayer.tsx",
+      "sha256": "ee7d6b97cdfba7ac11b9f736e5eddbb79d5b4ec83f88135534186abb20312898",
+      "review": "Read the complete diff from b3ce0f1b. PanelShapes draws the object ellipse with objectMinorRPx and objectPaDeg when given (#181). First-party SVG code."
+    },
+    {
+      "path": "ui/src/components/atlas/SkyCanvas.tsx",
+      "sha256": "05fed73a9fe8c754844e0e31bbf015389ca4ce2c4aa61cd9b9d6a276a2926a8b",
+      "review": "Read the complete diff from b3ce0f1b. Derives the object's ellipse from lib/objectShape and passes the minor radius and position angle to PanelShapes and FovOverlay (#181). First-party code."
+    },
+    {
+      "path": "ui/src/components/flows/FlowNodeCard.tsx",
+      "sha256": "b1b2442899a4df77982faabc07fdd9970b93062e7bac79297e5052ec2d8dae5b",
+      "review": "Read the complete diff from b3ce0f1b. The card reads its stage status through the shared useStageStatus selector instead of its own asStatus and flowRunLive logic (#464, #1125); comments updated to match. First-party code."
+    },
+    {
+      "path": "ui/src/components/flows/FlowWireLayer.tsx",
+      "sha256": "720ee004a7bb3e0ab211e3679671e1fbc1df217fe9a3066026321419ea45ef5c",
+      "review": "Read the complete diff from b3ce0f1b. Wires read the stage status through useStageStatus; comments updated (#464, #1125). First-party code."
+    },
+    {
+      "path": "ui/src/components/flows/framing/TargetFramingSheet.tsx",
+      "sha256": "9c2cda66491481de53a96d3b04e57b2ab121fdb316d53e0736858bd7d4d96bc4",
+      "review": "Read the complete diff from b3ce0f1b. SUGGEST GRID and FIT OBJECT use suggestGridFor and fitSizeArcmin so an object's ellipse sizes the grid (#181). First-party code."
+    },
+    {
+      "path": "ui/src/components/flows/framing/framingModel.ts",
+      "sha256": "a48919f490ddee4768780be686d8aa6cf9faf9b24852485fad43ccce5dbeaaed",
+      "review": "Read the complete diff from b3ce0f1b. Adds suggestGridFor, which sizes a grid from the object's ellipse and the camera angle through lib/objectShape (#181). First-party code."
+    },
+    {
+      "path": "ui/src/components/flows/framing/sections/WhereSection.tsx",
+      "sha256": "fc51d3e5ce401048997c5f2b99825b7fbe473aa13c005373a2bfc10cfb888ec7",
+      "review": "Read the complete diff from b3ce0f1b. The SUGGEST GRID hint says which rule gave the answer (ellipse or long axis) (#181). First-party copy and types."
+    },
+    {
+      "path": "ui/src/components/flows/nodeDefs.ts",
+      "sha256": "08e31597328e9438a1db11bec66a4c4680c1828821eabceafda4c9cafcada168",
+      "review": "Read the complete diff from b3ce0f1b. The TARGET block gains a maxTime field (default 0, label and unit, #1094) and the auto-resume help sentence now says a motorized roof or dust cover is opened before the first slew (#601, #192). First-party definitions and copy."
+    },
+    {
+      "path": "ui/src/components/flows/wizard/SendToWizardSheet.tsx",
+      "sha256": "0fa2b43bfc25ace68232ccaa72861f7f6514da7c6d565b605fd55ae6d1c51aa7",
+      "review": "Read the complete diff from b3ce0f1b. Adds the MAX MINUTES ON TARGET question for a non-mosaic flow and carries it into the NIGHT summary line (#1094). First-party code and copy."
+    },
+    {
+      "path": "ui/src/components/preview/SessionStack.tsx",
+      "sha256": "5e021b252cb908e4ae9826324fe3baa64c200a69679a410b673837509bf22730",
+      "review": "Read the complete diff from b3ce0f1b. The classic Monitor's session stack takes its panel from the shared pin (usePanelPin), mounts the PanelPicker chip row and requests the pinned panel's picture (#781, #1113). First-party code."
+    },
+    {
+      "path": "ui/src/components/settings/CalibrationTolerancesPanel.tsx",
+      "sha256": "8b09690b3610877ac93d675f92e24181d6292669749a5ff4bcff86cf8bbb9397",
+      "review": "Read the complete diff from b3ce0f1b. The panel gains a Rotator angle bin field (rotator_bin_deg, #176), refuses a bin narrower than the matcher's 1 degree tolerance, fills a block from an older server with the defaults, and Reset to defaults resets it too. First-party code and copy."
+    },
+    {
+      "path": "ui/src/components/settings/SitePanel.tsx",
+      "sha256": "d4a6b508967ed460d6c5c0ffc7f70dafd50f3c15c7a2d49b99ed41bcd83d20eb",
+      "review": "Read the complete diff from b3ce0f1b. Imports and mounts HorizonSuggestionOffer on the Site panel (two lines, #599). First-party."
+    },
+    {
+      "path": "ui/src/components/settings/WcsStampPanel.tsx",
+      "sha256": "89a7df1cb7072038edf9374c9be431d0bcb95af0aecbd253d87a499562b6ea6f",
+      "review": "Read the complete diff from b3ce0f1b. The WCS stamp panel says stamping follows the plate solver until changed by hand and shows a Follow the plate solver again button that sends follow_solver (#826, owner ruling D-I). First-party code and copy."
+    },
+    {
+      "path": "ui/src/lib/objectShape.ts",
+      "sha256": "49c12b0255c010f61753f1296be4eb292af4623ed6bc79f6b642daa9da65be99",
+      "review": "New file, read in full (51 lines). First-party pure functions: objectShape (the catalogue row's ellipse), ellipseExtents (the standard projection of an ellipse onto a line) and fitSizeArcmin, over axis and position-angle columns already shipped in ngc_extras.tsv (reviewed under #804) (#181). Carries the project header; no data."
+    },
+    {
+      "path": "ui/src/lib/wcsStamp.ts",
+      "sha256": "ae0205d6e7f39435f601537b438b0a3c7aeec1b6a9f6f6a7a40bff0c89ad4409",
+      "review": "Read the complete diff from b3ce0f1b. Adds WCS_FOLLOWS_SOLVER, WCS_FOLLOW_AGAIN and wcsChosenByHand for the follow-the-solver option (#826). First-party copy and helper."
+    },
+    {
+      "path": "ui/src/next/hubs/rig/sheets/inspectStack.tsx",
+      "sha256": "0cd1ff6e3c60e8def527507caa82836d0468fcb37910e9440b7e1e8d8551e4a5",
+      "review": "Read the complete diff from b3ce0f1b. The Rig inspect stack sheet shares the pinned panel and mounts the PanelPicker (#781, #1113). First-party code."
+    },
+    {
+      "path": "ui/src/next/hubs/rig/sheets/safety.tsx",
+      "sha256": "5d3e9394e43e9b79e6229a9fb6db763c72838c45d08de6c0cd0d2324b9a1c4c1",
+      "review": "Read the complete diff from b3ce0f1b. The Safety sheet shows a WINDOWS RESTART card with the gate's own sentence and an ACKNOWLEDGE button that posts /api/rig/restart/acknowledge; adds restartSentence (#1076). First-party code and copy."
+    },
+    {
+      "path": "ui/src/next/hubs/session/flows/canvas/FlowNode.tsx",
+      "sha256": "213a2abeb6e5bdca93db1d7515a9ae6906a6c8d538f7e82581b95ea94ad7054f",
+      "review": "Read the complete diff from b3ce0f1b. The stage card reads its status through the shared useStageStatus selector (null draws no dot) instead of its own asNodeStatus and flowRunLive reads (#464, #1125); comments rewritten. First-party code."
+    },
+    {
+      "path": "ui/src/next/hubs/session/flows/canvas/FlowWires.tsx",
+      "sha256": "cfbe6977c7c2ea2114e1b46bc62f7874f6d1a1d67efc228ba207827d3bad8089",
+      "review": "Read the complete diff from b3ce0f1b. Wires and loop arcs read the stage status through useStageStatus; comments updated (#464, #1125). First-party code."
+    },
+    {
+      "path": "ui/src/next/hubs/session/flows/canvas/canvasModel.ts",
+      "sha256": "0c8695eaaa5c06f388fc922e4105da389c70bba5f7180a39cddf40e8603e72bd",
+      "review": "Read the complete diff from b3ce0f1b. Removes asNodeStatus and its comment, now replaced by the store's useStageStatus (#464, #1125). Deletion only; first-party."
+    },
+    {
+      "path": "ui/src/next/hubs/session/gallery/SessionCard.tsx",
+      "sha256": "30cd055fc7789e443353e291e605459c98808b1ecdd8ac7f9b340232005d49cf",
+      "review": "Read the complete diff from b3ce0f1b. Adds mosaicChipOf and a MOSAIC chip on the session shelf card, from the list row's mosaics (#188). First-party code and copy."
+    },
+    {
+      "path": "ui/src/next/hubs/session/gallery/frames/SessionStackPanel.tsx",
+      "sha256": "e4e0ceac3cbd027b459fbc0df1921d1213c76804c5eabcf396df7786bea6f54c",
+      "review": "Read the complete diff from b3ce0f1b. The Gallery stack panel shares the pinned panel, mounts the PanelPicker with an ASSEMBLED view that shows the mosaic picture, and hides one panel's readouts under it (#781, #1113, #779). First-party code and copy."
+    },
+    {
+      "path": "ui/src/next/hubs/session/gallery/sessionsIndex.ts",
+      "sha256": "58b87a7c4ace6765dadbff3376b862bc03c1c659c429f4b59c8d733b6c7ae547",
+      "review": "Read the complete diff from b3ce0f1b. Session cards carry the list row's mosaics (#188). First-party typing and a spread."
+    },
+    {
+      "path": "ui/src/next/hubs/session/now/LiveStack.tsx",
+      "sha256": "f28bc91497de4b6b83888dc63cac5d763e17148fbe42a5187e2f6c0043122e63",
+      "review": "Read the complete diff from b3ce0f1b. The inline chip row is replaced by the shared PanelPicker (#1113). First-party code; net removal."
+    },
+    {
+      "path": "ui/src/next/hubs/session/now/stackView.ts",
+      "sha256": "4eb78d8c853b3c4ebcb1123e58e4a2cb0ff06c6b9b77f0565a5501c0a2fe2cd7",
+      "review": "Read the complete diff from b3ce0f1b. A pin refreshes the shared stack status only when the shared poller is mounted (#1113). First-party, three lines."
+    },
+    {
+      "path": "ui/src/next/hubs/session/report/FilterRows.tsx",
+      "sha256": "e9abd33d2f7610649264bec3b4b0460eaf87fba0343edc36bc7cb6133fc6644d",
+      "review": "Read the complete diff from b3ce0f1b. Report mosaic groups are keyed by mosaic_id with the label as a fallback for older reports; MosaicTarget gains mosaic_id and panel_id (#796). First-party code."
+    },
+    {
+      "path": "ui/src/next/hubs/session/report/reportModel.ts",
+      "sha256": "39653d2db004122cb5a3c4ed9bd40167e4a6d9fde522f813f0811e99c58f442d",
+      "review": "Read the complete diff from b3ce0f1b. groupLine appends the mosaic and panel of a calibration bundle group (#188, #830). First-party code."
+    },
+    {
+      "path": "ui/src/next/hubs/settings/tuning/calibration/CalibrationTolerancesEditor.tsx",
+      "sha256": "b94619979026f2166c99610937b4b43102ae5d6ef2dad5ec8fa324e39aab7cda",
+      "review": "Read the complete diff from b3ce0f1b. The editor shows the rotator angle bin field, refuses a bin under the matcher's 1 degree tolerance, fills a stored block from the defaults and Reset puts every field at its default (#176). First-party code."
+    },
+    {
+      "path": "ui/src/next/hubs/settings/tuning/calibration/calibrationModel.ts",
+      "sha256": "3de352ae4885b957cbf3bf450d74405c6024505e36b793512f615e7cd2366164",
+      "review": "Read the complete diff from b3ce0f1b. TOL_DEFAULTS gains rotator_bin_deg: 2, with withDefaults, rotatorBinTooNarrow, rotatorBinWarning, TOL_ROTATOR_REASON and a rotator field in TOLERANCE_FIELDS; resetTolerances takes no argument (#176). First-party code and copy."
+    },
+    {
+      "path": "ui/src/next/hubs/settings/tuning/files/WcsStampEditor.tsx",
+      "sha256": "22b471f242068270ca7bf12b702b3c90a35cda91ad685b4b3920d194fd4fc7e4",
+      "review": "Read the complete diff from b3ce0f1b. Shows the follows-the-solver sentence and a Follow the plate solver again button that sends follow_solver (#826, owner ruling D-I). First-party code."
+    },
+    {
+      "path": "ui/src/next/hubs/sky/sheets/HorizonSuggestionOffer.tsx",
+      "sha256": "455e2bef5a9e5d7b6512b3c826ab478dee079e3817e1bc7fba565897285c9211",
+      "review": "New file, read in full (88 lines). First-party React card that shows the learned-horizon offer on the Site page and one accept control, shown only to a principal holding view.site_derived (#599, #1093, ruling D-07). Carries the project header; no assets or data."
+    },
+    {
+      "path": "ui/src/next/hubs/sky/sheets/horizonSuggestionModel.ts",
+      "sha256": "017ccba4a6149a31341587fa6af28bc1844485306e21447b953e132dcac2b931",
+      "review": "New file, read in full (47 lines). First-party pure copy and formatting for the learned-horizon offer: NO_HORIZON_GUIDE, ACCEPT_NOTE, regionLine, offerSummary and acceptFailure (#599, #1093). Carries the project header; imports the app's own compassPoint."
+    },
+    {
+      "path": "ui/src/next/hubs/sky/sheets/photospherePose.ts",
+      "sha256": "4cf440cd4b864f075e6c35732f2ce6fe3e672f1c088b2ce79fb63951178e9954",
+      "review": "Read the complete diff from b3ce0f1b. ScanPoseSource keeps every simultaneous absolute-minus-relative offset and north() returns their robust circular mean, spread and shift (ScanNorth, #905); the circular statistics helpers are written here from the standard formulas. First-party code."
+    },
+    {
+      "path": "ui/src/store.ts",
+      "sha256": "02a17b89ef41df96b76fd295a56e016ad6f8fb3529aaa889e0acb4e0d5cbcc6e",
+      "review": "Read the complete diff from b3ce0f1b. The store gains the flow stage status pipeline: stageStatusesOf maps the sequence state's stages (running, done, skipped, failed) to the canvas words, one subscription writes flows.statuses, and stageStatusOf and useStageStatus are the one selector every card, pill and wire reads (#464, #742, #1125). First-party code."
+    },
+    {
+      "path": "ui/src/views/ReportView.tsx",
+      "sha256": "528806854ef4798a5a07eaaa3ab01154544d3e8d4b41dacd29bd3d20582cde49",
+      "review": "Read the complete diff from b3ce0f1b. The classic report uses MosaicTarget for target rows and appends the mosaic and panel to a bundle group line (#796, #188, #830). First-party code."
     }
   ],
   "upstream_review": {
