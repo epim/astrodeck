@@ -44,6 +44,11 @@ NOT_ROUTED: dict[str, str] = {
         "from it would rotate every later framing by the angle between the two "
         "cameras. The imaging half of the same measurement is routed, in "
         "measure_guide_offset itself.",
+    "imaging/mosaic_preview.py:_homography":
+        "numpy's linear solve (np.linalg.solve) for the 3x3 map from the "
+        "mosaic canvas into one panel's stack grid, from the footprint's four "
+        "corners. No frame is solved and no sky angle is measured; the "
+        "detector matches any .solve( call on purpose (#779).",
 }
 
 #: The call sites that existed when this test was written, all routed. Held as
