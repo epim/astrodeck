@@ -30,7 +30,7 @@
 
 import { api } from "../../../api";
 import { flowsApi, type FlowCompileResult } from "../../../lib/flowsApi";
-import type { MosaicPanel } from "../../../types";
+import type { CoverageAnswer, MosaicPanel } from "../../../types";
 import { withLoop } from "../panelLane";
 import type { FlowGraphRec } from "../flowsTypes";
 import type {
@@ -72,6 +72,13 @@ export const framingApi = {
    *  canvas until DONE writes the framing and compiles once. */
   compileDraft: (graph: FlowGraphRec, name: string): Promise<FlowCompileResult> =>
     flowsApi.compileDraft(graph, name),
+  /** How well the banked lights of the flow's current session cover the
+   *  panels they were shot for (`GET /api/flows/{id}/coverage`,
+   *  `view.status`; server sequence/coverage.py). Asked in run mode only,
+   *  by useCoverage; a 404 is a flow with no such record, which that hook
+   *  reads as nothing to show. */
+  coverage: (flowId: string): Promise<CoverageAnswer> =>
+    api.get<CoverageAnswer>(`/api/flows/${encodeURIComponent(flowId)}/coverage`),
 };
 
 // --------------------------------------------------------------- readers

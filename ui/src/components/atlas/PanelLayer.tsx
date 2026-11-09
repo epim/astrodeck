@@ -25,6 +25,13 @@
 // a thick stroke with corner ticks, done a diagonal hatch, set aside dotted
 // with "!". Every stroke is one ink.
 //
+// A PANEL THAT FALLS SHORT (#177, run mode) is not a seventh state: a panel
+// can be done, shooting or pending and still hold lights that cover too little
+// of it. `coverage: "short"` lays a translucent wash of the one ink UNDER the
+// state's own drawing, so the shape of the state still reads through it, and a
+// screen reader is told in words (`SHORT_WORDS`). The wash is a fill, which no
+// state's drawing uses, so it is told apart by shape and not by hue.
+//
 // Two pieces, because they live in two layers of SkyCanvas: `PanelShapes` is
 // SVG geometry for the scaled viewBox (NO text there, C3-A2), `PanelLabels` is
 // real CSS px on the HTML layer. The corner ticks point OUTWARD, crop-mark
@@ -63,6 +70,10 @@ export interface SkyPanel {
   /** The angle the server laid this panel out at (its answer carries one per
    *  panel). Absent, the canvas's own `rotationDeg` is used. */
   rotation_deg?: number;
+  /** Run mode (#177): some banked light of this panel covers less of it than
+   *  the pointing budget allows (the coverage route's `flagged`). Absent for a
+   *  panel with nothing to say, which is every panel outside run mode. */
+  coverage?: "short";
 }
 
 /** The single-frame field a grid was TILED for, degrees at bin 1. */
@@ -188,6 +199,14 @@ const STATE_WORDS: Record<PanelState, string> = {
   set_aside: "set aside tonight",
 };
 
+/** What a screen reader is told of a panel that falls short, after its
+ *  state's words. */
+export const SHORT_WORDS = "covers too little of its panel";
+
+/** The opacity of the wash under a short panel's drawing: enough to read at a
+ *  glance over the survey, little enough that the stars show through. */
+const SHORT_WASH = 0.22;
+
 const INK = "var(--accent)";
 
 function pathOf(pts: readonly ViewPoint[]): string {
@@ -284,7 +303,17 @@ export const PanelShapes = memo(function PanelShapes(props: PanelShapesProps): J
             data-row={panel.row}
             data-col={panel.col}
             data-state={panel.state}
+            data-coverage={panel.coverage}
           >
+            {outline && panel.coverage === "short" && (
+              <path
+                data-mark="tint"
+                d={pathOf(outline)}
+                fill={INK}
+                fillOpacity={SHORT_WASH}
+                stroke="none"
+              />
+            )}
             {outline && (
               <path
                 data-mark="outline"
@@ -382,7 +411,10 @@ export function PanelLabels(props: PanelLabelsProps): JSX.Element | null {
               </span>
             )}
             <span data-role="panel-rc">{name}</span>
-            <span className="sr-only">, {panel.words ?? STATE_WORDS[panel.state] ?? panel.state}</span>
+            <span className="sr-only">
+              , {panel.words ?? STATE_WORDS[panel.state] ?? panel.state}
+              {panel.coverage === "short" ? `, ${SHORT_WORDS}` : ""}
+            </span>
           </>
         );
         const common = {
