@@ -14,7 +14,8 @@ No-double-fire semantics:
   they fire only on the rising crossing (was at/below threshold, now above) and
   re-arm when the value drops back to/below threshold. A stuck-high value must
   never re-fire every frame. ``armed`` lives in :class:`FireRecord`.
-* ``on_frame_rejected`` / ``on_target_complete`` are per-event.
+* ``on_frame_rejected`` / ``on_target_complete`` / ``on_mosaic_complete`` are
+  per-event.
 * ``at_time`` is implicitly once: fires at the first boundary with
   ``now_ts >= parse_hhmm(at_time)``.
 
@@ -65,6 +66,7 @@ _PREDICATE_OF = {
     "on_guide_rms_above": "guide_rms_above",
     "on_frame_rejected": "frame_rejected",
     "on_target_complete": "target_complete",
+    "on_mosaic_complete": "mosaic_complete",
     "at_time": "at_time",
     # --- sky / rig conditions (ADDITIVE) ---------------------------------
     "on_clouds_in": "clouds_in",
@@ -90,6 +92,11 @@ class TriggerContext:
     guide_rms: float | None = None
     frame_rejected: bool = False
     target_complete: bool = False
+    # The engine sets this True at the one moment a `TargetGroup`'s last member
+    # completes, with ``active_target`` naming the GROUP (its block name), not
+    # the panel. Per-event like ``target_complete``, and never set together
+    # with it: a panel completing is not a target completing (#184).
+    mosaic_complete: bool = False
     active_target: str | None = None
     # --- sky / rig conditions (ADDITIVE) ---------------------------------
     #
@@ -192,6 +199,8 @@ def _eval_predicate(kind: str, threshold: float, at_time: str | None,
         return ctx.frame_rejected
     if kind == "target_complete":
         return ctx.target_complete
+    if kind == "mosaic_complete":
+        return ctx.mosaic_complete
     if kind == "altitude_floor":
         # A per-event flag like the two above, not a level: the engine builds a
         # context carrying it only at the boundary where it has just measured

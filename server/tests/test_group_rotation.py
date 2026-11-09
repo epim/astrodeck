@@ -1136,30 +1136,34 @@ async def test_a_deferral_at_a_real_cloud_holds_release_ends_the_published_hold(
 # ---------------------------------------------------- completion and modes
 
 def _notify_plan(**kw):
-    return grid_plan(instructions=[Instruction(
-        id="done-rule", trigger="on_target_complete", action="notify",
-        message="a target is complete", level="info")], **kw)
+    return grid_plan(instructions=[
+        Instruction(id="done-rule", trigger="on_target_complete",
+                    action="notify", message="a target is complete",
+                    level="info"),
+        Instruction(id="mosaic-rule", trigger="on_mosaic_complete",
+                    action="notify", message="the mosaic is complete",
+                    level="info")], **kw)
 
 
-async def test_on_target_complete_fires_once_per_panel_at_its_completion(
+async def test_on_mosaic_complete_fires_once_at_the_last_panels_completion(
         group_hub, monkeypatch):
-    """The ``on_target_complete`` rule fires four times, once per panel, each
-    at the fake instant that panel's last frame ended, and never after a
-    visit that left the panel short (#157, spec 5.1 outcome table, row 1).
+    """A panel's completion fires no ``on_target_complete`` rule (#184); the
+    group's ``on_mosaic_complete`` rule fires ONCE, at the fake instant the
+    last panel's last frame ended, and never after a visit that left a panel
+    short (#157, spec 5.1 outcome table, row 1).
 
-    MUTANT "fire every visit" (`_visit_panel` firing the rule after every
-    visit, whatever its outcome): RED (observed):
-        AssertionError: ([60.0, 120.0, 180.0, 240.0, 300.0, 360.0, ...],
-        [540.0, 600.0, 660.0, 720.0])
+    MUTANT "fire per panel" (`_fire_mosaic_complete` without its
+    completeness test): RED (observed), four firings, one per panel:
+        AssertionError: ([540.0, 600.0, 660.0, 720.0], 720.0)
     """
     night = await _night(group_hub, monkeypatch, _notify_plan())
     assert night.done, night.trace[-3:]
-    fired = [t for t, _lvl, m in night.lines if m == "a target is complete"]
-    last_frames = sorted(
-        max(c["t"] + c["exposure_s"] for c in night.captures
-            if c["target"] == _name(lb)) for lb in SNAKE)
-    assert fired == last_frames, (
-        [night.rel(t) for t in fired], [night.rel(t) for t in last_frames])
+    assert night.said("a target is complete") == [], (
+        "a panel is no target the operator drew")
+    fired = [t for t, _lvl, m in night.lines if m == "the mosaic is complete"]
+    last_frame = max(c["t"] + c["exposure_s"] for c in night.captures)
+    assert fired == [last_frame], (
+        [night.rel(t) for t in fired], night.rel(last_frame))
 
 
 async def test_a_single_target_whose_every_frame_is_rejected_is_not_complete(

@@ -330,9 +330,9 @@ async def test_a_jump_on_a_members_last_frame_completes_it_in_its_group(
         assert 2 == 1
     """
     p12 = f"{GROUP_NAME} 1-2"
-    done_rule = Instruction(id="done", trigger="on_target_complete",
-                            action="notify", level="info", only_target=p12,
-                            message="1-2 is done")
+    done_rule = Instruction(id="done", trigger="on_mosaic_complete",
+                            action="notify", level="info",
+                            only_target=GROUP_NAME, message="1-2 is done")
     plan = grid_plan(rows=1, cols=2, panel_kw={"filters": ("L",), "count": 1},
                      after=[single("Later", after_group=GROUP_ID)],
                      instructions=[_rule("run_target", "Nobody", only=p12),
@@ -473,12 +473,15 @@ async def test_a_completion_rules_own_no_op_jump_is_not_owed_again(
           Left contains 64 more items, first extra item: 'M31 1-2 is done'
     """
     name = COMPLETION_JUMP[who]
-    rules = [Instruction(id="done", trigger="on_target_complete",
-                         action="notify", level="info", only_target=name,
+    trigger, only = (("on_target_complete", name)
+                     if who == "a single target"
+                     else ("on_mosaic_complete", GROUP_NAME))
+    rules = [Instruction(id="done", trigger=trigger,
+                         action="notify", level="info", only_target=only,
                          message=f"{name} is done"),
-             Instruction(id="typo", trigger="on_target_complete",
+             Instruction(id="typo", trigger=trigger,
                          action="run_target", target_arg="Nobody",
-                         only_target=name)]
+                         only_target=only)]
     if who == "a single target":
         plan = _plan(single("A", count=1), single("B"), rules=rules)
     else:

@@ -2330,6 +2330,11 @@ class SequenceEngine:
         # ``MAX_JUMPS`` ran out and every jump after it was ignored for
         # the night.
         self._completion_fired: set[str] = set()
+        # Group ids whose ``on_mosaic_complete`` rules have run this run
+        # (#184). A group completes once; two of its panels can still reach
+        # `_fire_target_complete` with the group complete (one owed its rules
+        # after a jump, the other the group's last), and the rules run once.
+        self._mosaic_completion_fired: set[str] = set()
         self._dawn_cutoff = False           # scheduler ran out of open windows
         #: Resolved rig-standards-vs-plan policy (#239 stage A), replaced at
         #: start(). A bare default here so an engine built without start() -
@@ -2763,6 +2768,7 @@ class SequenceEngine:
         self._pending_retries = []
         self._completion_owed = set()
         self._completion_fired = set()
+        self._mosaic_completion_fired = set()
         self._dawn_cutoff = False
         self._window_closed = False
         self._time_bounded = set()
@@ -7482,6 +7488,17 @@ class SequenceEngine:
         """PRO-3: the ``on_target_complete`` rules, for a target that IS
         complete (#157). Guarded: a no-op when there are no instructions.
 
+        A MEMBER OF A `TargetGroup` IS NOT A TARGET THE OPERATOR DREW (#184).
+        Its completion runs no ``on_target_complete`` rule: a REPORT 'target
+        done' drawn after a 2x2 mosaic sent four notifications, and one
+        drawn after a single target beside a 3x2 mosaic fired seven times.
+        The group's rules are ``on_mosaic_complete``, run once when its last
+        member completes (`_fire_mosaic_complete`). The bookkeeping below is
+        the same for a panel: the scheduler's JumpTarget arm reads
+        ``_completion_fired`` for it as for any target. A ``mosaic_group``
+        with no group entry (a classic Plan mosaic) is no group and keeps
+        its per-target firing.
+
         THE SKY READINGS BELONG HERE TOO, and leaving them off was not a
         neutral omission. A context built without them says `cloudy=None` —
         "nobody can say" — at the one boundary where `target_complete` is ever
@@ -7500,15 +7517,45 @@ class SequenceEngine:
         # knows a jump one of them fires came from here and owes nothing
         # (``_completion_owed``, ``_completion_fired``).
         self._completion_fired.add(target.id)
-        _now = time.time()
+        group = self._group_of(target)
+        if group is not None:
+            await self._fire_mosaic_complete(group, target)
+            return
         await self._run_instructions(
-            TriggerContext(now_ts=_now,
-                           target_complete=True,
-                           active_target=target.name,
-                           cloudy=self._clouds.cloudy(_now),
-                           unsafe=await self._unsafe_now(),
-                           panel_ready=self._panel_ready_now()),
+            await self._boundary_context(target_complete=True,
+                                         active_target=target.name),
             target, None)
+
+    async def _fire_mosaic_complete(self, group: TargetGroup,
+                                    target: Target) -> None:
+        """The ``on_mosaic_complete`` rules, once, when the last member of
+        ``group`` has completed (#184). ``target`` is the member whose
+        completion is being reported: the one a jump a rule fires leaves to
+        the scheduler. The context names the group, by its block name, not a
+        panel.
+
+        COMPLETE, NOT SET ASIDE: a group with a member set aside tonight is
+        short of ``run.members`` completed, so it fires nothing tonight. A
+        member that comes back (a centring set-aside's expiry) and completes
+        later completes the group then."""
+        run = self._group_runs.get(group.id)
+        if (run is None or len(run.completed) < len(run.members)
+                or group.id in self._mosaic_completion_fired):
+            return
+        self._mosaic_completion_fired.add(group.id)
+        await self._run_instructions(
+            await self._boundary_context(mosaic_complete=True,
+                                         active_target=group.name or group.id),
+            target, None)
+
+    async def _boundary_context(self, **event) -> TriggerContext:
+        """A `TriggerContext` for a target boundary, ``event`` naming what
+        happened. It carries the sky readings (see `_fire_target_complete`)."""
+        _now = time.time()
+        return TriggerContext(now_ts=_now,
+                              cloudy=self._clouds.cloudy(_now),
+                              unsafe=await self._unsafe_now(),
+                              panel_ready=self._panel_ready_now(), **event)
 
     async def _visit_panel(self, ti: int, target: Target, group: TargetGroup,
                            remaining: list[Target], *,
@@ -7549,7 +7596,9 @@ class SequenceEngine:
         jump has the scheduler take it up again at once in the same pass
         (the arm below says why).
 
-        ``on_target_complete`` fires once per panel, when it completes (#157).
+        A panel's completion runs no ``on_target_complete`` rule (#184,
+        `_fire_target_complete`); the group's ``on_mosaic_complete`` rules
+        run when its last panel completes.
 
         ``deadline_ts`` is the panel's flip point when the meridian rule let
         it through before the meridian (spec 5.7, 5.3): the visit ends at the

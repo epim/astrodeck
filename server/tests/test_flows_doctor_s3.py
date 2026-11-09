@@ -127,7 +127,7 @@ M14 = "fires once per panel"
 M15 = "leaves no room for camera angle error"
 L1 = "part of the TARGET block now"
 EVERY_MARKER = (R4, M1, M2, M3, M4_ELSEWHERE, M4_ONE_PANEL, M4_TWICE, M5, M6,
-                M7, M8, M9, M10, M11, M12_BRANCH, M12_MID, M13, M14, M15, L1)
+                M7, M8, M9, M10, M11, M12_BRANCH, M12_MID, M13, M15, L1)
 
 
 class TestTheBaselineIsClean:
@@ -961,54 +961,25 @@ class TestM13NoOwner:
 
 
 class TestM14TargetDone:
+    """M14 is retired (#184, WP 5.2). It noted that a REPORT 'target done'
+    wire fired once per panel. The engine no longer does that: a panel's
+    completion runs no ``on_target_complete`` rule, and a REPORT that ends a
+    mosaic's lane compiles to ``on_mosaic_complete``, which fires once
+    (tests/test_w5_mosaic_complete.py). Warning about it would be a note
+    about behaviour that is gone, so the doctor says nothing, and these cases
+    hold the silence. Mutant "M14 is back" (the base tree's doctor.py, which
+    draws it for any REPORT with a 'done' wire in a graph that has a
+    multi-panel block) turns both red: ``AssertionError: ('fires once per
+    panel', ...)``."""
+
     def _with_done(self, **block) -> FlowGraph:
         return _mosaic(extra_nodes=[_n("nt", "notify", 1200)],
                        extra_edges=[_e("r", "done", "nt", "do")], **block)
 
-    def test_report_done_on_a_mosaic_fires_per_panel(self):
-        """#184. Mutant "drop M14" turned this red: ``AssertionError: ('fires
-        once per panel', [])``."""
-        hit = _one(check(self._with_done()), M14)
-        assert (hit.level, hit.text) == (
-            "note", "▸ SESSION REPORT 'target done' fires once per panel, not "
-            "once for the mosaic: TARGET M31 has 6 panels, so what the wire "
-            "triggers runs once for each panel finished.")
+    def test_report_done_on_a_mosaic_draws_no_per_panel_note(self):
+        assert not _hits(check(self._with_done()), M14)
 
-    def test_a_report_with_no_done_wire_fires_nothing(self):
-        """Mutant "M14 without the wire" turned this red: ``assert not
-        [Issue(text="▸ SESSION REPORT 'target done' fires once per panel,
-        not once for the mosaic: TARGET M31 has 6 panels, so what the wire
-        triggers runs once for each panel finished.", level='note')]``."""
-        assert not _hits(check(_mosaic()), M14)
-
-    def test_a_single_target_finishes_once(self):
-        """Beside a mosaic: a REPORT wired only to M33 (one panel) still
-        fires once per M31 panel too, because the compiled rule carries no
-        ``only_target`` gate at all (``_fire_target_complete`` runs on
-        EVERY target's completion, panels included) -- a fact about the
-        wire the operator drew for M33, not about M33's own panel count.
-        (Without the mosaic the rule never runs at all, and mutant "M14 on
-        any TARGET" survived that first version of this test: ``183
-        passed``.)
-
-        RULED (#184, backlog WP-34, 2026-09-30): the KNOWN GAP this case
-        used to pin -- M14 scoping itself to "the REPORT that ends the
-        mosaic's own lane", which read as the spec's words rather than the
-        engine's wiring -- is closed. An ``only_target`` gate could not have
-        closed it either (panels are named "M31 1-1" and so on, so no
-        single name means "the mosaic"): the rule now fires for ANY REPORT
-        with a ``done`` wire, anywhere in a graph that has a multi-panel
-        block, and names that block and its panel count -- the real
-        consequence for the wire under test here, since M31's six panels
-        each retrigger it, not M33's own one.
-
-        Mutant "M14 on any TARGET" (the mosaic guard dropped, so the rule
-        also fires with no mosaic in the graph at all) turns this red by
-        changing the note it finds, not by removing it: with no mosaic the
-        hit would name M33's own one panel instead of M31's six --
-        ``test_a_report_with_no_done_wire_fires_nothing`` and
-        ``test_report_done_on_a_mosaic_fires_per_panel`` are the cases that
-        catch the mosaic guard directly."""
+    def test_a_report_after_a_single_target_beside_a_mosaic_draws_none(self):
         g = _mosaic(
             extra_nodes=[_block("t2", 1200, name="M33", rows=1, cols=1),
                          _n("c2", "capture", 1400, filter="Ha"),
@@ -1017,11 +988,7 @@ class TestM14TargetDone:
             extra_edges=[_e("t2", "target", "c2", "run"),
                          _e("c2", "complete", "r2", "session"),
                          _e("r2", "done", "nt", "do")])
-        hit = _one(check(g), M14)
-        assert (hit.level, hit.text) == (
-            "note", "▸ SESSION REPORT 'target done' fires once per panel, not "
-            "once for the mosaic: TARGET M31 has 6 panels, so what the wire "
-            "triggers runs once for each panel finished.")
+        assert not _hits(check(g), M14)
 
 
 class TestM15BudgetSpent:
@@ -1341,7 +1308,6 @@ class TestControls:
             TestM12Lane._mid_lane(),
             TestM12Lane._branched(),
             TestM13NoOwner()._dome(),
-            TestM14TargetDone()._with_done(),
             FlowGraph(nodes=[_n("s", "slew")]),
         ]
         texts = []

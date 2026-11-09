@@ -8648,7 +8648,7 @@ def test_1_8_says_the_doctor_as_s3_built_it():
     (S3, #169): `check` takes ``rig``, a ``RigFacts``, and each rule that
     needs a fact is silent without it; L1 comes last; M15 replaces M6 once
     convergence spends the budget; M6 measures typed coordinates only; and
-    the M6, M10 and M14 texts in the table are the doctor's own, the design's
+    the M6 and M10 texts in the table are the doctor's own, the design's
     M10 example having been under its own threshold.
 
     The code: `check`'s signature and docstring; each of the three rows
@@ -8660,7 +8660,7 @@ def test_1_8_says_the_doctor_as_s3_built_it():
     no M6; where the silent cases speak: M2 at a negative rotation, M8's
     fixed-camera note only with the rotator fact, M9 at a "Clock time" stop
     and not at "Dawn", no M10 once the minimum visit makes the hop small,
-    M11 only beside a multi-panel block, and M14 counting a skipped panel;
+    M11 only beside a multi-panel block;
     and a lane with a legacy SLEW whose last issue is L1.
 
     RED under mutant "1.8 back to the design's M10 example" (the row's text
@@ -8781,7 +8781,7 @@ def test_1_8_says_the_doctor_as_s3_built_it():
                 "a rule that needs a fact (M5, M8, M9, M10) is silent without "
                 "it", "`framing.convergence_share` and `ROTATION_BUDGET`",
                 "M15 replaces M6 once convergence spends the budget",
-                "M11, M13 and M14 speak only in a graph with a multi-panel "
+                "M11 and M13 speak only in a graph with a multi-panel "
                 "block", "M6, M15 and M8's figure measure only a block with "
                 "typed coordinates", "and L1 last",
                 "M2 also fires for a set angle with a negative rotation",
@@ -8791,7 +8791,7 @@ def test_1_8_says_the_doctor_as_s3_built_it():
                 "stop the card actually gives a time counts as a real "
                 "boundary (amended 2026-09-30 by backlog WP-09, #191)",
                 "`max(passes, ceil(minVisit / pass))` passes of shutter",
-                "M14 counts the grid, skipped panels included",
+                "M14 is retired",
                 "is 20.5% of it, under the rule's own 25%"), "1.8")
     stale = "that says otherwise is stale and is corrected in S3" in s18
     assert not stale, "1.8 still says the doctor's docstring is stale"
@@ -8819,11 +8819,6 @@ def test_1_8_says_the_doctor_as_s3_built_it():
                    None, "meridian convergence turns"),
         "| M10 |": (_flow([("t", "target", _M31), ("c", "cycle", _LRGB)],
                           loop), hop, "each hop costs"),
-        "| M14 |": (_flow([("t", "target", _M31), ("c", "cycle", _LRGB),
-                           ("r", "report", {}), ("n", "notify", {})],
-                          loop + ["c.complete -> r.session",
-                                  "r.done -> n.do"]),
-                    None, "fires once per panel"),
     }
     for start, (graph, rig, marker) in cases.items():
         row = _line(s18, start)
@@ -8895,10 +8890,6 @@ def test_1_8_says_the_doctor_as_s3_built_it():
                  + cyc, ["d.window -> t.arm"] + loop)
     guards = RigFacts(reject_guards_off=True)
     longer = _flow([("t", "target", {**_M31, "minVisit": 10})] + cyc, loop)
-    skipped = _flow([("t", "target", {**_M31, "skip": "1-1"}),
-                     ("c", "cycle", _LRGB), ("r", "report", {}),
-                     ("n", "notify", {})],
-                    loop + ["c.complete -> r.session", "r.done -> n.do"])
     where = {
         "M2 at a negative rotation": said(_flow(
             [("t", "target", {**_M31, "rotation": -1})] + cyc, loop),
@@ -8911,7 +8902,6 @@ def test_1_8_says_the_doctor_as_s3_built_it():
         "M10, a 10 min minimum visit": said(longer, "each hop costs", hop),
         "M11, no multi-panel block": said(ones, "blocks are both called"),
         "M11, a multi-panel block": said(twos, "blocks are both called"),
-        "M14 with a panel skipped": said(skipped, "has 6 panels"),
     }
     assert where == {
         "M2 at a negative rotation": ["danger"],
@@ -8920,8 +8910,7 @@ def test_1_8_says_the_doctor_as_s3_built_it():
         "M9, a clock-time stop": ["warn"], "M9, a dawn stop": [],
         "M10, a 10 min minimum visit": [],
         "M11, no multi-panel block": [],
-        "M11, a multi-panel block": ["danger"],
-        "M14 with a panel skipped": ["note"]}, (
+        "M11, a multi-panel block": ["danger"]}, (
         f"the doctor draws {where}; 1.8 says where each rule speaks")
     legacy = doctor.check(_flow([("t", "target", _M31), ("s", "slew", {}),
                                  ("c", "cycle", _LRGB)],

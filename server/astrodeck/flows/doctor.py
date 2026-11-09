@@ -206,7 +206,6 @@ HOP_NOTE_SHARE = 0.25
 #: `nodes.py` cannot leave the doctor quoting a word no card shows.
 _PASS = NODE_DEFS["cycle"].port(PASS_PORT, "out").label        # pass done
 _NEXT = NODE_DEFS["target"].port(NEXT_PORT, "in").label        # next panel
-_DONE = NODE_DEFS["report"].port("done", "out").label          # target done
 
 
 def _counts_accepted(node) -> bool:
@@ -425,7 +424,7 @@ def _mosaic_rules(graph: FlowGraph, rig: RigFacts | None) -> list[Issue]:
     """M1 to M15 (spec 1.8), in the table's order. ``graph`` has its defaults.
 
     Most of them read a multi-panel block, so they cannot fire on a graph saved
-    before mosaics. The ones that could (M11, M13, M14) are held to graphs that
+    before mosaics. The ones that could (M11, M13) are held to graphs that
     have a multi-panel block, so every flow saved before S3 draws exactly the
     issues it drew before. M4, M7 and M9 need a `pass` wire or a `counts`
     value, which no flow saved before S3 carries, so they speak wherever one
@@ -831,42 +830,11 @@ def _mosaic_rules(graph: FlowGraph, rig: RigFacts | None) -> list[Issue]:
             if n.type in _CAPTURE_TYPES and owner_of(graph, n.id) is None:
                 out.append(Issue(_m13_text(n, by_id, parents), "danger"))
 
-    # M14. REPORT 'target done' is `on_target_complete`, and on a mosaic every
-    # panel is a target: whatever it triggers runs once per panel, no matter
-    # which lane the REPORT sits in (#184, owner comment 2026-09-25, found
-    # verifying S3-D).
-    #
-    # THIS USED TO SCOPE ITSELF TO THE REPORT THAT ENDS THE MOSAIC'S OWN LANE
-    # (its one flow parent was the block, or a stage the block owns), which
-    # restated spec 1.8's trigger instead of reading the engine. The compiled
-    # rule carries no `only_target` gate at all (`compile._trigger_for`;
-    # neither `compile.py` nor `to_plan.py` sets one), so the engine's
-    # `_fire_target_complete` runs it at EVERY target's completion, and every
-    # panel is a target. A REPORT after a single-panel TARGET drawn beside a
-    # mosaic looked safe under the old rule and was not: the wire still fired
-    # once per panel of the mosaic sitting in another lane entirely.
-    #
-    # An `only_target` gate would not close this gap either - it is a name
-    # gate, and panels are named "M31 1-1" and so on, so no single name
-    # means "the mosaic". So: any REPORT with a 'target done' wire, anywhere
-    # in a graph that has a multi-panel block, names every such block and its
-    # panel count.
-    if mosaic:
-        # The grid's size, not a count of panels left to finish: a skipped
-        # panel never completes, but no reading of `skip` is shared with
-        # to_plan yet, and a second one here could disagree.
-        panel_counts = [f"{_block_name(b)} has {rows * cols} panels"
-                        for b in blocks for rows, cols in (_grid(b),)]
-        for n in graph.nodes:
-            if n.type != "report" or not any(
-                    e.from_ == n.id and e.fromPort == "done"
-                    for e in graph.edges):
-                continue
-            out.append(Issue(
-                f"▸ {NODE_DEFS['report'].label} '{_DONE}' fires once per "
-                f"panel, not once for the mosaic: {_and(panel_counts)}, so "
-                f"what the wire triggers runs once for each panel finished.",
-                "note"))
+    # M14 is retired (#184). It noted that a REPORT 'target done' wire fired
+    # once per panel; a panel's completion now runs no `on_target_complete`
+    # rule, and a REPORT that ends a mosaic's lane compiles to
+    # `on_mosaic_complete`, which fires once (`compile.ends_mosaic_lane`). The
+    # number stays so M15 and the spec's table keep theirs.
 
     # M15. The angle budget is spent (A.2: k = 0.5 - c <= 0): convergence
     # alone uses half the overlap, which leaves nothing for a camera angle
