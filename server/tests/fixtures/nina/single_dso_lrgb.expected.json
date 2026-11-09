@@ -1,0 +1,239 @@
+{
+  "flow": {
+    "name": "LRGB M31",
+    "tagline": "Imported from a NINA sequence.",
+    "graph": {
+      "nodes": [
+        {
+          "id": "n1",
+          "type": "target",
+          "x": 270,
+          "y": 70,
+          "params": {
+            "name": "M31",
+            "ra": "00h 42m 44.30000s",
+            "dec": "+41\u00b0 16' 09.0000\""
+          }
+        },
+        {
+          "id": "n2",
+          "type": "autofocus",
+          "x": 510,
+          "y": 70,
+          "params": {}
+        },
+        {
+          "id": "n3",
+          "type": "guide",
+          "x": 750,
+          "y": 70,
+          "params": {
+            "dither": 0
+          }
+        },
+        {
+          "id": "n4",
+          "type": "capture",
+          "x": 990,
+          "y": 70,
+          "params": {
+            "filter": "L",
+            "exposure": 120,
+            "gain": 100,
+            "bin": "1",
+            "count": 20,
+            "goal": 0
+          }
+        },
+        {
+          "id": "n5",
+          "type": "capture",
+          "x": 1230,
+          "y": 70,
+          "params": {
+            "filter": "R",
+            "exposure": 120,
+            "gain": 100,
+            "bin": "1",
+            "count": 10,
+            "goal": 0
+          }
+        },
+        {
+          "id": "n6",
+          "type": "capture",
+          "x": 1470,
+          "y": 70,
+          "params": {
+            "filter": "G",
+            "exposure": 120,
+            "gain": 100,
+            "bin": "1",
+            "count": 10,
+            "goal": 0
+          }
+        },
+        {
+          "id": "n7",
+          "type": "capture",
+          "x": 1710,
+          "y": 70,
+          "params": {
+            "filter": "B",
+            "exposure": 120,
+            "gain": 100,
+            "bin": "1",
+            "count": 10,
+            "goal": 0
+          }
+        },
+        {
+          "id": "n8",
+          "type": "condition",
+          "x": 990,
+          "y": 270,
+          "params": {
+            "when": "HFR above (x focus)",
+            "threshold": 1.05,
+            "window": "5 frames",
+            "once": "Every time"
+          }
+        },
+        {
+          "id": "n9",
+          "type": "refocus",
+          "x": 1230,
+          "y": 270,
+          "params": {}
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "from": "n1",
+          "fromPort": "target",
+          "to": "n2",
+          "toPort": "run"
+        },
+        {
+          "id": "e2",
+          "from": "n2",
+          "fromPort": "focused",
+          "to": "n3",
+          "toPort": "run"
+        },
+        {
+          "id": "e3",
+          "from": "n3",
+          "fromPort": "guiding",
+          "to": "n4",
+          "toPort": "run"
+        },
+        {
+          "id": "e4",
+          "from": "n4",
+          "fromPort": "complete",
+          "to": "n5",
+          "toPort": "run"
+        },
+        {
+          "id": "e5",
+          "from": "n5",
+          "fromPort": "complete",
+          "to": "n6",
+          "toPort": "run"
+        },
+        {
+          "id": "e6",
+          "from": "n6",
+          "fromPort": "complete",
+          "to": "n7",
+          "toPort": "run"
+        },
+        {
+          "id": "e7",
+          "from": "n4",
+          "fromPort": "frame",
+          "to": "n8",
+          "toPort": "events"
+        },
+        {
+          "id": "e8",
+          "from": "n5",
+          "fromPort": "frame",
+          "to": "n8",
+          "toPort": "events"
+        },
+        {
+          "id": "e9",
+          "from": "n6",
+          "fromPort": "frame",
+          "to": "n8",
+          "toPort": "events"
+        },
+        {
+          "id": "e10",
+          "from": "n7",
+          "fromPort": "frame",
+          "to": "n8",
+          "toPort": "events"
+        },
+        {
+          "id": "e11",
+          "from": "n8",
+          "fromPort": "fire",
+          "to": "n9",
+          "toPort": "do"
+        }
+      ],
+      "settings": {
+        "quickDitherEvery": 0
+      }
+    }
+  },
+  "warnings": [
+    {
+      "code": "cooling_not_carried",
+      "level": "warn",
+      "type": "NINA.Sequencer.SequenceItem.Camera.CoolCamera"
+    },
+    {
+      "code": "engine_does_it",
+      "level": "note",
+      "type": "NINA.Sequencer.SequenceItem.Telescope.UnparkScope"
+    },
+    {
+      "code": "absorbed",
+      "level": "note",
+      "type": "NINA.Sequencer.SequenceItem.Platesolving.Center"
+    },
+    {
+      "code": "approximated",
+      "level": "warn",
+      "type": "NINA.Sequencer.Trigger.Autofocus.AutofocusAfterHFRIncreaseTrigger"
+    },
+    {
+      "code": "not_carried",
+      "level": "warn",
+      "type": "NINA.Sequencer.SequenceItem.Imaging.TakeExposure"
+    },
+    {
+      "code": "dither_cadence",
+      "level": "note"
+    },
+    {
+      "code": "meridian_flip_added",
+      "level": "warn"
+    },
+    {
+      "code": "engine_does_it",
+      "level": "note",
+      "type": "NINA.Sequencer.SequenceItem.Camera.WarmCamera"
+    },
+    {
+      "code": "engine_does_it",
+      "level": "note",
+      "type": "NINA.Sequencer.SequenceItem.Telescope.ParkScope"
+    }
+  ]
+}

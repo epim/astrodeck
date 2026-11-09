@@ -1,0 +1,209 @@
+{
+  "flow": {
+    "name": "Two targets",
+    "tagline": "Imported from a NINA sequence.",
+    "graph": {
+      "nodes": [
+        {
+          "id": "n1",
+          "type": "dusk",
+          "x": 30,
+          "y": 70,
+          "params": {
+            "start": "Clock time",
+            "startClock": "21:30",
+            "offset": 0,
+            "stop": "Clock time",
+            "stopClock": "03:30",
+            "minAlt": 0
+          }
+        },
+        {
+          "id": "n2",
+          "type": "target",
+          "x": 270,
+          "y": 70,
+          "params": {
+            "name": "M31",
+            "ra": "00h 42m 44.30000s",
+            "dec": "+41\u00b0 16' 09.0000\"",
+            "maxTime": 180
+          }
+        },
+        {
+          "id": "n3",
+          "type": "autofocus",
+          "x": 510,
+          "y": 70,
+          "params": {}
+        },
+        {
+          "id": "n4",
+          "type": "guide",
+          "x": 750,
+          "y": 70,
+          "params": {
+            "dither": 3
+          }
+        },
+        {
+          "id": "n5",
+          "type": "capture",
+          "x": 990,
+          "y": 70,
+          "params": {
+            "filter": "L",
+            "exposure": 120,
+            "gain": 100,
+            "bin": "1",
+            "count": 30,
+            "goal": 0
+          }
+        },
+        {
+          "id": "n6",
+          "type": "target",
+          "x": 270,
+          "y": 370,
+          "params": {
+            "name": "M33",
+            "ra": "01h 33m 50.90000s",
+            "dec": "+30\u00b0 39' 37.0000\""
+          }
+        },
+        {
+          "id": "n7",
+          "type": "autofocus",
+          "x": 510,
+          "y": 370,
+          "params": {}
+        },
+        {
+          "id": "n8",
+          "type": "guide",
+          "x": 750,
+          "y": 370,
+          "params": {
+            "dither": 3
+          }
+        },
+        {
+          "id": "n9",
+          "type": "capture",
+          "x": 990,
+          "y": 370,
+          "params": {
+            "filter": "Ha",
+            "exposure": 300,
+            "gain": 100,
+            "bin": "1",
+            "count": 20,
+            "goal": 0
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "from": "n1",
+          "fromPort": "window",
+          "to": "n2",
+          "toPort": "arm"
+        },
+        {
+          "id": "e2",
+          "from": "n2",
+          "fromPort": "target",
+          "to": "n3",
+          "toPort": "run"
+        },
+        {
+          "id": "e3",
+          "from": "n3",
+          "fromPort": "focused",
+          "to": "n4",
+          "toPort": "run"
+        },
+        {
+          "id": "e4",
+          "from": "n4",
+          "fromPort": "guiding",
+          "to": "n5",
+          "toPort": "run"
+        },
+        {
+          "id": "e5",
+          "from": "n5",
+          "fromPort": "complete",
+          "to": "n6",
+          "toPort": "arm"
+        },
+        {
+          "id": "e6",
+          "from": "n6",
+          "fromPort": "target",
+          "to": "n7",
+          "toPort": "run"
+        },
+        {
+          "id": "e7",
+          "from": "n7",
+          "fromPort": "focused",
+          "to": "n8",
+          "toPort": "run"
+        },
+        {
+          "id": "e8",
+          "from": "n8",
+          "fromPort": "guiding",
+          "to": "n9",
+          "toPort": "run"
+        }
+      ],
+      "settings": {
+        "quickDitherEvery": 3
+      }
+    }
+  },
+  "warnings": [
+    {
+      "code": "converted",
+      "level": "note",
+      "type": "NINA.Sequencer.SequenceItem.Utility.WaitForTime"
+    },
+    {
+      "code": "absorbed",
+      "level": "note",
+      "type": "NINA.Sequencer.SequenceItem.Platesolving.Center"
+    },
+    {
+      "code": "approximated",
+      "level": "warn",
+      "type": "NINA.Sequencer.Conditions.TimeCondition"
+    },
+    {
+      "code": "converted",
+      "level": "note",
+      "type": "NINA.Sequencer.Conditions.TimeCondition"
+    },
+    {
+      "code": "not_carried",
+      "level": "warn",
+      "type": "NINA.Sequencer.SequenceItem.Imaging.TakeExposure"
+    },
+    {
+      "code": "converted",
+      "level": "note",
+      "type": "NINA.Sequencer.Trigger.Guider.DitherAfterExposures"
+    },
+    {
+      "code": "meridian_flip_added",
+      "level": "warn"
+    },
+    {
+      "code": "engine_does_it",
+      "level": "note",
+      "type": "NINA.Sequencer.SequenceItem.Telescope.ParkScope"
+    }
+  ]
+}

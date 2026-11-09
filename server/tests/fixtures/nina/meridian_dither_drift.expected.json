@@ -1,0 +1,174 @@
+{
+  "flow": {
+    "name": "NGC 7000 SHO",
+    "tagline": "Imported from a NINA sequence.",
+    "graph": {
+      "nodes": [
+        {
+          "id": "n1",
+          "type": "dusk",
+          "x": 30,
+          "y": 70,
+          "params": {
+            "start": "Astro dusk",
+            "offset": 15,
+            "minAlt": 0
+          }
+        },
+        {
+          "id": "n2",
+          "type": "target",
+          "x": 270,
+          "y": 70,
+          "params": {
+            "name": "NGC 7000",
+            "ra": "20h 59m 17.00000s",
+            "dec": "+44\u00b0 31' 44.0000\""
+          }
+        },
+        {
+          "id": "n3",
+          "type": "autofocus",
+          "x": 510,
+          "y": 70,
+          "params": {}
+        },
+        {
+          "id": "n4",
+          "type": "guide",
+          "x": 750,
+          "y": 70,
+          "params": {
+            "dither": 5
+          }
+        },
+        {
+          "id": "n5",
+          "type": "capture",
+          "x": 990,
+          "y": 70,
+          "params": {
+            "filter": "Ha",
+            "exposure": 300,
+            "gain": 100,
+            "bin": "1",
+            "count": 24,
+            "goal": 0
+          }
+        },
+        {
+          "id": "n6",
+          "type": "capture",
+          "x": 1230,
+          "y": 70,
+          "params": {
+            "filter": "OIII",
+            "exposure": 300,
+            "gain": 100,
+            "bin": "1",
+            "count": 24,
+            "goal": 0
+          }
+        },
+        {
+          "id": "n7",
+          "type": "capture",
+          "x": 1470,
+          "y": 70,
+          "params": {
+            "filter": "SII",
+            "exposure": 300,
+            "gain": 100,
+            "bin": "1",
+            "count": 24,
+            "goal": 0
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "from": "n1",
+          "fromPort": "window",
+          "to": "n2",
+          "toPort": "arm"
+        },
+        {
+          "id": "e2",
+          "from": "n2",
+          "fromPort": "target",
+          "to": "n3",
+          "toPort": "run"
+        },
+        {
+          "id": "e3",
+          "from": "n3",
+          "fromPort": "focused",
+          "to": "n4",
+          "toPort": "run"
+        },
+        {
+          "id": "e4",
+          "from": "n4",
+          "fromPort": "guiding",
+          "to": "n5",
+          "toPort": "run"
+        },
+        {
+          "id": "e5",
+          "from": "n5",
+          "fromPort": "complete",
+          "to": "n6",
+          "toPort": "run"
+        },
+        {
+          "id": "e6",
+          "from": "n6",
+          "fromPort": "complete",
+          "to": "n7",
+          "toPort": "run"
+        }
+      ],
+      "settings": {
+        "quickDitherEvery": 5
+      }
+    }
+  },
+  "warnings": [
+    {
+      "code": "converted",
+      "level": "note",
+      "type": "NINA.Sequencer.SequenceItem.Utility.WaitForTime"
+    },
+    {
+      "code": "absorbed",
+      "level": "note",
+      "type": "NINA.Sequencer.SequenceItem.Platesolving.Center"
+    },
+    {
+      "code": "not_carried",
+      "level": "warn",
+      "type": "NINA.Sequencer.SequenceItem.Imaging.TakeExposure"
+    },
+    {
+      "code": "engine_does_it",
+      "level": "note",
+      "type": "NINA.Sequencer.Trigger.MeridianFlip.MeridianFlipTrigger"
+    },
+    {
+      "code": "converted",
+      "level": "note",
+      "type": "NINA.Sequencer.Trigger.Guider.DitherAfterExposures"
+    },
+    {
+      "code": "not_carried",
+      "level": "warn",
+      "type": "NINA.Sequencer.Trigger.Platesolving.CenterAfterDriftTrigger"
+    },
+    {
+      "code": "engine_does_it",
+      "level": "note",
+      "type": "NINA.Sequencer.Trigger.Guider.RestoreGuiding"
+    }
+  ]
+}

@@ -1,0 +1,126 @@
+{
+  "flow": {
+    "name": "Plugin night",
+    "tagline": "Imported from a NINA sequence.",
+    "graph": {
+      "nodes": [
+        {
+          "id": "n1",
+          "type": "dusk",
+          "x": 30,
+          "y": 70,
+          "params": {
+            "start": "Astro dusk",
+            "offset": 0,
+            "minAlt": 35
+          }
+        },
+        {
+          "id": "n2",
+          "type": "target",
+          "x": 270,
+          "y": 70,
+          "params": {
+            "name": "NGC 6946",
+            "ra": "20h 34m 52.30000s",
+            "dec": "+60\u00b0 09' 14.0000\""
+          }
+        },
+        {
+          "id": "n3",
+          "type": "guide",
+          "x": 510,
+          "y": 70,
+          "params": {
+            "dither": 0
+          }
+        },
+        {
+          "id": "n4",
+          "type": "capture",
+          "x": 750,
+          "y": 70,
+          "params": {
+            "filter": "L",
+            "exposure": 120,
+            "gain": 100,
+            "bin": "1",
+            "count": 15,
+            "goal": 0
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "from": "n1",
+          "fromPort": "window",
+          "to": "n2",
+          "toPort": "arm"
+        },
+        {
+          "id": "e2",
+          "from": "n2",
+          "fromPort": "target",
+          "to": "n3",
+          "toPort": "run"
+        },
+        {
+          "id": "e3",
+          "from": "n3",
+          "fromPort": "guiding",
+          "to": "n4",
+          "toPort": "run"
+        }
+      ],
+      "settings": {
+        "quickAutofocus": false,
+        "quickDitherEvery": 0
+      }
+    }
+  },
+  "warnings": [
+    {
+      "code": "approximated",
+      "level": "warn",
+      "type": "NINA.Sequencer.Conditions.AltitudeCondition"
+    },
+    {
+      "code": "absorbed",
+      "level": "note",
+      "type": "NINA.Sequencer.SequenceItem.Platesolving.Center"
+    },
+    {
+      "code": "unknown_type",
+      "level": "warn",
+      "type": "Example.Plugin.Sequencer.ParkAndWait"
+    },
+    {
+      "code": "not_carried",
+      "level": "warn",
+      "type": "NINA.Sequencer.SequenceItem.Imaging.TakeExposure"
+    },
+    {
+      "code": "unknown_type",
+      "level": "warn",
+      "type": "Example.Plugin.Sequencer.RotateOnWind"
+    },
+    {
+      "code": "dither_cadence",
+      "level": "note"
+    },
+    {
+      "code": "autofocus_not_asked",
+      "level": "note"
+    },
+    {
+      "code": "meridian_flip_added",
+      "level": "warn"
+    },
+    {
+      "code": "script_not_run",
+      "level": "warn",
+      "type": "NINA.Sequencer.SequenceItem.Utility.ExternalScript"
+    }
+  ]
+}
