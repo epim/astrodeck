@@ -49,7 +49,8 @@ from ..sequence.models import (ActionKind, DuskFlatsPlan, SequencePlan,
                                TriggerKind)
 from ..sequence.schedule import sun_window_needs_a_site
 from . import identity, tonight
-from .compile import lane_refusals
+from .compile import (lane_order_refusals, lane_refusals, ordered_lanes,
+                      pool_strategy_of)
 from .models import FlowGraph
 from .nodes import (DUSK_FLATS_METHODS, NODE_DEFS, QUICK_AUTOFOCUS,
                     QUICK_DITHER_EVERY)
@@ -549,7 +550,7 @@ def _dusk_fields(base: dict, entry: dict) -> frozenset[str]:
     return frozenset(base) - frozenset(_pool_overrides(entry))
 
 
-def _target_schedule(base: dict, entry: dict, *, is_pool: bool) -> dict:
+def _target_schedule(base: dict, entry: dict) -> dict:
     """The ``Schedule`` block for one target.
 
     Two sources merge here. The DUSK WINDOW node's block applies to the whole
@@ -557,16 +558,16 @@ def _target_schedule(base: dict, entry: dict, *, is_pool: bool) -> dict:
     DISAGREE THE POOL WINS, because it is the more specific statement - an
     operator who set a 30 degree floor on the night and 40 on one candidate
     meant 40 for that candidate.
+
+    A POOL MEMBER KEEPS THE DEFAULT ``on_missed`` ("wait") SINCE THE POOL IS A
+    GROUP (#183). It was set to "skip" as the closest approximation of "best of
+    several" the model had: every candidate attempted and passed over when its
+    window was missed. A pool group picks one candidate at a time and every
+    other one waits its turn, which "skip" reads as a window the night missed:
+    once the first pick had run for the grace (five minutes), each of the
+    others was skipped for the night.
     """
-    sched = {**base, **_pool_overrides(entry)}
-    if is_pool:
-        # The closest honest approximation of "best of several" the existing
-        # model can express. Under the default "wait", member 1 blocks the whole
-        # night waiting for a window it may never get, and members 2-4 - the
-        # entire point of a pool - never run at all. Under "skip" each member is
-        # attempted and passed over when its window is missed.
-        sched["on_missed"] = "skip"
-    return sched
+    return {**base, **_pool_overrides(entry)}
 
 
 def _coords(entry: dict, when: float | None
@@ -716,14 +717,46 @@ def _cycle_steps(step: dict, target_name: str, index: int,
     return out
 
 
-def _steps(entry: dict, target_name: str, out: list[dict]) -> list[dict]:
+def _phases(entry: dict, lanes: dict[str, list[str]] | None) -> list[int]:
+    """The chain phase of each of a TARGET entry's steps, in order (#1074), or
+    [] when its stages are no chain. A chain is a lane with a FILTER CYCLE and
+    more than one stage, the lane's wires putting them in one order
+    (``compile.ordered_lanes``: a lane that branches, or a stage canvas order
+    handed the block from outside its lane, is no chain, and
+    ``compile.lane_order_refusals`` says the first). A step's phase is the
+    place of its stage in THAT order, whatever order the stages were drawn on
+    the canvas; with no graph (``lanes`` None) the compiled order is all there
+    is to read. A POOL member is never a chain (``compile.lane_order_refusals``'
+    C2), and nor is a block with a loop wire: its lane is ONE PASS, every stage
+    of it shot again on every pass of every panel, which is the order it
+    draws. A flow with no such chain compiles to the plan it always did."""
+    steps = entry.get("steps") or []
+    if (len(steps) < 2 or entry.get("pool_rank") is not None
+            or entry.get("loop") is True
+            or not any((s or {}).get("strategy") == "cycle" for s in steps)):
+        return []
+    if lanes is None:
+        return list(range(len(steps)))
+    stages = [str((s or {}).get("node_id") or "") for s in steps]
+    lane = lanes.get(str(entry.get("node_id") or ""), [])
+    if sorted(lane) != sorted(stages):
+        return []
+    return [lane.index(stage) for stage in stages]
+
+
+def _steps(entry: dict, target_name: str, out: list[dict],
+           phases: Sequence[int] = ()) -> list[dict]:
     # One answer per ENTRY (#155), read once: a pool member's quota governs
     # every FILTER CYCLE stage it owns, not just the first.
     quota_cycles = _quota_cycles(entry)
     steps: list[dict] = []
     for i, step in enumerate(entry.get("steps") or []):
+        phase = phases[i] if phases else 0
         if step.get("strategy") == "cycle":
-            steps.extend(_cycle_steps(step, target_name, i, quota_cycles))
+            expanded = _cycle_steps(step, target_name, i, quota_cycles)
+            for one in expanded:
+                _in_phase(one, phase)
+            steps.extend(expanded)
             continue
         exposure = step.get("exposure_s")
         count = step.get("count")
@@ -750,8 +783,16 @@ def _steps(entry: dict, target_name: str, out: list[dict]) -> list[dict]:
                 f"targets[{target_name}].steps[{i}].integration_goal_h",
                 f"Tonight shows the {goal} h integration goal as an estimate. "
                 f"This run stops at {count} frames regardless"))
-        steps.append(clean)
+        steps.append(_in_phase(clean, phase))
     return steps
+
+
+def _in_phase(step: dict, phase: int) -> dict:
+    """``step`` in chain phase ``phase``, in place. Phase 0 writes nothing,
+    which is a step of every plan with no chain."""
+    if phase:
+        step["phase"] = phase
+    return step
 
 
 def _identify(target: dict, entry: dict, *, flow_id: str, is_pool: bool,
@@ -1759,8 +1800,9 @@ def _flattening_note(label: str, panel: str, steps: list[dict],
 def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
                    dec_deg: float, canonical: str | None, base_schedule: dict,
                    flow_id: str, unmapped: list[dict],
-                   rig: RigFacts | None,
-                   left_out: list[str]) -> tuple[list[dict], dict | None]:
+                   rig: RigFacts | None, left_out: list[str],
+                   phases: Sequence[int] = ()
+                   ) -> tuple[list[dict], dict | None]:
     """``(panels, group)`` for one multi-panel TARGET entry (spec 3.3).
 
     One Target per panel ``framing.compute_mosaic`` lays out, in its order
@@ -1789,6 +1831,11 @@ def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
     (``_panel_steps``); every other panel keeps the lane's steps. The ids
     follow the step as it stands: an overridden exposure is a recipe of its
     own, as a changed lane exposure is, and no other panel's id moves.
+
+    A CHAINED lane (``phases``, ``_phases``) is still one panel a cell: each
+    panel's steps carry the phase of the stage they came from, and the run
+    shoots a panel's later phase only once its earlier one is complete
+    (#1074). No panel is added, renamed or re-keyed for it.
 
     A block whose every panel is skipped shoots nothing: it is dropped with a
     warn, not emitted as a group of no members, which ``plan_identity_errors``
@@ -1843,7 +1890,7 @@ def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
     # #186), by 0-based cell; every other panel keeps the lane's steps.
     overrides = {(o["row"] - 1, o["col"] - 1): o
                  for o in m.get("panel_exposure") or []}
-    steps = _steps(entry, name or "?", unmapped)
+    steps = _steps(entry, name or "?", unmapped, phases)
     cycles = entry.get("loop") is True or any(
         (s or {}).get("strategy") == "cycle"
         for s in (entry.get("steps") or []))
@@ -1864,8 +1911,7 @@ def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
                  # The panel's own angle when the block corrects (a block at
                  # layout 0 still commands its corners), else the block's.
                  "rotation_deg": p["pa_deg"] if corrected else commanded,
-                 "schedule": _target_schedule(base_schedule, entry,
-                                              is_pool=False),
+                 "schedule": _target_schedule(base_schedule, entry),
                  "steps": _panel_steps(steps, overrides.get((row, col))),
                  "mosaic_group": group_id, "panel_row": row,
                  "panel_col": col, "autofocus_skip_if_fresh": True,
@@ -1927,6 +1973,58 @@ def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
                      "fov_from": str(m.get("fov_from") or ""), "key": key},
     }
     return panels, group
+
+
+def _pool_group(entry: dict, *, flow_id: str, strategy: str) -> dict:
+    """The ``TargetGroup`` of kind "pool" one POOL node compiles to (#183):
+    the node's strategy (``compile.pool_strategy_of``, read off the graph, as
+    the compiled entries do not carry it) and nothing else of the node's,
+    whose constraints reach the members themselves (``_pool_overrides``).
+
+    A pool HONOURS the group's ``mode``: "sequential" runs each pick to
+    completion, which is what "Best available" and "Priority order" say (the
+    best one now, then the next; the first rank until it is done, then the
+    next), and "rotate" re-picks every visit, which is what "Round robin"
+    says. The id is the node's, so a member keeps its group across edits."""
+    node_id = str(entry.get("node_id") or "")
+    return {"id": (identity.group_id(flow_id, node_id, "pool")
+                   if flow_id and node_id else uuid4().hex),
+            "name": NODE_DEFS["pool"].label, "kind": "pool",
+            "mode": "rotate" if strategy == "round_robin" else "sequential",
+            "pool_strategy": strategy}
+
+
+def _ungroup_repeated_pools(targets: list[dict], pool_groups: dict[str, dict],
+                            unmapped: list[dict]) -> None:
+    """Take a POOL back out of its group when one of its candidates shares a
+    name with another target of the flow (its own pool's included), in place,
+    and say so (#183). A plan with groups tells its targets apart by name
+    alone (``plan_identity_errors``), so the group would refuse the start of a
+    flow that has always run; such a POOL compiles as it did before there were
+    pool groups, each candidate a plain target in rank order that is passed
+    over when its window is missed (``on_missed`` "skip", the closest
+    approximation of "best of several" the model had then), and the loss is
+    the old one, with the reason."""
+    seen = Counter(t["name"] for t in targets)
+    for node_id, group in list(pool_groups.items()):
+        members = [t for t in targets if t.get("mosaic_group") == group["id"]]
+        repeated = sorted({t["name"] for t in members if seen[t["name"]] > 1})
+        if not repeated:
+            continue
+        del pool_groups[node_id]
+        for t in members:
+            del t["mosaic_group"]
+            t["schedule"]["on_missed"] = "skip"
+        unmapped.append(_note(
+            "targets[*].pool_rank",
+            f"'best of several' is not something the engine can do for this "
+            f"pool: {_and_list([repr(n) for n in repeated])} "
+            f"{'is' if len(repeated) == 1 else 'are'} named more than once in "
+            f"this flow, and a plan with groups needs every target name once. "
+            f"Its {len(members)} candidates run in rank order, each skipped "
+            f"if its window is missed, rather than one being chosen. List "
+            f"each candidate once, and keep a TARGET block off a "
+            f"candidate's name", "warn"))
 
 
 def _refused_values(error: ValidationError, where) -> str:
@@ -2082,6 +2180,16 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
     if refusals:
         raise GraphNotRunnable(" ".join(refusals))
     unmapped: list[dict] = []
+    # THE LANES WHOSE ORDER THE COMPILE CANNOT KEEP (#1074, #774), each one an
+    # unmapped loss naming its stages and left as it always compiled. Needs
+    # the graph, which both production callers pass.
+    for r in lane_order_refusals(graph) if graph is not None else ():
+        unmapped.append(_note(f"lane.{r['node_id']}", r["text"], "danger"))
+    lanes = ordered_lanes(graph) if graph is not None else None
+    # Each POOL node's strategy, for its group: with no graph a pool is "best",
+    # as a node that carries no strategy reads.
+    strategies = ({n.id: pool_strategy_of(n.params) for n in graph.nodes
+                   if n.type == "pool"} if graph is not None else {})
     base_schedule = {k: v for k, v in (compiled.get("schedule") or {}).items()
                      if k in SCHEDULE_KEYS}
 
@@ -2103,7 +2211,9 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
     # The panels of every block left out whole because each is skipped
     # (#335): the plan's own `skipped_ids`, absent while empty.
     left_out: list[str] = []
-    pooled = 0
+    # A POOL node's id -> its group (#183): every member the node compiles to
+    # is a member of it.
+    pool_groups: dict[str, dict] = {}
     members_seen: dict[str, set[str]] = {}
     for entry in compiled.get("targets") or []:
         name = str(entry.get("name") or "").strip()
@@ -2123,7 +2233,7 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
                 entry, name=name, ra_hours=ra_hours, dec_deg=dec_deg,
                 canonical=canonical, base_schedule=base_schedule,
                 flow_id=flow_id, unmapped=unmapped, rig=rig,
-                left_out=left_out)
+                left_out=left_out, phases=_phases(entry, lanes))
             if group is not None:
                 groups.append(group)
                 group_blocks.append(_block_label(entry))
@@ -2144,9 +2254,9 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
 
         target = {"name": name, "ra_hours": ra_hours, "dec_deg": dec_deg,
                   "rotation_deg": rotation,
-                  "schedule": _target_schedule(base_schedule, entry,
-                                               is_pool=is_pool),
-                  "steps": _steps(entry, name or "?", unmapped)}
+                  "schedule": _target_schedule(base_schedule, entry),
+                  "steps": _steps(entry, name or "?", unmapped,
+                                  _phases(entry, lanes))}
         if not is_pool:
             # #170: the TARGET's own centring reaches the run. A legacy SLEW's
             # tolerance does not (spec 1.7; `NODE_SETTINGS["slew"]`).
@@ -2172,11 +2282,17 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
                              anchor=entry.get("frame_anchor"))
         _identify(target, entry, flow_id=flow_id, is_pool=is_pool,
                   members_seen=members_seen, canonical=canonical, key=key)
+        if is_pool:
+            node_id = str(entry.get("node_id") or "")
+            if node_id not in pool_groups:
+                pool_groups[node_id] = _pool_group(
+                    entry, flow_id=flow_id,
+                    strategy=strategies.get(node_id, "best"))
+            target["mosaic_group"] = pool_groups[node_id]["id"]
         targets.append(target)
         target_blocks.append(_block_label(entry))
         dusk_fields.append(_dusk_fields(base_schedule, entry))
         built.append((entry, [target]))
-        pooled += 1 if is_pool else 0
 
     # FOLLOWERS WAIT ONLY WHEN THE FLOW SAYS SO (spec 1.6). Under the default
     # a follower needs no field: the engine treats every target after a
@@ -2195,15 +2311,9 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
             "this flow has no target the run could point at - add a TARGET "
             "node with coordinates, or a POOL whose members are catalogue names")
 
-    if pooled:
-        # Counted as targets are BUILT, not zipped against the compiled list
-        # afterwards: a dropped member shifts the two lists out of step, and the
-        # count would then describe candidates that are not in this plan.
-        unmapped.append(_note(
-            "targets[*].pool_rank",
-            f"'best of several' is not something the engine can do yet: all "
-            f"{pooled} candidates run in rank order, each skipped if its "
-            f"window is missed, rather than one being chosen", "warn"))
+    _ungroup_repeated_pools(targets, pool_groups, unmapped)
+    groups.extend(pool_groups.values())
+    group_blocks.extend(NODE_DEFS["pool"].label for _ in pool_groups)
 
     _automation(compiled, unmapped, closes_on_unsafe=closes_on_unsafe)
     unmapped.extend(inert_nodes(graph))

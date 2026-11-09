@@ -473,18 +473,21 @@ class TestPools:
         assert (s.min_altitude_deg, s.min_moon_sep_deg, s.max_hour_angle_h) == \
                (30, 40, 4)
 
-    def test_pool_members_skip_a_missed_window_instead_of_blocking_the_night(self):
-        """Under the default ``wait``, member 1 blocks the whole night waiting
-        for a window it may never get, and members 2-4 — the entire point of a
-        pool — never run."""
+    def test_pool_members_wait_their_turn_and_the_pool_is_a_group(self):
+        """WP 5.1b2 (#183): the pool is a group that picks one candidate at a
+        time, so the others wait their turn. They used to be passed over when
+        a window was missed, the closest approximation of "best of several"
+        the model had, which skipped every other candidate once the first
+        pick had run for the grace; the loss that said so is gone with it
+        (tests/test_w5_1b2_pool_group.py holds the group)."""
         g = FlowGraph(
             nodes=[_n("p", "pool", members="M16, M17"),
                    _n("c", "capture", x=100, exposure=60, count=5)],
             edges=[_e("p", "target", "c", "run")])
         plan, un = to_sequence_plan(compile_plan(g, "n"))
-        assert all(t.schedule.on_missed == "skip" for t in plan.targets)
-        assert "targets[*].pool_rank" in _keys(un), (
-            "the approximation is worth having; pretending it is a pool is not")
+        assert all(t.schedule.on_missed == "wait" for t in plan.targets)
+        assert [grp.kind for grp in plan.groups] == ["pool"]
+        assert "targets[*].pool_rank" not in _keys(un)
 
     def test_a_plain_target_still_waits(self):
         plan, _ = to_sequence_plan(compile_plan(_one_target(), "n"))
@@ -715,6 +718,15 @@ class TestPlansWithNoMosaicMoveOnlyByTheirCentring:
         # first method the engine runs, the twilight sky, where it read the
         # lens cap through the missing-key default. That is the one change to
         # its plan, and resetting it here reproduces the pin, byte for byte.
+        # WP 5.1b2 (#183): a POOL is a pool group now, its members in it and no
+        # longer passed over when a window is missed. Reset, the dump hashes to the
+        # pin, byte for byte: nothing else of a pool plan moved.
+        pools = {g["id"] for g in got["groups"] if g["kind"] == "pool"}
+        got["groups"] = [g for g in got["groups"] if g["id"] not in pools]
+        for t in got["targets"]:
+            if t["mosaic_group"] in pools:
+                t["mosaic_group"] = None
+                t["schedule"]["on_missed"] = "skip"
         flats = got.get("dusk_flats")
         if flats is not None:
             assert flats["method"] == "sky", flats

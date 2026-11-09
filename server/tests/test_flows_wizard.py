@@ -835,6 +835,16 @@ class TestTheThreeAnswersAreTodaysGraphLessSlew:
                 # plan now carries (`SequencePlan.dome`); the pin was hashed
                 # without it. Left out, like the count mode.
                 got.pop("dome", None)
+                # WP 5.1b2 (#183): a POOL is a pool group now, its members in it and no
+                # longer passed over when a window is missed. Reset, the dump hashes to the
+                # pin, byte for byte: nothing else of a pool plan moved. (The ids are
+                # blanked above, so the members are the targets that name a group; a
+                # three-answer plan has no group but the pool's.)
+                got["groups"] = [g for g in got["groups"] if g["kind"] != "pool"]
+                for t in got["targets"]:
+                    if t["mosaic_group"] is not None:
+                        t["mosaic_group"] = None
+                        t["schedule"]["on_missed"] = "skip"
                 if "dusk_flats" in got:
                     # WP 4.1a (#843): the wizard's block is created as the
                     # twilight sky, where it was the lens cap (see

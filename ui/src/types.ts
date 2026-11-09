@@ -1204,6 +1204,10 @@ export interface ExposureStep {
   // PRO-5 flat auto-exposure (additive; 0/undefined = off => back-compat).
   adu_target?: number;      // >0 + Flat ⇒ solve exposure to this ADU
   panel_brightness?: number; // flat-panel level while shooting; undefined = don't touch
+  // The place, in its lane's own order, of the chained stage this step came from
+  // (#1074): the run shoots only the lowest phase that still owes frames. ABSENT
+  // from the server's dump while 0, which is every step of a plan with no chain.
+  phase?: number;
 }
 
 export interface Target {
@@ -1247,18 +1251,14 @@ export interface Target {
  *
  *  Its members are the targets whose `mosaic_group` equals `id`. A plan's
  *  groups are written by the flow compile, never by a client, and the server
- *  sends every field (pydantic defaults), so none is optional here but the two
- *  its serializer leaves out at their defaults, `phases` and `pool_strategy`. */
+ *  sends every field (pydantic defaults), so none is optional here but the one
+ *  its serializer leaves out at its default, `pool_strategy`. */
 export interface TargetGroup {
   id: string;
   name: string;
   /** "pool" is a TARGET POOL: the members are candidates, and the run visits
    *  the one `pool_strategy` selects at each visit boundary (#183). */
   kind: "mosaic" | "pool";
-  /** The member target ids in the order the group shoots them (#1074): only
-   *  the first phase that still owes a member runs. ABSENT from the dump
-   *  while empty, like every default added after groups first shipped. */
-  phases?: string[][];
   /** How a pool picks its next member (#183). ABSENT from the dump while
    *  null; a pool without one reads as "best". */
   pool_strategy?: "best" | "priority" | "round_robin" | null;

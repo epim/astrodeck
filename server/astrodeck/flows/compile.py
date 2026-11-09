@@ -277,6 +277,25 @@ PASS_TYPES: frozenset[str] = frozenset(
     t for t, d in NODE_DEFS.items() if d.port(PASS_PORT, "out") is not None)
 
 
+#: A POOL's `strategy` options as ``TargetGroup.pool_strategy``'s words, keyed
+#: on the opening word as `onFloor` is matched on its verb: the copy after it
+#: ("Best available (alt x moon)") may be reworded without changing which
+#: member a saved pool shoots first.
+POOL_STRATEGIES: tuple[tuple[str, str], ...] = (
+    ("best", "best"), ("priority", "priority"), ("round", "round_robin"))
+
+
+def pool_strategy_of(params: dict | None) -> str:
+    """The engine's strategy word for a POOL's `strategy`. Anything this
+    build does not offer reads as "best", the node's missing-key meaning, as
+    `count_mode_of` reads anything else as the missing-key count."""
+    text = str((params or {}).get("strategy") or "").strip().lower()
+    for lead, word in POOL_STRATEGIES:
+        if text.startswith(lead):
+            return word
+    return "best"
+
+
 #: The Sun altitude each sun-based Start choice means, degrees below the
 #: horizon (backlog WP-09, #191): the standard astronomical/nautical/civil
 #: twilight figures, matching ``catalog.visibility.ASTRO_DARK_DEG`` /
@@ -1017,6 +1036,107 @@ def lane_refusals(graph: FlowGraph) -> list[dict]:
             continue
         out.append({"code": "M13", "node_id": n.id,
                     "text": _no_owner_text(n, by_id, parents)})
+    return out
+
+
+#: The two stage types, the ones that take frames.
+STAGE_TYPES: tuple[str, ...] = ("capture", "cycle")
+
+
+def _lane_above(node_id: str, parents: dict[str, list[FlowNode]]) -> set[str]:
+    """The ids of every lane node above ``node_id`` on its way up to its block
+    (the block's own id excluded): its ancestors in the lane tree."""
+    above: set[str] = set()
+    cur = node_id
+    while True:
+        ups = parents.get(cur, [])
+        if len(ups) != 1 or ups[0].id in above or ups[0].type in OWNER_TYPES:
+            return above
+        cur = ups[0].id
+        above.add(cur)
+
+
+def _unordered_stages(stages: list[FlowNode],
+                      parents: dict[str, list[FlowNode]]
+                      ) -> tuple[FlowNode, FlowNode] | None:
+    """The first two of ``stages`` (in canvas order) the lane draws no order
+    between: neither is above the other, so the lane branches before them."""
+    above = {s.id: _lane_above(s.id, parents) for s in stages}
+    for i, a in enumerate(stages):
+        for b in stages[i + 1:]:
+            if a.id not in above[b.id] and b.id not in above[a.id]:
+                return a, b
+    return None
+
+
+def _and_names(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else (
+        f"{', '.join(items[:-1])} and {items[-1]}")
+
+
+def ordered_lanes(graph: FlowGraph) -> dict[str, list[str]]:
+    """``{block id: its stage node ids in lane order}`` for every TARGET or
+    POOL whose stages the wires put in one order: the lane has no two stages
+    with no order between them (``lane_order_refusals``' C1). What ``to_plan``
+    reads to know that the stages a block compiled are the chain the lane
+    draws, and not a stage canvas order handed it from another lane (a
+    CAPTURE past a DOME, which the lane does not own)."""
+    graph = graph.with_defaults()
+    _by_id, parents = _lane_index(graph)
+    out: dict[str, list[str]] = {}
+    for block in (n for n in graph.nodes if n.type in OWNER_TYPES):
+        stages = [n for n in panel_lane(graph, block)
+                  if n.type in STAGE_TYPES]
+        if _unordered_stages(stages, parents) is None:
+            out[block.id] = [n.id for n in stages]
+    return out
+
+
+def lane_order_refusals(graph: FlowGraph) -> list[dict]:
+    """The lanes whose stage order the compile cannot keep, as ``{code,
+    node_id, text}`` (#1074, #774): ``to_plan`` reports each as an unmapped
+    loss and the doctor as an error, both naming the stages by node id. Only
+    a lane with a FILTER CYCLE and a second stage can lose an order, and
+    there are two ways:
+
+    * C1, two stages with no wire order between them (the lane branches
+      before them): the flow draws no "then", so the run has none to keep.
+      A multi-panel block's branch is M12's, refused outright;
+    * C2, a POOL's lane has a FILTER CYCLE and another stage: a pool shoots
+      each candidate whole, so a chain under it has nowhere to be ordered.
+
+    Both leave the block compiled as it was, every stage interleaved in one
+    cycle target. Read through the missing-key defaults, as
+    ``lane_refusals`` is."""
+    graph = graph.with_defaults()
+    _by_id, parents = _lane_index(graph)
+    out: list[dict] = []
+    for block in sorted((n for n in graph.nodes if n.type in OWNER_TYPES),
+                        key=lambda n: (n.x, n.y, n.id)):
+        stages = [n for n in panel_lane(graph, block)
+                  if n.type in STAGE_TYPES]
+        if len(stages) < 2 or all(n.type != "cycle" for n in stages):
+            continue
+        unordered = _unordered_stages(stages, parents)
+        if unordered is not None:
+            if is_multi_panel(block):
+                continue        # M12's: the compile refuses the whole graph
+            a, b = unordered
+            out.append({"code": "C1", "node_id": block.id, "text": (
+                f"{_block_name(block)}: {_stage_label(a)} (node {a.id}) and "
+                f"{_stage_label(b)} (node {b.id}) have no wire between "
+                f"them, so the flow draws no order and the run cannot keep "
+                f"one: all of its stages are shot as one interleaved cycle. "
+                f"Wire the first one's 'all done' to the second one's "
+                f"'run', or give one of them its own TARGET.")})
+        elif block.type == "pool":
+            named = [f"{_stage_label(n)} (node {n.id})" for n in stages]
+            out.append({"code": "C2", "node_id": block.id, "text": (
+                f"{_block_name(block)}: {_and_names(named)} follow one "
+                f"another under a pool, and a pool shoots each candidate "
+                f"whole with no order between stages, so they are shot as "
+                f"one interleaved cycle. Keep one stage under the pool, or "
+                f"give each stage a TARGET of its own.")})
     return out
 
 

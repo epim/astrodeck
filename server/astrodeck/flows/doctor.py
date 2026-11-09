@@ -36,10 +36,11 @@ from dataclasses import dataclass
 # way in this package, and a second reading here would let the doctor and the
 # compile's notes disagree about the same wire.
 from .compile import (
-    LANE_TYPES, NEXT_PORT, OWNER_TYPES, PASS_PORT, PASS_TYPES, _grid_dim,
-    _lane_index, _stage_label, angle_code, campaign_block, compile_plan, is_multi_panel,
-    lane_branched, lane_tail, loop_wires, one_panel_pass_wires, owner_of,
-    panel_lane, PANEL_EXPOSURE_FORM, grid_size, parse_panel_exposure)
+    LANE_TYPES, NEXT_PORT, OWNER_TYPES, PASS_PORT, PASS_TYPES, STAGE_TYPES,
+    _grid_dim, _lane_index, _stage_label, angle_code, campaign_block,
+    compile_plan, is_multi_panel, lane_branched, lane_order_refusals,
+    lane_tail, loop_wires, one_panel_pass_wires, owner_of, panel_lane,
+    PANEL_EXPOSURE_FORM, grid_size, parse_panel_exposure)
 from .identity import typed_coordinates
 from .models import FlowGraph
 from .nodes import (DUSK_FLATS_METHODS, NODE_DEFS, flats_method,
@@ -876,6 +877,33 @@ def _mosaic_rules(graph: FlowGraph, rig: RigFacts | None) -> list[Issue]:
     return out
 
 
+def _lane_rules(graph: FlowGraph) -> list[Issue]:
+    """C1 and C2, a lane whose stage order the compile cannot keep, and the
+    note that a POOL's quota is not read over CAPTURE LOOPs (#1074, #774).
+
+    C1 and C2 are ``compile.lane_order_refusals``, the findings ``to_plan``
+    reports as unmapped losses: an error here, naming the stages by node id,
+    because the run would shoot them as one interleaved cycle whatever the
+    flow draws.
+
+    The note: a POOL's `quota` counts cycles, and only a FILTER CYCLE has any
+    (``to_plan._quota_cycles``). Under CAPTURE LOOPs alone the pool still
+    shows a quota, and every candidate ends at its own frame count."""
+    out = [Issue(f"\u25b8 {r['text']}", "danger")
+           for r in lane_order_refusals(graph)]
+    for pool in (n for n in graph.nodes if n.type == "pool"):
+        stages = [n for n in panel_lane(graph, pool) if n.type in STAGE_TYPES]
+        if stages and all(n.type == "capture" for n in stages):
+            out.append(Issue(
+                f"\u25b8 {NODE_DEFS['pool'].label} - its per-target quota of "
+                f"{_plain(pool.params.get('quota'))} counts FILTER CYCLE "
+                f"cycles, and every stage under this pool is a CAPTURE LOOP, "
+                f"which ends each candidate at its own frame count, so the "
+                f"quota is not read. Set the frame count on the CAPTURE "
+                f"LOOP, or use a FILTER CYCLE.", "note"))
+    return out
+
+
 def check(graph: FlowGraph, *, standards=None, mount=None,
           rig: RigFacts | None = None) -> list[Issue]:
     """Every rule: the prototype's, in its order, then the mosaic rules (spec
@@ -1048,6 +1076,7 @@ def check(graph: FlowGraph, *, standards=None, mount=None,
     # M1-M15, after every older rule, so a flow saved before mosaics reads
     # its issues in the order it always did.
     out.extend(_mosaic_rules(graph, rig))
+    out.extend(_lane_rules(graph))
 
     # L1 (spec 1.7). SLEW + CENTER still loads, so every saved flow keeps
     # working, but its settings were never the run's: `to_plan` has always

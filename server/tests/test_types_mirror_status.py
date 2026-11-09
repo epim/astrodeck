@@ -517,7 +517,9 @@ def _progress_blocks() -> list[dict]:
     # `set_aside` (a rejects set-aside, which has no expiry: for_now false).
     from astrodeck.events import night_key
     now = 1_800_000_000.0
-    panel = next(t for t in plan.targets if t.mosaic_group)
+    # A mosaic's panel has a place in its grid; a pool's candidate is in a
+    # group too (WP 5.1b2, #183) and has none.
+    panel = next(t for t in plan.targets if t.panel_row is not None)
     session.note_set_aside(panel.id, "rejected every frame",
                            night=night_key(now), kind="rejects")
     got = flow_progress(compiled, plan, session, flow_id=flow, now=now)

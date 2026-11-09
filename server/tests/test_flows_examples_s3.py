@@ -143,6 +143,15 @@ def _plan_digest(ex: FlowRecord) -> str:
     # method the engine runs, the twilight sky, where it read the lens cap
     # through the missing-key default. The one change to its plan; resetting
     # it reproduces the pin, byte for byte.
+    # WP 5.1b2 (#183): a POOL is a pool group now, its members in it and no
+    # longer passed over when a window is missed. Reset, the dump hashes to the
+    # pin, byte for byte: nothing else of a pool plan moved.
+    pools = {g["id"] for g in got["groups"] if g["kind"] == "pool"}
+    got["groups"] = [g for g in got["groups"] if g["id"] not in pools]
+    for t in got["targets"]:
+        if t["mosaic_group"] in pools:
+            t["mosaic_group"] = None
+            t["schedule"]["on_missed"] = "skip"
     flats = got.get("dusk_flats")
     if flats is not None:
         assert flats["method"] == "sky", flats
