@@ -283,6 +283,13 @@ class Target(BaseModel):
         return out
 
 
+class LayoutRelayRefused(Exception):
+    """The relay (``flows.to_plan.relay_layout``, "Measure at the first
+    solve", #187) could not lay the grid out at the measured angle. The
+    message is words for the operator, never an exception's own text (an
+    OSError's names a path), and the engine sets the group aside with it."""
+
+
 class TargetGroup(BaseModel):
     """One TARGET block with a grid, as the engine runs it (#189 U-01, spec
     3.4). Its MEMBERS are the targets whose ``mosaic_group`` equals ``id``;
@@ -344,18 +351,38 @@ class TargetGroup(BaseModel):
     skipped_ids: list[str] = []
     # Provenance only (rows, cols, overlap, fov, key): nothing steers by it.
     geometry: dict = {}
+    # "Measure at the first solve" (#187; additive, each ABSENT from the dump
+    # at its default). ``measure_angle``: the layout angle is what the first
+    # centring solve of each night measures, so the first hop of a night
+    # relays the grid before any panel is shot (`SequenceEngine.
+    # _relay_group`). ``node_id``: the flow block the relay writes the
+    # measured angle to. ``measured``: what the relay did, the engine's
+    # record and the card's source: ``pa_deg`` (the angle measured, folded to
+    # the layout's side), ``from_pa_deg``, ``night``, ``carried`` (ruling 3),
+    # ``max_move_deg``, ``threshold_deg``, ``reason`` and ``orphaned_frames``.
+    measure_angle: bool = False
+    node_id: str = ""
+    measured: dict | None = None
 
     @model_serializer(mode="wrap")
     def _omit_the_defaults_added_later(self,
                                        handler: SerializerFunctionWrapHandler):
-        """The dump without ``pool_strategy`` while it is None, whatever the
-        mode, and nested in a ``SequencePlan`` or a ``Session`` too, so every
-        group saved before it existed dumps byte for byte as it did. A wrap
-        serializer, so every other field, and the JSON schema, are
-        pydantic's own."""
+        """The dump without ``pool_strategy`` while it is None, and without
+        ``measure_angle``, ``node_id`` and ``measured`` at their defaults,
+        whatever the mode, and nested in a ``SequencePlan`` or a ``Session``
+        too, so every group saved before they existed dumps byte for byte as
+        it did. A wrap serializer, so every other field, and the JSON schema,
+        are pydantic's own."""
         out = handler(self)
-        if isinstance(out, dict) and out.get("pool_strategy") is None:
-            out.pop("pool_strategy", None)
+        if isinstance(out, dict):
+            if out.get("pool_strategy") is None:
+                out.pop("pool_strategy", None)
+            if out.get("measure_angle") is False:
+                out.pop("measure_angle", None)
+            if out.get("node_id") == "":
+                out.pop("node_id", None)
+            if out.get("measured") is None:
+                out.pop("measured", None)
         return out
 
 

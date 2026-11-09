@@ -177,7 +177,8 @@ class TestMissingKeyDefaultsKeepTheOldMeaning:
         """A default outside its own option list opens a select on nothing
         (the UI pins the same for its option lists)."""
         assert TARGET_ANGLES == ("Any angle", "Rotate to PA",
-                                 "Camera fixed at PA")
+                                 "Camera fixed at PA",
+                                 "Measure at the first solve")
         assert COUNT_MODES == ("Every sub taken", "Accepted subs")
         for ntype in ("target", "pool"):
             assert default_params(ntype)["counts"] in COUNT_MODES

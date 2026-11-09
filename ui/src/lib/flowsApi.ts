@@ -12,6 +12,7 @@
 // editor already owns its graph state, and a second copy of it living behind a
 // fetch wrapper is how two truths appear.
 import { api } from "../api";
+import type { MeasuredAngleRecord } from "../types";
 
 /** The library-card projection. NOT the graph — listing 30 flows at up to 400
  *  nodes each would ship megabytes of wires to draw a card wall. */
@@ -357,6 +358,11 @@ export interface FlowProgressBlock {
    *  locked to (server `progress._block_lock`). Absent when any panel is
    *  unlocked or two panels disagree, and on a POOL block. */
   locked_angle?: { pa_deg: number; source: string };
+  /** Present only on a mosaic block set to "Measure at the first solve" whose
+   *  session has run the relay (server `progress._measured_angle`, #187): the
+   *  angle the grid was last laid out at and whether ruling 3 carried the
+   *  counts there. */
+  measured_angle?: MeasuredAngleRecord;
 }
 
 export interface FlowProgressSession {

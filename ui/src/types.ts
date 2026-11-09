@@ -1284,6 +1284,30 @@ export interface TargetGroup {
   skipped_ids: string[];
   /** Provenance only (rows, cols, overlap, fov, key); nothing steers by it. */
   geometry: Record<string, unknown>;
+  /** "Measure at the first solve" (#187): the layout angle is what the first
+   *  centring solve of each night measures. ABSENT from the dump while false. */
+  measure_angle?: boolean;
+  /** The flow block a measuring group writes its angle to. ABSENT while "". */
+  node_id?: string;
+  /** What the relay did, written by the engine: `pa_deg`, `from_pa_deg`,
+   *  `night`, `carried`, `max_move_deg`, `threshold_deg`, `reason` and
+   *  `orphaned_frames`. ABSENT from the dump while null. */
+  measured?: Record<string, unknown> | null;
+}
+
+/** What the relay of a block at "Measure at the first solve" did, as the
+ *  progress route answers it on the block (`measured_angle`, server
+ *  `progress._measured_angle`, #187): the angle the grid was last laid out
+ *  at, the night, and whether ruling 3 carried the counts there, with the
+ *  move against what the grid allows when it did not. */
+export interface MeasuredAngleRecord {
+  pa_deg: number;
+  from_pa_deg?: number | null;
+  night: string;
+  carried: boolean;
+  max_move_deg: number | null;
+  threshold_deg: number | null;
+  orphaned_frames: number;
 }
 
 /** The flats a flow's DUSK FLATS block asks for, as the engine runs them (#603

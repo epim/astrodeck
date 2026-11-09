@@ -1926,7 +1926,8 @@ def forward_clear_ts(clear: Callable[[float], bool], now: float, horizon_s: floa
 
 # ------------------------------------------------ angle_decision (5.6 step 4)
 
-AngleAction = Literal["shoot", "shoot_logged", "warn", "defer", "set_group_aside"]
+AngleAction = Literal["shoot", "shoot_logged", "warn", "defer",
+                      "set_group_aside", "relay"]
 
 
 @dataclass(frozen=True)
@@ -1937,7 +1938,8 @@ class AngleDecision:
     ``warn``: carry on with a warning alert. ``defer``: raise
     ``PanelDeferred(kind="angle")``. ``set_group_aside``: set the whole group
     aside tonight with a warning alert that carries the verdict's numbers.
-    ``why``: the policy in words; the verdict's own reason carries the
+    ``relay`` (#187): lay the grid out at the angle this hop measured, then
+    hop again. ``why``: the policy in words; the verdict's own reason carries the
     angles, and the engine joins the two.
     """
 
@@ -1947,7 +1949,8 @@ class AngleDecision:
 
 def angle_decision(kind: str, *, rotate: bool, angle_verified: bool,
                    rotator_evidence: bool, shoot_anyway: bool,
-                   single_panel: bool) -> AngleDecision:
+                   single_panel: bool,
+                   measure_pending: bool = False) -> AngleDecision:
     """Every 5.6 step 4 case, from ``angle_check.angle_verdict``'s ``kind``.
 
     ``rotate``: ``TargetGroup.rotate``, a rotator turns the camera to the
@@ -1969,9 +1972,22 @@ def angle_decision(kind: str, *, rotate: bool, angle_verified: bool,
       defers.
     - "Shoot anyway" turns every refusal into a warning, and a 1x1 block only
       ever warns.
+    - ``measure_pending`` (#187, "Measure at the first solve"): the group has
+      not measured its angle tonight, and its layout is the one it will be
+      re-laid from, so a reading is not judged against it. ``ok`` and ``off``
+      both answer ``relay``; ``no_measurement`` defers whatever else is set,
+      since a layout cannot be made from nothing.
     """
     if kind not in ("ok", "off", "no_measurement"):
         raise ValueError(f"unknown angle verdict kind {kind!r}")
+    if measure_pending:
+        if kind == "no_measurement":
+            return AngleDecision(
+                "defer", "angle not measured on this hop, and this grid is "
+                         "laid out at the angle tonight's first solve "
+                         "measures: tiles are never laid blind")
+        return AngleDecision("relay", "the grid is laid out at the angle "
+                                      "this solve measured")
     if kind == "ok":
         return AngleDecision("shoot", "the camera is at the mosaic's angle")
 

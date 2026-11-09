@@ -105,6 +105,35 @@ def plan_skipped_ids(plan: SequencePlan) -> set[str]:
             | set(plan.skipped_ids))
 
 
+def layout_restarts(plan: SequencePlan) -> list[str]:
+    """One sentence for each block of ``plan`` that measures its angle
+    ("Measure at the first solve", #187) and whose last measurement RESTARTED
+    its counts with subs left behind, or ``[]``.
+
+    Read off the plan a session froze, where the engine wrote what its relay
+    did (``TargetGroup.measured``), BEFORE CONTINUE replaces that plan with
+    tonight's compile and the record goes with it. The frames the sentence
+    names are on step ids neither plan holds, so ``plan_replace_report`` does
+    not list them as dropped, and without this nothing would say they stopped
+    counting. A carried measurement keeps every id and a restart with nothing
+    banked lost nothing, so neither is said."""
+    out: list[str] = []
+    for g in plan.groups:
+        m = g.measured
+        if (not g.measure_angle or not isinstance(m, dict)
+                or m.get("carried") is not False
+                or not m.get("orphaned_frames")):
+            continue
+        n = int(m["orphaned_frames"])
+        out.append(
+            f"{g.name or g.id}: the camera was measured at PA "
+            f"{float(m['pa_deg']):.1f} on {m.get('night', 'an earlier night')}"
+            f", a turn beyond what the grid allows, so its counts restarted "
+            f"at that angle; {n} {'sub' if n == 1 else 'subs'} shot before "
+            f"stay on disk")
+    return out
+
+
 def plan_replace_report(session: Session,
                         new_plan: SequencePlan) -> ReplaceReport:
     """Compare ``session``'s plan with ``new_plan`` by step id.

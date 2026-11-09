@@ -202,8 +202,15 @@ export function formatCyclePlan(slots: readonly CycleSlot[]): string {
 
 /** TARGET's `angle` choices, in the order the editor offers them. Mirrors
  *  nodes.py `TARGET_ANGLES`, which the parity test parses. Stored verbatim in
- *  saved flows, so never reworded. */
-export const TARGET_ANGLES = ["Any angle", "Rotate to PA", "Camera fixed at PA"] as const;
+ *  saved flows, so never reworded. The fourth (#187) is opt-in only: nothing
+ *  defaults to it and nothing derives it, and with it `rotation` is the
+ *  server's (the angle the grid was last laid out at). */
+export const TARGET_ANGLES = [
+  "Any angle", "Rotate to PA", "Camera fixed at PA", "Measure at the first solve",
+] as const;
+
+/** The fourth `TARGET_ANGLES` choice, for the readers that branch on it. */
+export const MEASURE_ANGLE = TARGET_ANGLES[3];
 
 /** TARGET's and POOL's `counts` values, old meaning first. Mirrors nodes.py
  *  `COUNT_MODES`. Not offered as a control (Revision 2, ruling 2). */

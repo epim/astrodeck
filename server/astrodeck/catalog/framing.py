@@ -666,6 +666,25 @@ def reframe_carry(anchor, new, *,
     return verdict(move < threshold, move, "move")
 
 
+def fold_measured_angle(measured_deg: float, current_deg: float) -> float:
+    """The layout angle a measured sky angle gives a grid that is laid out at
+    ``current_deg`` now, in [0, 360) (#187).
+
+    A camera cannot tell PA 37 from PA 217: a centred rectangle covers the
+    same sky, and the angle check compares mod 180 for that reason. A grid
+    can: turned half a turn, panel 1-1 stands where the last panel stood, so
+    every label (and with it every id and count) swaps. Of the two readings
+    of one footprint this takes the one nearest the current layout, so the
+    turn that is carried or restarted (ruling 3) is the smaller one. An
+    equal pair takes the lower."""
+    def apart(a: float, b: float) -> float:
+        return abs((a - b + 180.0) % 360.0 - 180.0)
+
+    one = measured_deg % 360.0
+    other = (measured_deg + 180.0) % 360.0
+    return min((one, other), key=lambda v: (round(apart(v, current_deg), 9), v))
+
+
 # ------------------------------------------- convergence and angle budget
 
 def panel_convergence_deg(panel: dict, ra0_hours: float,

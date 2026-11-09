@@ -187,10 +187,12 @@ _FALLBACK_NAME = {KIND_DEEP_SKY: "New deep-sky run", KIND_POOL: "Pool night",
 # rotator, #150), and a literal inside the builder is the one place such a
 # default could hide. None of the names below is an angle.
 
-#: TARGET's three angle choices, unpacked so that a fourth added to
+#: TARGET's four angle choices, unpacked so that a fifth added to
 #: ``nodes.TARGET_ANGLES`` fails here, at import, rather than being quietly
-#: offered to a mosaic.
-ANY_ANGLE, ROTATE_TO_PA, CAMERA_FIXED_AT_PA = TARGET_ANGLES
+#: offered to a mosaic. The fourth, "Measure at the first solve" (#187), is
+#: not an angle the wizard can write: it is chosen in the framing modal, and
+#: ``MOSAIC_ANGLES`` below does not list it.
+ANY_ANGLE, ROTATE_TO_PA, CAMERA_FIXED_AT_PA, MEASURE_AT_FIRST_SOLVE = TARGET_ANGLES
 #: The two a mosaic may use (doctor M2: a grid is laid out at one angle, and
 #: "Any angle" lets every panel land however the camera happens to sit).
 MOSAIC_ANGLES: tuple[str, ...] = (ROTATE_TO_PA, CAMERA_FIXED_AT_PA)

@@ -30,10 +30,22 @@ TWO RULES, ONE PASS, BECAUSE BOTH ARE THE SERVER'S AND NEVER THE CLIENT'S.
   cannot add up across saves. A single panel anchored with no camera field
   and saved with one, nothing else changed, is COMPLETED rather than judged
   (#351, S4 orchestrator ruling 4): it keeps its key and records the field.
+
+* THE MEASURED ROTATION (#187). A TARGET at "Measure at the first solve" has a
+  ``rotation`` that is the server's too: the angle the grid was last laid out
+  at, written by the run when a night's first solve measured it
+  (``to_plan.relay_layout``, through ``measured=``). A client save carries
+  the rotation its editor loaded, which may be from before the night, and
+  taking it would undo the measurement the next morning and run ruling 3's
+  carry against the undone value. So a block that is in the mode now and was
+  in it in the stored flow keeps the stored rotation, whatever the save says.
+  Switching into the mode takes the client's rotation once (it is the
+  provisional layout the operator saw); switching out is a normal edit.
 """
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from typing import Callable
 
 from ..catalog.coords import parse_dec, parse_ra
@@ -41,7 +53,7 @@ from ..catalog.framing import reframe_carry
 from . import identity
 from .compile import _grid_dim, is_multi_panel
 from .models import FlowNode, FlowRecord
-from .nodes import _rotation_deg, target_angle
+from .nodes import MEASURE_ANGLE, _rotation_deg, target_angle
 
 #: What every save writes into ``counts`` (ruling 2), and what a new TARGET or
 #: POOL is created with (``NodeDef.created_as``). A literal, pinned against
@@ -263,8 +275,28 @@ def _anchor_on_save(node: FlowNode, prior: FlowNode | None,
                   "reason": verdict["reason"]}
 
 
+def _measured_rotation(node: FlowNode, prior: FlowNode | None,
+                       measured: Mapping[str, float]) -> FlowNode:
+    """``node`` with the rotation the server owns for it, when it is in
+    "Measure at the first solve" now: the value ``measured`` names for its id
+    (the run's relay), else the stored node's own when that was in the mode
+    too. Any other node is returned as it is."""
+    if target_angle(node.params) != MEASURE_ANGLE:
+        return node
+    if node.id in measured:
+        value = measured[node.id]
+    elif (prior is not None and target_angle(prior.params) == MEASURE_ANGLE
+          and "rotation" in prior.params):
+        value = prior.params["rotation"]
+    else:
+        return node
+    return node.model_copy(update={"params": {**node.params,
+                                              "rotation": value}})
+
+
 def prepare_save(record: FlowRecord, prior: FlowRecord | None, *,
-                 resolve: Resolver | None = None
+                 resolve: Resolver | None = None,
+                 measured: Mapping[str, float] | None = None
                  ) -> tuple[FlowRecord, list[str], list[dict]]:
     """``(record, migrated, reanchored)``: ``record`` as it is to be stored.
 
@@ -285,8 +317,14 @@ def prepare_save(record: FlowRecord, prior: FlowRecord | None, *,
     restarts counts is said, and said in the words for what it changed
     (#352, S4 orchestrator ruling 6).
 
-    Only ``counts`` and ``frameAnchor`` are written, and only into the nodes
-    that carry them. Every other param stays as the client sent it: a
+    ``measured`` maps a node id to the rotation the run measured for it
+    (#187): the one way a block in "Measure at the first solve" has its
+    ``rotation`` changed, since a client's is otherwise discarded
+    (``_measured_rotation``).
+
+    Only ``counts``, ``frameAnchor`` and a measure-mode block's ``rotation``
+    are written, and only into the nodes that carry them. Every other param
+    stays as the client sent it: a
     missing key keeps meaning its missing-key default, and filling defaults
     in here would freeze today's defaults into every saved flow. ``record``
     is not modified; a copy is returned."""
@@ -299,6 +337,9 @@ def prepare_save(record: FlowRecord, prior: FlowRecord | None, *,
         if node.type not in COUNTED_TYPES:
             nodes.append(node)
             continue
+        if node.type == "target":
+            node = _measured_rotation(node, prior_targets.get(node.id),
+                                      measured or {})
         params = dict(node.params or {})
         if counts_attempts(node.type, params):
             params["counts"] = ACCEPTED_SUBS

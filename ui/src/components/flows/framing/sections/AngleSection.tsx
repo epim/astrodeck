@@ -3,7 +3,8 @@
 // AngleSection.tsx - the Target modal's ANGLE section (#189 S4 item 1; spec
 // 2026-09-23 flows mosaic, 2.4 ANGLE).
 //
-// Three segments, ANY ANGLE / ROTATE TO / CAMERA FIXED AT, each locked with
+// Four segments, ANY ANGLE / ROTATE TO / CAMERA FIXED AT / MEASURE AT FIRST
+// SOLVE (#187), each locked with
 // its reason where the model says so (framingModel `angleLocks`): ANY ANGLE on
 // a grid ("a grid is laid out at one camera angle"), ROTATE TO on a profile
 // with no rotator. A locked segment is a HonestButton: pressing it explains
@@ -39,6 +40,7 @@ export const SEGMENT_LABEL: Record<TargetAngle, string> = {
   "Any angle": "ANY ANGLE",
   "Rotate to PA": "ROTATE TO",
   "Camera fixed at PA": "CAMERA FIXED AT",
+  "Measure at the first solve": "MEASURE AT FIRST SOLVE",
 };
 
 export const NUDGES = [-15, -1, 1, 15] as const;
@@ -55,8 +57,15 @@ export interface AngleSectionProps {
    *  `angleOffer`'s label), or null. In place of the plain chip. */
   offer: string | null;
   tolerance: string | null;
+  /** MEASURE AT FIRST SOLVE's help line, shown while that choice is the
+   *  draft's (framingModel `MEASURE_HELP`), or null. */
+  help?: string | null;
+  /** The run's own line for a block that measures its angle: which angle was
+   *  measured and whether the counts carried (framingModel
+   *  `measuredAngleLine`), or null before the run has measured. */
+  runLine?: string | null;
   /** Why the degree field and the nudges cannot act (ANY ANGLE holds no
-   *  angle), or null. */
+   *  angle, MEASURE AT FIRST SOLVE's is the run's), or null. */
   degreeLock: string | null;
   onMode: (mode: TargetAngle) => void;
   onRotation: (text: string) => void;
@@ -129,6 +138,8 @@ export function AngleSection(p: AngleSectionProps): JSX.Element {
           <span className="tfs-note">{p.measured}</span>
         </div>
       )}
+      {p.help && <div className="tfs-row tfs-note" data-testid="framing-measure-help">{p.help}</div>}
+      {p.runLine && <div className="tfs-row tfs-note" data-testid="framing-measured-line">{p.runLine}</div>}
       <div className="tfs-row tfs-note">{ANGLE_CONVENTION}</div>
       {p.tolerance && <div className="tfs-row tfs-note" data-testid="framing-tolerance">{p.tolerance}</div>}
     </section>

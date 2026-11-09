@@ -211,6 +211,13 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
     ``_block_lock``): ``pa_deg`` in the CROTA2 convention the session stored,
     and ``source``, ``LOCK_SOURCE``. Never the lock's times.
 
+    ``measured_angle`` (#187) is present only on a mosaic block set to
+    "Measure at the first solve" whose session has run the relay
+    (``_measured_angle``): ``{pa_deg, from_pa_deg, night, carried,
+    max_move_deg, threshold_deg, orphaned_frames}``, the angle the grid was
+    last laid out at and whether ruling 3 carried the counts there. Numbers
+    and a night key only.
+
     ``starved`` is present only on a panel set aside whole on
     ``STARVED_AFTER_NIGHTS`` or more nights running (``_starved``): ``nights``,
     how many, counting tonight once the panel is set aside on it (until
@@ -517,6 +524,50 @@ def _locked(session: "Session | None",
     return {"pa_deg": float(pa), "source": LOCK_SOURCE}
 
 
+def _finite_or_none(value) -> float | None:
+    """``value`` as a float when it is a finite number, else None (a bool is
+    no number): the same reading ``replay_facts`` gives a stored time."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(value) else None
+
+
+def _measured_angle(session: "Session | None",
+                    group: "TargetGroup | None") -> dict | None:
+    """What the last relay did for a block that measures its angle ("Measure
+    at the first solve", #187), read off the group of the plan the SESSION
+    froze, where the engine wrote it (``TargetGroup.measured``): the angle,
+    the night, whether the counts carried (ruling 3) and, when they did not,
+    how far a panel corner moved against what the grid allows and how many
+    subs were left behind. None for a block that measures nothing, a session
+    that has not run the relay yet, or a record whose angle is no number.
+
+    The group is found by the id this compile names: the relay left the
+    session's plan on the ids a compile of the stored flow makes, so they
+    agree until the flow is edited in a way that re-keys the block, which is
+    the one way the record stops being its own. Numbers and a night key
+    only: no free text travels, since a viewer reads this answer."""
+    if session is None or group is None or not group.measure_angle:
+        return None
+    mine = next((g for g in session.plan.groups
+                 if g.id == group.id and isinstance(g.measured, dict)), None)
+    if mine is None:
+        return None
+    m = mine.measured
+    pa = _finite_or_none(m.get("pa_deg"))
+    if pa is None:
+        return None
+    orphaned = m.get("orphaned_frames")
+    return {"pa_deg": pa,
+            "from_pa_deg": _finite_or_none(m.get("from_pa_deg")),
+            "night": str(m.get("night") or ""),
+            "carried": m.get("carried") is True,
+            "max_move_deg": _finite_or_none(m.get("max_move_deg")),
+            "threshold_deg": _finite_or_none(m.get("threshold_deg")),
+            "orphaned_frames": (orphaned if isinstance(orphaned, int)
+                                and not isinstance(orphaned, bool) else 0)}
+
+
 def _starved(session: "Session | None",
              target: "Target | None") -> dict | None:
     """``{nights, kind}`` for a panel ``session`` has set aside whole, for a
@@ -689,6 +740,9 @@ def _mosaic(plan: "SequencePlan", entry: dict, counts: dict[str, int],
             block[field] += panel[field]
     block["skipped"] = _skipped(plan, gid, group, name, rows, cols, counts,
                                 session)
+    measured = _measured_angle(session, group)
+    if measured is not None:
+        block["measured_angle"] = measured
     return block
 
 
