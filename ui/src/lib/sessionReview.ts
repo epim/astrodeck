@@ -125,8 +125,9 @@ function byGridPlace(a: MosaicPanel, b: MosaicPanel): number {
   return a.row - b.row || a.col - b.col;
 }
 
-/** The mosaics in a session's plan: one per `plan.groups` entry that has
- *  member targets, then one per Plan-UI `mosaic_group` string no entry covers
+/** The mosaics in a session's plan: one per mosaic `plan.groups` entry that has
+ *  member targets (a `kind: "pool"` entry is a set of candidates, not a grid,
+ *  and its members are no panels), then one per Plan-UI `mosaic_group` string no entry covers
  *  (legacy plans carry only the string). A string shared by a single target is
  *  not a mosaic, matching the Plan's own rule that "apply to all panels" needs
  *  more than one; a `groups` entry is one however many panels it holds,
@@ -137,14 +138,19 @@ export function mosaicGroupsOf(
 ): MosaicGroup[] {
   const byId = new Map<string, MosaicGroup>();
   const written = new Set<string>();
+  const pools = new Set<string>();
   for (const g of plan.groups ?? []) {
+    if (g.kind === "pool") {
+      pools.add(g.id);
+      continue;
+    }
     if (byId.has(g.id)) continue;
     written.add(g.id);
     byId.set(g.id, { id: g.id, name: String(g.name ?? "").trim() || g.id, panels: [] });
   }
   for (const t of plan.targets) {
     const key = t.mosaic_group;
-    if (!key || !t.id) continue;
+    if (!key || !t.id || pools.has(key)) continue;
     let grp = byId.get(key);
     if (!grp) {
       grp = { id: key, name: key, panels: [] };

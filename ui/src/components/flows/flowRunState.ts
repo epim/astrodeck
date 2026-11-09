@@ -164,13 +164,14 @@ export function runLatchEnds(phase: string, ownFlowRunEnded: boolean,
  *  a finished run still carries the group it ended on, and a panel that
  *  group names is not being shot. Null too for a block with no plan group
  *  (`group_id` null: every panel skipped) and for a single target's block
- *  (no `group_id` at all), neither of which any run publishes. */
+ *  (no `group_id` at all), neither of which any run publishes. A POOL's
+ *  state is no mosaic block's: its candidates are no panels. */
 export function groupForBlock(sequence: SequenceState | null | undefined,
                               groupId: string | null | undefined): SequenceGroupState | null {
   if (typeof groupId !== "string" || groupId === "") return null;
   if (!runIsLive(sequence)) return null;
   const group = sequence?.group;
-  if (!group || typeof group !== "object") return null;
+  if (!group || typeof group !== "object" || group.kind === "pool") return null;
   return group.id === groupId ? group : null;
 }
 

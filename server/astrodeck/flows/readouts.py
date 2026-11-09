@@ -194,7 +194,10 @@ def readouts(compiled: dict, plan: "SequencePlan | None",
     lead_s = plan_lead_s(plan)
     out: dict[str, dict] = {}
     targets = list(plan.targets)
-    groups = list(plan.groups)
+    # Only a mosaic is a block with a group of its own. A POOL's candidates
+    # are plan targets in a group of kind "pool", stepped over one target at
+    # a time below, so the walk's place among the groups skips it.
+    groups = [grp for grp in plan.groups if grp.kind == "mosaic"]
     i = g = 0
     for entry in compiled.get("targets") or []:
         name = str(entry.get("name") or "").strip()
@@ -225,8 +228,8 @@ def readouts(compiled: dict, plan: "SequencePlan | None",
                            autofocus_every=autofocus_every,
                            refocus_delta_c=refocus_on_temp_delta_c)
         else:
-            if i >= len(targets) or targets[i].mosaic_group is not None \
-                    or targets[i].name != name:
+            if i >= len(targets) or targets[i].name != name or (
+                    targets[i].mosaic_group is not None and not is_pool):
                 break
             target = targets[i]
             i += 1

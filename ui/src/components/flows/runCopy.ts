@@ -276,6 +276,9 @@ export interface RunReadouts {
  *  will hop to at the crossing, and printing either would give an operator's
  *  screen a transit time a viewer's is denied.
  *
+ *  A POOL (`kind: "pool"`) reads the candidate running and how many are
+ *  complete, "M42, M31 M31 · 1 of 3 candidates done": it has no pass.
+ *
  *  A single target reads the target the engine names. Null when it names
  *  nothing. */
 export function runStage(seq: SequenceState): string | null {
@@ -285,8 +288,11 @@ export function runStage(seq: SequenceState): string | null {
     if (g.meridian_wait) return [name, MERIDIAN_WAIT_STAGE].filter((p) => p !== "").join(" · ");
     const where = [name, typeof g.panel === "string" ? g.panel.trim() : ""]
       .filter((p) => p !== "").join(" ");
-    const pass = finite(g.pass) ? `pass ${g.pass}` : "";
-    const line = [where, pass].filter((p) => p !== "").join(" · ");
+    const tail = g.kind === "pool"
+      ? (finite(g.panels_done) && finite(g.panels_total)
+        ? `${g.panels_done} of ${g.panels_total} candidates done` : "")
+      : (finite(g.pass) ? `pass ${g.pass}` : "");
+    const line = [where, tail].filter((p) => p !== "").join(" · ");
     return line === "" ? null : line;
   }
   const target = typeof seq.target === "string" ? seq.target.trim() : "";

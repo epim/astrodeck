@@ -53,11 +53,13 @@ import { useActiveSession } from "./sessionData";
 
 /** The plan's planned shutter per filter: `plannedByFilter`'s pool cut over
  *  every target that is not a mosaic panel, and each panel's steps in full.
- *  A panel is a target whose `mosaic_group` names one of the plan's groups,
- *  the rule the server's progress route uses (`flows/progress.py`). */
+ *  A panel is a target whose `mosaic_group` names one of the plan's MOSAIC
+ *  groups, the rule the server's progress route uses (`flows/progress.py`);
+ *  a pool group's candidates are the pool the cut is for. */
 export function plannedShutter(plan: SequencePlan | null | undefined): PlannedFilter[] {
   if (!plan) return [];
-  const groups = new Set((plan.groups ?? []).map((g) => g.id));
+  const groups = new Set(
+    (plan.groups ?? []).filter((g) => g.kind !== "pool").map((g) => g.id));
   const targets = plan.targets ?? [];
   const isPanel = (t: { mosaic_group?: string }) =>
     typeof t.mosaic_group === "string" && groups.has(t.mosaic_group);

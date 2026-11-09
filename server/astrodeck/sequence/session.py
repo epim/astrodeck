@@ -1173,7 +1173,8 @@ def _file_stamp(path: Path) -> tuple[int, int, int] | None:
 
 def mosaics_of(plan: SequencePlan) -> list[dict]:
     """The mosaics in ``plan``, for a session's list row (#188): one per
-    ``plan.groups`` entry that has member targets, then one per Plan-UI
+    mosaic ``plan.groups`` entry (a pool's candidates are not panels) that
+    has member targets, then one per Plan-UI
     ``mosaic_group`` string no entry covers and more than one target shares
     (a string on a single target is no mosaic, the Plan's own rule). Each is
     ``{"id", "name", "panels"}``: the group's id (the key, and what makes two
@@ -1181,12 +1182,14 @@ def mosaics_of(plan: SequencePlan) -> list[dict]:
     labels in grid order, a panel with no grid place after them under its
     target's name. The same grouping the review drawer draws
     (``ui/src/lib/sessionReview.ts`` ``mosaicGroupsOf``)."""
-    written = {g.id: (g.name or "").strip() or g.id for g in plan.groups}
+    written = {g.id: (g.name or "").strip() or g.id for g in plan.groups
+               if g.kind == "mosaic"}
+    pools = {g.id for g in plan.groups if g.kind != "mosaic"}
     members: dict[str, list] = {gid: [] for gid in written}
     legacy: dict[str, list] = {}
     for t in plan.targets:
         gid = t.mosaic_group
-        if not gid or not t.id:
+        if not gid or not t.id or gid in pools:
             continue
         (members if gid in written else legacy).setdefault(gid, []).append(t)
 

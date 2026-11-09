@@ -720,7 +720,8 @@ async def test_a_group_waiting_before_its_first_panel_types_what_it_publishes(
 def test_the_group_state_type_withholds_panel_and_pass_and_nothing_else():
     """``panel`` and ``pass`` are optional, because they are withheld from a
     principal without the site-derived view across a meridian wait (6.9),
-    and nothing else is. ``meridian_wait``, the flag that tells a viewer's
+    and ``kind`` is (WP 5.1c: an older server sends none, and reads as a
+    mosaic), and nothing else is. ``meridian_wait``, the flag that tells a viewer's
     screen why they are missing, is a plain required boolean, and ``mode``
     spells the group's modes. (Which keys there are is the capture test's.)
 
@@ -760,8 +761,11 @@ def test_the_group_state_type_withholds_panel_and_pass_and_nothing_else():
     assert _quoted(ts["mode"]) == _literals(
         TargetGroup.model_fields["mode"].annotation)
     assert ts["meridian_wait"] == "boolean"
-    assert _optional("SequenceGroupState") == {"panel", "pass"}, (
-        "panel and pass must be optional (withheld), and nothing else")
+    assert _optional("SequenceGroupState") == {"panel", "pass", "kind"}, (
+        "panel and pass must be optional (withheld), and kind (a server "
+        "older than WP 5.1c sends none), and nothing else")
+    assert _quoted(ts["kind"]) == _literals(
+        TargetGroup.model_fields["kind"].annotation)
 
 
 def test_the_sequence_state_carries_the_group():

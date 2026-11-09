@@ -5103,8 +5103,10 @@ def create_app(*, bind_host: str | None = None,
                 if all(id(m) in below for m in members):
                     labels = ", ".join(SequenceEngine._panel_name(m)
                                        for m in members)
+                    what = ("candidate of pool" if g.kind == "pool"
+                            else "panel of mosaic")
                     raise HTTPException(409, detail={
-                        "detail": f"every panel of mosaic '{mosaic(g)}' is "
+                        "detail": f"every {what} '{mosaic(g)}' is "
                                   f"below the horizon now: {labels}",
                         "code": "below_horizon", "group": g.id,
                         "mosaic": mosaic(g),
@@ -5144,26 +5146,30 @@ def create_app(*, bind_host: str | None = None,
         by_group: dict[str, list[dict]] = {}
         for e in blocked:
             by_group.setdefault(e["group"], []).append(e)
+        kinds = {g.id: g.kind for g in plan.groups}
         for gid, rows in by_group.items():
             n = sum(1 for t in plan.targets if not t.calibration
                     and getattr(t, "mosaic_group", None) == gid)
             labels = [e["panel"] for e in rows]
             name = rows[0]["mosaic"]
+            pool = kinds.get(gid) == "pool"
+            group_word, member = (("pool", "candidate") if pool
+                                  else ("mosaic", "panel"))
             if len(labels) == n:
                 bus.log("info",
-                        f"mosaic '{name}': all {n} panels are below the "
-                        f"horizon now ({', '.join(labels)}); started because "
-                        f"the start was forced", "sequence")
+                        f"{group_word} '{name}': all {n} {member}s are below "
+                        f"the horizon now ({', '.join(labels)}); started "
+                        f"because the start was forced", "sequence")
                 continue
             if len(labels) == 1:
-                which = f"panel {labels[0]} is"
+                which = f"{member} {labels[0]} is"
             else:
-                which = (f"panels {', '.join(labels[:-1])} and {labels[-1]} "
-                         f"are")
+                which = (f"{member}s {', '.join(labels[:-1])} and "
+                         f"{labels[-1]} are")
             up = n - len(labels)
             bus.log("info",
-                    f"mosaic '{name}': {which} below the horizon now; "
-                    f"started, since {up} of its {n} panels "
+                    f"{group_word} '{name}': {which} below the horizon now; "
+                    f"started, since {up} of its {n} {member}s "
                     f"{'is' if up == 1 else 'are'} not", "sequence")
 
     def _owed_plan(s: Session) -> SequencePlan:
@@ -11320,8 +11326,8 @@ def create_app(*, bind_host: str | None = None,
     @declare(CAP_CONTROL_MOUNT)
     async def sequence_retry_set_aside(body: RetrySetAsideBody | None = None):
         """RETRY SET-ASIDE PANELS (#600; backlog ruling D-07, owner-approved
-        2026-09-30): bring tonight's set-aside panels of a mosaic back, for
-        one group (``group``, a ``state.group.id``) or all (null).
+        2026-09-30): bring tonight's set-aside panels of a mosaic, or
+        candidates of a pool, back, for one group (``group``, a ``state.group.id``) or all (null).
 
         A panel set aside for the night used to stay out of it until
         tomorrow even once the operator had fixed the cause. ``control.mount``,
@@ -11419,7 +11425,8 @@ def create_app(*, bind_host: str | None = None,
                     if names:
                         labels.extend(names)
                         lines.append(
-                            f"{groups[gid].name or gid}: set-aside panels "
+                            f"{groups[gid].name or gid}: set-aside "
+                            f"{SequenceEngine._member_word(groups[gid])}s "
                             f"retried by the operator: {', '.join(names)}; "
                             f"the next start tonight takes them up")
                 return labels, lines
