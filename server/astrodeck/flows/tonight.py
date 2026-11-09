@@ -57,7 +57,7 @@ from .compile import (_finite, _grid_of,
                       compile_plan, flow_order, grid_size, is_multi_panel,
                       loop_wires, needs_wire_scoping, owner_of, parse_skip)
 from .models import FlowGraph, _not_a_count
-from .nodes import NODE_DEFS, parse_cycle_plan, target_angle
+from .nodes import MEASURE_ANGLE, NODE_DEFS, parse_cycle_plan, target_angle
 from .rig import RigFacts
 
 #: Fallback imaging twilight when neither the caller nor the config has one.
@@ -1706,6 +1706,10 @@ def _mosaic_sentences(g: FlowGraph, block, hop_cost_s: float | None,
     elif angle == "Camera fixed at PA":
         t += (f", laid out at PA {p.get('rotation')}° with the camera fixed "
               f"there by hand, and the run checks the angle at every panel")
+    elif angle == MEASURE_ANGLE:
+        t += (", laid out at the angle its camera reads on the first "
+              "centring solve of each night, the camera fixed and never "
+              "turned by the run")
     else:
         t += ", at no set angle, so its panels will not tile and it cannot run"
     seg = [t + "."]

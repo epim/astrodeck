@@ -1284,6 +1284,15 @@ export interface TargetGroup {
   skipped_ids: string[];
   /** Provenance only (rows, cols, overlap, fov, key); nothing steers by it. */
   geometry: Record<string, unknown>;
+  /** "Measure at the first solve" (#187): the layout angle is what the first
+   *  centring solve of each night measures. ABSENT from the dump while false. */
+  measure_angle?: boolean;
+  /** The flow block a measuring group writes its angle to. ABSENT while "". */
+  node_id?: string;
+  /** What the relay did, written by the engine: `pa_deg`, `from_pa_deg`,
+   *  `night`, `carried`, `max_move_deg`, `threshold_deg`, `reason` and
+   *  `orphaned_frames`. ABSENT from the dump while null. */
+  measured?: Record<string, unknown> | null;
 }
 
 /** The flats a flow's DUSK FLATS block asks for, as the engine runs them (#603

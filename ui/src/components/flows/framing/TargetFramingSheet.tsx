@@ -90,7 +90,7 @@ import { groupForBlock, type PanelRunState } from "../flowRunState";
 import { MosaicNightCard } from "../../../next/hubs/sky/frame/MosaicNightCard";
 import type { SkyPanel } from "../../atlas/PanelLayer";
 import { raHms, decDms } from "../QuickFlow";
-import { NODE_DEFS } from "../nodeDefs";
+import { MEASURE_ANGLE, NODE_DEFS } from "../nodeDefs";
 import { flowSetting, type FlowNodeRec } from "../flowsTypes";
 import { isMultiPanel, laneBranched, laneTail, loopSource, loopWires, panelLane } from "../panelLane";
 import { targetLoops } from "../targetSummary";
@@ -102,6 +102,7 @@ import {
   panelCsvExportLock, panelCsvRequest, panelDrawState, parsePanelExposure, parseSkip,
   readoutStrip, reframeDecision, requestKey, runLines, runPanelsOf, saveViewPrefs, setAngleMode,
   setPanelExposure, stripAngle, suggestGridFor, takeOffer, toggleSkip, toleranceLine, useMeasured, useMeasuredLine,
+  MEASURE_HELP, MEASURE_HOLDS_ANGLE, measuredAngleLine,
   ZOOM_MAX_DEG, ZOOM_MIN_DEG,
   type FramingDraft, type PanelAnswer, type ServerView, type TargetAngle,
 } from "./framingModel";
@@ -345,6 +346,8 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
   if (centre) lastCentre.current = centre;
   const skyCentre = centre ?? lastCentre.current;
   const mode = angleOf(draft);
+  // MEASURE AT FIRST SOLVE (#187): the angle is the run's, not typed here.
+  const measuring = mode === MEASURE_ANGLE;
 
   // ---- the route: one request per settled spec
   const anchor = stored.frameAnchor;
@@ -814,12 +817,15 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
                 />
                 <AngleSection
                   mode={mode}
-                  rotation={mode === "Any angle" ? "" : String(draft.rotation)}
+                  rotation={mode === "Any angle" || (measuring && layoutOf(draft).rotation_deg === null)
+                    ? "" : String(draft.rotation)}
                   locks={angleLocks(draft, rig)}
-                  measured={measuredLine}
+                  measured={measuring ? null : measuredLine}
                   offer={offer?.label ?? null}
                   tolerance={toleranceLine(readouts?.angle_tolerance_deg ?? null, draft)}
-                  degreeLock={mode === "Any angle" ? ANY_ANGLE_HOLDS_NONE : null}
+                  help={measuring ? MEASURE_HELP : null}
+                  runLine={measuring ? measuredAngleLine(progressBlock?.measured_angle) : null}
+                  degreeLock={mode === "Any angle" ? ANY_ANGLE_HOLDS_NONE : measuring ? MEASURE_HOLDS_ANGLE : null}
                   onMode={(m: TargetAngle) => setDraft((d) => setAngleMode(d, m))}
                   onRotation={(t) => patchDraft({ rotation: t })}
                   onNudge={(delta) => setDraft((d) => ({ ...d, rotation: wrap360(round1((layoutOf(d).rotation_deg ?? 0) + delta)) }))}

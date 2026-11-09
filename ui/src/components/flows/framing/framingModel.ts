@@ -29,11 +29,12 @@
 // (#408). Every reader treats a missing or non-finite number as "unknown",
 // never as zero: a hop of 0 s is not "not measured", and a field of 0 x 0 deg
 // is not a camera.
-import { NODE_DEFS, TARGET_ANGLES, targetAngle } from "../nodeDefs";
+import { MEASURE_ANGLE, NODE_DEFS, TARGET_ANGLES, targetAngle } from "../nodeDefs";
 import { DEFAULT_OVERLAP, mosaicTotalFov, wrapRaHours } from "../../../lib/framing";
 import { panelStateOf, type PanelRunSource, type PanelRunState } from "../flowRunState";
 import type { PanelState } from "../../atlas/PanelLayer";
 import type { CatalogEntry, SequenceGroupState, SkyAngleRecord } from "../../../types";
+import type { FlowProgressBlock } from "../../../lib/flowsApi";
 import { ellipseExtents, objectShape } from "../../../lib/objectShape";
 
 // ------------------------------------------------------------------ types
@@ -164,10 +165,19 @@ export interface PanelAnswer {
 /** The two things the reframe question reads from a progress route block
  *  (lib/flowsApi `FlowProgressBlock`): what the shot panels banked, and what
  *  the skipped ones still hold. */
+/** The relay's record as the progress route answers it (`FlowProgressBlock.
+ *  measured_angle`, #187), derived from the route's own type so there is one
+ *  copy of it. */
+export type MeasuredAngleRecord = NonNullable<FlowProgressBlock["measured_angle"]>;
+
 export interface ProgressBlockLike {
   banked: number;
   skipped?: ReadonlyArray<{ banked: number }>;
+  /** What the last relay did, on a block set to MEASURE AT FIRST SOLVE (server
+   *  `progress._measured_angle`, #187). Absent before the run has measured. */
+  measured_angle?: MeasuredAngleRecord | null;
 }
+
 
 // ------------------------------------------------------ the draft and patch
 
@@ -536,6 +546,7 @@ export function angleLocks(draft: FramingDraft, rig: RigBlock | null | undefined
     "Any angle": rows * cols > 1 ? ANY_ANGLE_ON_A_GRID : null,
     "Rotate to PA": rig?.has_rotator === false ? NO_ROTATOR : null,
     "Camera fixed at PA": null,
+    "Measure at the first solve": null,
   };
 }
 
@@ -592,6 +603,9 @@ export function setAngleMode(draft: FramingDraft, mode: TargetAngle): FramingDra
 /** Whether the draft is a grid with no angle to lay it out at: ANY ANGLE, or
  *  a set mode whose rotation reads as none (3.1). Doctor M2 refuses both. */
 function angleOwed(draft: FramingDraft): boolean {
+  // MEASURE AT FIRST SOLVE owes none: the run lays the grid out at what the
+  // first solve of a night reads, whatever `rotation` holds until then.
+  if (angleOf(draft) === MEASURE_ANGLE) return false;
   const l = layoutOf(draft);
   return l.rows * l.cols > 1 && l.rotation_deg === null;
 }
@@ -638,6 +652,10 @@ export function takeOffer(draft: FramingDraft, offer: AngleOffer): FramingDraft 
  *  that holds none, and "no angle" for a grid that owes one. */
 export function stripAngle(draft: FramingDraft): string {
   const l = layoutOf(draft);
+  if (angleOf(draft) === MEASURE_ANGLE) {
+    return l.rotation_deg === null ? "measured at the first solve"
+      : `measured at the first solve (last ${l.rotation_deg.toFixed(1)} deg)`;
+  }
   if (l.rotation_deg === null) return l.rows * l.cols > 1 ? "no angle" : "any angle";
   const deg = `${l.rotation_deg.toFixed(1)} deg`;
   const mode = angleOf(draft);
@@ -773,6 +791,30 @@ export function moveLine(v: ServerView): string | null {
         : `moved ${arcmin(r.max_move_deg)}, more than the ${arcmin(r.threshold_deg)} this grid allows: counts restart`;
     }
   }
+}
+
+/** MEASURE AT FIRST SOLVE's two sentences: what the choice does, and why the
+ *  degree field cannot be typed in (the angle is the run's, not the
+ *  operator's). Said once each, on the choice itself. */
+export const MEASURE_HELP =
+  "The grid is laid out at the angle the camera reads on the first centring solve of each night. The rotator is never turned.";
+export const MEASURE_HOLDS_ANGLE =
+  "the run measures this angle on the first solve of each night; it is not typed here";
+
+/** The run-mode line for a block that measures its angle: which angle was
+ *  measured, on which night, and whether the counts carried (ruling 3), in
+ *  the words the live move line uses. Null before the run has measured, and
+ *  for a record whose angle is no number. */
+export function measuredAngleLine(m: MeasuredAngleRecord | null | undefined): string | null {
+  if (!m || typeof m.pa_deg !== "number" || !Number.isFinite(m.pa_deg)) return null;
+  const head = `measured ${m.pa_deg.toFixed(1)} deg${m.night ? ` on ${m.night}` : ""}`;
+  if (m.carried) return `${head}: counts carried over`;
+  const subs = finiteOr0(m.orphaned_frames);
+  if (subs === 0) return `${head}: nothing had been shot, so nothing restarted`;
+  const moved = typeof m.max_move_deg === "number" && Number.isFinite(m.max_move_deg)
+    && typeof m.threshold_deg === "number" && Number.isFinite(m.threshold_deg)
+    ? `moved ${arcmin(m.max_move_deg)}, more than the ${arcmin(m.threshold_deg)} this grid allows: ` : "";
+  return `${head}: ${moved}counts restarted; ${subs} ${subs === 1 ? "sub" : "subs"} shot before stay on disk`;
 }
 
 const finiteOr0 = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);

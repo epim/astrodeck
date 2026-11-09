@@ -163,7 +163,7 @@ from ..flows.compile import compile_plan
 from ..flows.continuation import (AdoptEvidence, AdoptMatches, adopt_detail,
                                   adopt_evidence, adopt_matches,
                                   apply_adoption, dropped_detail,
-                                  plan_replace_report, recount,
+                                  layout_restarts, plan_replace_report, recount,
                                   recount_detail, saved_before_s1)
 # Two private helpers, and on purpose: which instants ADOPT samples a body
 # step at, and the shape of a listed step, are continuation's to define, and
@@ -187,7 +187,8 @@ from ..flows.rig import RigFacts
 from ..flows.store import FlowLibraryFull, ReadOnlyFlow, flow_store
 from ..flows import wizard as flow_wizard
 from ..flows.to_plan import (GRID_MAX, OVERLAP_MAX_PCT, GraphNotRunnable,
-                             blocking_reasons, losses, to_sequence_plan)
+                             blocking_reasons, losses, relay_layout,
+                             to_sequence_plan)
 from ..flows.tonight import (banked_hours_by_target_from_reports,
                              banked_hours_from_reports,
                              flow_target_names,
@@ -238,6 +239,19 @@ dispatcher = AlertDispatcher(bus, lambda: config_store.cfg())
 # external dead-man's-switch + emit progress heartbeats (§1.8/§1.9-F). Done by
 # injection (not an import inside the engine) to avoid a circular import.
 engine.dispatcher = dispatcher
+
+
+def _relay_layout(flow_id: str, node_id: str, pa_deg: float):
+    """The callback "Measure at the first solve" writes the measured angle
+    through (#187): ``flows.to_plan.relay_layout`` on the flow store, which is
+    looked up when the relay runs, never bound here, so a store a test (or a
+    reconfigured data directory) puts in this module's place is the one
+    written. Injected beside the dispatcher for the same reason: the engine
+    imports nothing of the flows."""
+    return relay_layout(flow_store, flow_id, node_id, pa_deg)
+
+
+engine.layout_relay = _relay_layout
 # The dead-man ping carries the rig's status beacon (#606 part A): six words from
 # a closed vocabulary, no site, no coordinates, no label. The source is read at
 # each ping, so it reports the engine and the night log as they are THEN. Set
@@ -1450,6 +1464,9 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
         # and ``replan_cooling`` stays a no-op for it. A session with none
         # takes tonight's, as a resume does: no continuity to break.
         kept_c = s.plan.cool_to
+        # WHAT A MEASURED ANGLE RESTARTED IS READ BEFORE THE PLAN IS REPLACED
+        # (#187): the record of it is on the group of the plan about to go.
+        restarted = layout_restarts(s.plan)
         moved: tuple[float, float] | None = None
         if kept_c is not None:
             # Said only when tonight asks for a DIFFERENT temperature. A
@@ -1479,6 +1496,11 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
                 f"{moved[1]:g}°C: subs at two sensor temperatures cannot "
                 f"share one dark library. START OVER begins a new session "
                 f"at {moved[1]:g}°C.", "sequence")
+    for sentence in restarted:
+        # After the start, like the lines above: a refused start continued
+        # nothing. The counts restarted on the night the angle was measured;
+        # this is the first the operator hears of it from CONTINUE.
+        bus.log("warning", sentence, "sequence")
     if reopened is not None:
         # After the start, like the lines above: a start the engine refused
         # reopened nothing. Info: the operator answered the question, so
@@ -1509,6 +1531,9 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
         # Present only when it happened, as ``adopted`` is, so every answer
         # that reopened nothing is byte-identical to before.
         out["reopened"] = True
+    if restarted:
+        # Present only when a measured angle restarted counts (#187).
+        out["layout_restarts"] = restarted
     if disarmed:
         # #595, D-04: CONTINUE arms this session exactly as a fresh start
         # does, so it rides the same singleton and can disarm another

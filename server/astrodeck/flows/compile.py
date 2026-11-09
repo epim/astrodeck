@@ -685,7 +685,8 @@ def _scope_note(stage: FlowNode, owner: FlowNode | None, mine: list[dict],
 #: TARGET's `angle` choices (``nodes.TARGET_ANGLES``) as the compile spells
 #: them. Keyed on the stored words, which are never reworded.
 ANGLE_CODES: dict[str, str] = {"Any angle": "any", "Rotate to PA": "rotate",
-                               "Camera fixed at PA": "fixed"}
+                               "Camera fixed at PA": "fixed",
+                               "Measure at the first solve": "measure"}
 
 #: The `counts` value that asks for accepted subs (``nodes.COUNT_MODES[1]``).
 ACCEPTED_SUBS = "Accepted subs"
@@ -705,7 +706,9 @@ _PANEL_EXPOSURE_RE = re.compile(
 
 
 def angle_code(params: dict) -> str:
-    """``"any"``, ``"rotate"`` or ``"fixed"`` for a TARGET's params (spec 3.2).
+    """``"any"``, ``"rotate"``, ``"fixed"`` or ``"measure"`` for a TARGET's
+    params (spec 3.2; "measure" is #187: a fixed camera whose angle the first
+    centring solve of each night measures, never derived, only chosen).
 
     The stored `angle` when it is one this build offers, otherwise the one
     ``nodes.target_angle`` derives from `rotation`: a negative rotation is any

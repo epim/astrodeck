@@ -357,6 +357,16 @@ export interface FlowProgressBlock {
    *  locked to (server `progress._block_lock`). Absent when any panel is
    *  unlocked or two panels disagree, and on a POOL block. */
   locked_angle?: { pa_deg: number; source: string };
+  /** Present only on a mosaic block set to "Measure at the first solve" whose
+   *  session has run the relay (server `progress._measured_angle`, #187): the
+   *  angle the grid was last laid out at and whether ruling 3 carried the
+   *  counts there, with the move against what the grid allows when it did
+   *  not. Inline, as `locked_angle` is: the type mirror test reads an object
+   *  type from its braces. */
+  measured_angle?: {
+    pa_deg: number; from_pa_deg: number | null; night: string; carried: boolean;
+    max_move_deg: number | null; threshold_deg: number | null; orphaned_frames: number;
+  };
 }
 
 export interface FlowProgressSession {

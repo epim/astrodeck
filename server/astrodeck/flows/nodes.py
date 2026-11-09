@@ -705,9 +705,18 @@ def create_params(node_type: str) -> dict:
 
 
 #: TARGET's `angle` choices (spec 2.4 ANGLE, 3.1), in the order the editor
-#: offers them. Stored verbatim in saved flows, so never reworded.
+#: offers them. Stored verbatim in saved flows, so never reworded. The fourth
+#: (#187) is opt-in only: nothing defaults to it and nothing derives it. A
+#: fixed camera whose angle nobody knows: the first centring solve of each
+#: night measures it and the grid is laid out there (`TargetGroup.
+#: measure_angle`). Its `rotation` is then SERVER-OWNED, the angle the grid
+#: was last laid out at (`save_rules.prepare_save`).
 TARGET_ANGLES: tuple[str, ...] = ("Any angle", "Rotate to PA",
-                                  "Camera fixed at PA")
+                                  "Camera fixed at PA",
+                                  "Measure at the first solve")
+
+#: The fourth choice by name, for the readers that branch on it.
+MEASURE_ANGLE: str = TARGET_ANGLES[3]
 
 #: TARGET's and POOL's `counts` values (Revision 2, ruling 2): the old meaning
 #: first, then what every new block is created with. `plan.count_mode` is

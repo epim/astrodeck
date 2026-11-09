@@ -88,7 +88,8 @@ from .group_rules import (CENTRING, CENTRING_HOLD_RETRY_S,
                           PassEnd, VisitBound, angle_decision,
                           forward_clear_ts, meridian_eligibility,
                           no_guider_defers, pool_sky_scores, set_aside_expiry)
-from .models import ExposureStep, SequencePlan, Target, TargetGroup
+from .models import (ExposureStep, LayoutRelayRefused, SequencePlan, Target,
+                     TargetGroup)
 from .panel_order import OrderSnapshot, order_panels, order_pool
 from .recovery import Action, RecoveryLadder
 from .report import FrameRecord, SessionReporter
@@ -1562,6 +1563,14 @@ class GroupSetAside(StopTarget):
     any catcher that is not the group driver still ends only that target."""
 
 
+class GroupRelaid(Exception):
+    """A measuring hop (`SequenceEngine._measure_group`, "Measure at the first
+    solve", #187) laid its group's grid out at the angle it read. The panel
+    it was centring on has a NEW centre, so `_hop` catches this and hops
+    once more, to it, before anything is shot. Not a `StopTarget`: nothing
+    is stopped, deferred or set aside."""
+
+
 class MountFloorStop(StopTarget):
     """A MID-RUN slew's destination sank below the mount's OWN floor or
     horizon mask — the safety-mandatory guard every slew carries
@@ -2378,6 +2387,14 @@ class SequenceEngine:
         # engine looks it up lazily via self.hub so there's no import cycle. When
         # unset, every dispatcher call is a guarded no-op.
         self.dispatcher = None
+        # The relay "Measure at the first solve" writes the measured angle
+        # through (#187): ``layout_relay(flow_id, node_id, pa_deg)`` answers
+        # what a compile of the flow, saved at that angle, makes of the
+        # group, or raises `LayoutRelayRefused`. Injected by the app wiring
+        # beside the dispatcher, because the engine imports nothing of the
+        # flows. Unset, a group that measures its angle is set aside, saying
+        # it needs a saved flow.
+        self.layout_relay = None
 
     # ----------------------------------------------------------------- control
 
@@ -9596,6 +9613,291 @@ class SequenceEngine:
         # Written so that a NaN reading FAILS it: ``nan <= tol`` is False.
         return reads if min(d, 180.0 - d) <= tol else None
 
+    # ---- "Measure at the first solve" (#187): the relay ---------------------
+    #
+    # A group whose block is set to measure its angle (`TargetGroup.
+    # measure_angle`) is laid out at what the first centring solve of each
+    # night reads. The first successful hop of a night is therefore a
+    # MEASURING hop: `_group_angle_check` hands the reading here before any
+    # frame, the flow store lays the grid out at it (`flows.to_plan.
+    # relay_layout`, through the callback the app installs as
+    # `layout_relay`), the engine adopts what a compile of the stored flow
+    # makes, and `_hop` hops once more, to the panel's NEW centre. The engine
+    # never computes an id: ruling 3 (carry under half the overlap, restart
+    # over it) is decided by the one writer of identity, the save rules, and
+    # the ids tonight's frames are banked under are the ids the next compile
+    # makes because they ARE that compile's.
+
+    def _measured_tonight(self, group: TargetGroup) -> bool:
+        """Whether ``group``'s angle has been measured on this night: its
+        ``measured`` record carries the night key of now. A restart tonight
+        reads it back from the frozen plan and measures nothing again."""
+        record = group.measured
+        return (isinstance(record, dict)
+                and record.get("night") == night_key(time.time()))
+
+    async def _measure_group(self, target: Target, group: TargetGroup,
+                             rec: dict | None, since: float) -> None:
+        """The first hop of a night for a group that measures its angle:
+        lay the grid out at what this hop's solve read and hop again, or
+        defer (no reading: tiles are never laid blind), or set the group
+        aside (nothing can write the angle, or what can says it cannot).
+        ALWAYS RAISES: `GroupRelaid` on success.
+
+        The reading is folded to the side of the half-turn nearest the
+        current layout (`framing.fold_measured_angle`), so a camera that
+        reads 217 on a grid laid out at 37 does not swap every label."""
+        from ..catalog.framing import fold_measured_angle
+        mosaic = group.name or group.id
+        fresh = fresh_sky_angle(rec, since)
+        decision = angle_decision(
+            "no_measurement" if fresh is None else "ok", rotate=False,
+            angle_verified=False, rotator_evidence=False, shoot_anyway=False,
+            single_panel=False, measure_pending=True)
+        if decision.action == "defer":
+            raise PanelDeferred("angle not measured", kind="angle",
+                                last_error=decision.why)
+        was = float(group.pa_deg) if group.pa_deg is not None else 0.0
+        pa = round(fold_measured_angle(float(fresh["pa_deg"]), was), 1)
+        session = self._session
+        if (session is None or getattr(session, "origin", "") != "flow"
+                or not getattr(session, "origin_id", "")
+                or self.layout_relay is None):
+            raise GroupSetAside(
+                f"the camera reads PA {pa:.1f}, but laying a grid out at the "
+                f"angle it measures needs a saved flow to write the angle "
+                f"to, and this run has none; start it from a flow, or "
+                f"re-frame at the measured angle")
+        try:
+            relaid = await asyncio.to_thread(
+                self.layout_relay, session.origin_id, group.node_id, pa)
+            mapping = self._relay_mapping(group, relaid)
+        except LayoutRelayRefused as e:
+            raise GroupSetAside(
+                f"the camera reads PA {pa:.1f}, but the grid could not be "
+                f"laid out there: {e}; re-frame at the measured angle"
+            ) from None
+        except Exception as e:      # noqa: BLE001 - its text may name a path
+            raise GroupSetAside(
+                f"the camera reads PA {pa:.1f}, but the grid could not be "
+                f"laid out there ({type(e).__name__}); re-frame at the "
+                f"measured angle") from None
+        self._adopt_relaid(group, relaid, mapping, pa=pa, was=was)
+        raise GroupRelaid(f"{mosaic} laid out at PA {pa:.1f}")
+
+    def _plan_members(self, plan, gid: str) -> list[Target]:
+        return [t for t in plan.targets if t.mosaic_group == gid]
+
+    def _relay_mapping(self, group: TargetGroup, relaid) -> dict[str, str]:
+        """Old id to new id, for the group, its panels and every step, from
+        the compile ``relaid`` holds, or ``LayoutRelayRefused`` when that
+        compile is not the plan this run holds (the flow was edited since
+        it started): same panels, and per panel the same steps in the same
+        order with the same recipes. Counts are not compared: they are in no
+        id, and the run keeps its own."""
+        mine = {(t.panel_row, t.panel_col): t
+                for t in self._plan_members(self.plan, group.id)}
+        theirs = {(t.panel_row, t.panel_col): t for t in relaid.members}
+        edited = ("the flow has been edited since this run started (its "
+                  "panels or steps differ), so the grid cannot be laid out "
+                  "under the plan this run holds")
+        if mine.keys() != theirs.keys():
+            raise LayoutRelayRefused(edited)
+
+        def recipe(step) -> tuple:
+            return (step.frame_type, step.filter, float(step.exposure_s),
+                    int(step.gain), int(step.binning))
+
+        mapping = {group.id: relaid.group.id}
+        for key, old in mine.items():
+            new = theirs[key]
+            if (len(old.steps) != len(new.steps)
+                    or any(recipe(a) != recipe(b)
+                           for a, b in zip(old.steps, new.steps))):
+                raise LayoutRelayRefused(edited)
+            mapping[old.id] = new.id
+            for a, b in zip(old.steps, new.steps):
+                mapping[a.id] = b.id
+        return mapping
+
+    def _adopt_relaid(self, group: TargetGroup, relaid, mapping: dict,
+                      *, pa: float, was: float) -> None:
+        """Take the layout and the ids of ``relaid`` into the plan this run
+        holds, IN PLACE (the scheduler, the visit and the hop hold the very
+        objects), then everything the engine keyed by an old id; record what
+        was done on the group, say it, and save the session.
+
+        Every plan object the run holds is adopted into: ``self.plan``, and
+        the session's own when it is another object. The carry (ruling 3)
+        changes no id and only moves the panels."""
+        session = self._session
+        changed = any(old != new for old, new in mapping.items())
+        old_steps = {t_s.id for t in self._plan_members(self.plan, group.id)
+                     for t_s in t.steps}
+        orphaned = (sum(1 for f in session.frames if f.step_id in old_steps)
+                    if changed and session is not None else 0)
+        record = {"pa_deg": pa, "from_pa_deg": was,
+                  "night": night_key(time.time()),
+                  "carried": relaid.reanchored is None,
+                  "max_move_deg": (None if relaid.reanchored is None
+                                   else relaid.reanchored.get("max_move_deg")),
+                  "threshold_deg": (None if relaid.reanchored is None
+                                    else relaid.reanchored.get("threshold_deg")),
+                  "reason": ("unchanged" if relaid.reanchored is None
+                             else relaid.reanchored.get("reason")),
+                  "orphaned_frames": orphaned}
+        old_gid = group.id
+        held = [self.plan] + ([session.plan] if (
+            session is not None and session.plan is not self.plan) else [])
+        theirs = {(t.panel_row, t.panel_col): t for t in relaid.members}
+        for plan in held:
+            g = next(x for x in plan.groups if x.id == old_gid)
+            for t in self._plan_members(plan, old_gid):
+                new = theirs[(t.panel_row, t.panel_col)]
+                for a, b in zip(t.steps, new.steps):
+                    a.id = b.id
+                t.id, t.mosaic_group = new.id, relaid.group.id
+                t.ra_hours, t.dec_deg = new.ra_hours, new.dec_deg
+                t.rotation_deg = new.rotation_deg
+            g.id = relaid.group.id
+            g.pa_deg = relaid.group.pa_deg
+            g.angle_tolerance_deg = relaid.group.angle_tolerance_deg
+            g.skipped_ids = list(relaid.group.skipped_ids)
+            g.geometry = dict(relaid.group.geometry)
+            g.measured = dict(record)
+        if changed:
+            self._rekey_state(mapping, relaid.group.id)
+        if session is not None:
+            # THE SESSION'S FROZEN VERSION MOVES WITH THE FLOW'S SAVE when it
+            # was the version that was saved before the relay, so the editor
+            # does not say an armed session replays an older version on
+            # account of a write the run made itself (`replayNotice`). One
+            # that was already behind an operator's edit stays behind it.
+            if (session.plan_saved_ts is not None
+                    and session.plan_saved_ts == relaid.prior_updated_ts):
+                session.plan_saved_ts = relaid.saved_ts
+            try:
+                session_store.save_run_state(session)
+            except Exception as e:      # noqa: BLE001 - bookkeeping
+                self._say_swallowed("saving the session after laying a grid "
+                                    "out at the measured angle", e)
+        self._say_relaid(group, record, pa=pa, was=was)
+
+    def _say_relaid(self, group: TargetGroup, record: dict, *, pa: float,
+                    was: float) -> None:
+        """One line on what the relay did, in the words the save path uses
+        (`framingModel.reframeLine`): carried, restarted with frames left on
+        disk, or restarted with nothing to lose."""
+        mosaic = group.name or group.id
+        head = f"{mosaic}: laid out at the measured PA {pa:.1f}"
+        if record["carried"]:
+            bus.log("info", f"{head} (was {was:.1f}); counts carry",
+                    "sequence")
+            return
+        if not record["orphaned_frames"]:
+            bus.log("info", f"{head}; nothing had been shot, so nothing "
+                            f"restarts", "sequence")
+            return
+        n = record["orphaned_frames"]
+        move, limit = record["max_move_deg"], record["threshold_deg"]
+        if record["reason"] == "move" and move is not None:
+            why = (f"a panel corner moved {move:.2f} deg, more than the "
+                   f"{limit:.2f} deg this grid allows")
+        else:
+            why = "the grid's angle changed kind"
+        bus.log("warning",
+                f"{head} (was {was:.1f}): {why}: counts restart; {n} "
+                f"{'sub' if n == 1 else 'subs'} shot before stay on disk",
+                "sequence")
+
+    #: The engine attributes `_rekey_state` leaves alone: the plan and the
+    #: session (adopted in place, or deliberately keeping the old ids), the
+    #: devices, the callbacks, the group table (re-keyed by hand below) and
+    #: what is DERIVED FROM THE LEDGER, which must never follow a cell to its
+    #: new id: the counts (`_done`) and the accepted-count memo
+    #: (`_accepted_seen`) are dropped and re-read, a group run's ``completed``
+    #: is recomputed. Carried to the new ids, an old layout's four banked
+    #: frames would have counted for the new one's panels.
+    _REKEY_SKIPS = frozenset({"plan", "_session", "hub", "dispatcher",
+                              "layout_relay", "_groups", "_done",
+                              "_accepted_seen"})
+
+    def _rekey_state(self, mapping: dict[str, str], new_gid: str) -> None:
+        """Re-key everything the engine holds by an old group, target or step
+        id (a restart relay changed them, ruling 3). State about a panel is
+        state about the panel's cell, so it follows the cell to its new id;
+        what the ledger holds on an old id does not follow it: the counts
+        under the new ids are re-read from the ledger, which has none, and
+        the old frames stay where they are, on steps no plan holds.
+
+        A walk of ``vars(self)``, containers in place (a reference held by a
+        running loop stays valid), the group driver's own objects by their
+        attributes, and anything else left alone. Written as a walk because
+        about thirty maps are keyed this way and one added later must not be
+        missed: ``test_w6_1_measure_night`` scans every attribute for a
+        surviving old id."""
+        for name, value in list(vars(self).items()):
+            if name in self._REKEY_SKIPS:
+                continue
+            new = self._remapped(value, mapping)
+            if new is not value:
+                setattr(self, name, new)
+        self._groups = {mapping.get(k, k): g for k, g in self._groups.items()}
+        self._accepted_seen = None
+        old_keys = [k for k in self._done
+                    if any(part in mapping for part in k.split(":"))]
+        for k in old_keys:
+            del self._done[k]
+        if self._session is not None:
+            held = self._session.done_map()
+            for t in self.plan.targets:
+                for s in t.steps:
+                    key = f"{t.id}:{s.id}"
+                    if key in held:
+                        self._done[key] = held[key]
+        self._frames_done = sum(self._done.values())
+        run = self._group_runs.get(new_gid)
+        if run is not None:
+            run.completed = {
+                t.id for ti, t in enumerate(self.plan.targets)
+                if t.id in run.members and self._target_complete(ti, t)}
+
+    @classmethod
+    def _remapped(cls, value, mapping: dict[str, str]):
+        """``value`` with every string that is an old id (or a ``a:b`` pair
+        holding one) replaced. Dicts, sets and lists change IN PLACE and are
+        returned as they are; a string or a tuple that changes is returned
+        new; a group driver's object has its attributes re-keyed."""
+        if isinstance(value, str):
+            if value in mapping:
+                return mapping[value]
+            parts = value.split(":")
+            if len(parts) > 1 and any(p in mapping for p in parts):
+                return ":".join(mapping.get(p, p) for p in parts)
+            return value
+        if isinstance(value, dict):
+            items = [(cls._remapped(k, mapping), cls._remapped(v, mapping))
+                     for k, v in value.items()]
+            value.clear()
+            value.update(items)
+            return value
+        if isinstance(value, (set, list)):
+            items = [cls._remapped(v, mapping) for v in value]
+            if isinstance(value, set):
+                value.clear()
+                value.update(items)
+            else:
+                value[:] = items
+            return value
+        if isinstance(value, tuple):
+            items = tuple(cls._remapped(v, mapping) for v in value)
+            return value if all(a is b for a, b in zip(items, value)) else items
+        if isinstance(value, GroupRun):
+            for k, v in list(vars(value).items()):
+                setattr(value, k, cls._remapped(v, mapping))
+            return value
+        return value
+
     async def _group_angle_check(self, target: Target, group: TargetGroup,
                                  centring: dict | None, rec: dict | None,
                                  since: float) -> None:
@@ -9631,6 +9933,8 @@ class SequenceEngine:
         while a rotator corrects, and with rotation off the fixed camera's,
         which charges back the convergence a corrected group's leaves out
         (#787, #828)."""
+        if group.measure_angle and not self._measured_tonight(group):
+            await self._measure_group(target, group, rec, since)
         rotates = group.rotate and not self._rotation_off_tonight()
         pa = (self._planned_pa(target, group) if rotates
               else group.pa_deg)
@@ -9744,7 +10048,14 @@ class SequenceEngine:
         # recovery compare its pose with the old target's.
         self._guiding_off_for_pause = False
         self._pause_pose = None
-        await self._setup_target(ti, target)
+        try:
+            await self._setup_target(ti, target)
+        except GroupRelaid:
+            # The measuring hop laid the grid out at the angle it read
+            # (#187): hop again, to this panel's new centre. The second
+            # setup is an ordinary one, its angle check against the new
+            # layout.
+            await self._setup_target(ti, target)
         if self._hop_guide_started:
             self._guiding_recoveries = 0
 

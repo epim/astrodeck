@@ -49,11 +49,11 @@ from ..sequence.models import (ActionKind, DuskFlatsPlan, SequencePlan,
                                TriggerKind)
 from ..sequence.schedule import sun_window_needs_a_site
 from . import identity, tonight
-from .compile import (lane_order_refusals, lane_refusals, ordered_lanes,
-                      pool_strategy_of)
+from .compile import (compile_plan, lane_order_refusals, lane_refusals,
+                      ordered_lanes, pool_strategy_of)
 from .models import FlowGraph
-from .nodes import (DUSK_FLATS_METHODS, NODE_DEFS, QUICK_AUTOFOCUS,
-                    QUICK_DITHER_EVERY)
+from .nodes import (DUSK_FLATS_METHODS, MEASURE_ANGLE, NODE_DEFS,
+                    QUICK_AUTOFOCUS, QUICK_DITHER_EVERY, target_angle)
 from .rig import RigFacts
 
 #: The engine's real vocabularies, read off the ``Literal`` types rather than
@@ -1609,6 +1609,14 @@ def _angles(entry: dict) -> tuple[str, float | None, float | None]:
     for "any angle"; a rotator cannot be commanded to a negative PA, so no
     real value is displaced.
 
+    "MEASURE" (#187) IS A FIXED CAMERA WHOSE ANGLE IS NOT KNOWN YET: a grid
+    is laid out at its ``rotation`` (the angle it was last laid out at, which
+    the run's first solve of a night replaces), PROVISIONALLY 0, north up,
+    while that is none, so the compile has a layout to key and to preview
+    before anything is measured; nothing is ever commanded. A block of one
+    panel has no grid to lay out: it reads as it would at "any angle" and
+    keeps the angle of its first solve (ruling 9).
+
     An entry with no ``angle`` (a compiled dict older than S3, or built by
     hand) reads its rotation alone, as every run before S3 did: a PA of 0 or
     more is commanded."""
@@ -1616,8 +1624,11 @@ def _angles(entry: dict) -> tuple[str, float | None, float | None]:
     if rotation is not None and rotation < 0:
         rotation = None
     angle = entry.get("angle")
-    if angle not in ("any", "rotate", "fixed"):
+    if angle not in ("any", "rotate", "fixed", "measure"):
         angle = "any" if rotation is None else "rotate"
+    if angle == "measure":
+        grid = bool(entry.get("mosaic"))
+        return angle, (0.0 if grid and rotation is None else rotation), None
     layout = None if angle == "any" else rotation
     return angle, layout, (layout if angle == "rotate" else None)
 
@@ -1972,6 +1983,12 @@ def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
                      "overlap": overlap, "fov_x": fov_x, "fov_y": fov_y,
                      "fov_from": str(m.get("fov_from") or ""), "key": key},
     }
+    if angle == "measure":
+        # #187: the group says it is laid out at what the first solve of each
+        # night measures, and which block of the flow to write that to. Only
+        # here, so every other group dumps as it always did.
+        group["measure_angle"] = True
+        group["node_id"] = node_id
     return panels, group
 
 
@@ -2531,3 +2548,137 @@ def losses(unmapped: list[dict]) -> list[dict]:
     just not worth blocking on.
     """
     return [u for u in unmapped if u.get("level") != "note"]
+
+
+# -------------------------------------------- the relay: "Measure at the first
+# solve" (#187)
+#
+# The engine measures the camera's sky angle on the first centring solve of a
+# night and hands it here, through the callback the app installs
+# (`SequenceEngine.layout_relay`). Everything that decides what the
+# measurement MEANS for identity is the flow store's, not the engine's: the
+# angle is written into the block's `rotation` by the store's one writer, so
+# ruling 3's `reframe_carry` keeps or replaces the anchor exactly as it does
+# for an operator's save, and the compile of what was stored is what the
+# engine adopts. The ids the engine banks under tonight are therefore, by
+# construction, the ids the next compile of the same flow makes.
+
+#: How often the relay starts over when the flow's saved time moves between
+#: its read and its write: the store has no lock (every route saves on a
+#: worker thread and the last writer wins), so a save by somebody else in
+#: that window would be overwritten with a stale copy.
+RELAY_TRIES = 3
+
+#: The measured angle is written to a tenth of a degree, as USE MEASURED
+#: rounds it: the layout is a number an operator reads.
+RELAY_PLACES = 1
+
+
+@dataclass(frozen=True)
+class Relaid:
+    """What ``relay_layout`` answers: the block's group and members as a
+    compile of the stored flow makes them (the ids, the layout, the
+    tolerance), ``reanchored`` (``save_rules``' row: ``{node_id,
+    max_move_deg, threshold_deg, reason}``, or None when the counts carry),
+    and the flow record's saved time before the write (``prior_updated_ts``)
+    and after (``saved_ts``), which the session's frozen version is judged
+    by (``Session.plan_saved_ts``)."""
+    group: Any
+    members: list
+    reanchored: dict | None
+    prior_updated_ts: float
+    saved_ts: float
+
+
+def _relayed_block(store, flow_id: str, node_id: str):
+    """``(record, node)`` of the block the relay writes to, or a refusal in
+    words: the flow is gone, a shipped example, the block is gone or no
+    longer at "Measure at the first solve"."""
+    from ..sequence.models import LayoutRelayRefused
+    try:
+        record = store.get(flow_id)
+    except KeyError:
+        raise LayoutRelayRefused(
+            "the flow this run came from no longer exists") from None
+    if record.readonly:
+        raise LayoutRelayRefused(
+            "the flow this run came from is a shipped example, which is "
+            "read-only")
+    node = next((n for n in record.graph.nodes
+                 if n.id == node_id and n.type == "target"), None)
+    if node is None:
+        raise LayoutRelayRefused(
+            "the block this grid came from is no longer in the flow")
+    if target_angle(node.with_defaults().params) != MEASURE_ANGLE:
+        raise LayoutRelayRefused(
+            "the block this grid came from is no longer set to measure its "
+            "angle")
+    return record, node
+
+
+def relay_layout(store, flow_id: str, node_id: str, measured_pa: float, *,
+                 now: float | None = None) -> Relaid:
+    """Write ``measured_pa`` into the block ``node_id`` of flow ``flow_id``
+    through the store's one writer, and answer the group and members a
+    compile of what was stored makes. Raises ``LayoutRelayRefused`` with
+    words for the operator when it cannot, writing nothing it did not say.
+
+    ``store`` is the flow store (``get``, ``save_and_report``), handed in so
+    this module imports none. BLOCKING FILE I/O: the engine calls it on a
+    worker thread. The saved time is read again just before the write and
+    the relay starts over when it moved (``RELAY_TRIES``), because a save by
+    an operator in that window would otherwise be overwritten."""
+    import time as _time
+    from ..sequence.models import LayoutRelayRefused
+    if _number(measured_pa) is None:
+        raise LayoutRelayRefused("the measured angle is not a number")
+    angle = round(float(measured_pa), RELAY_PLACES)
+    for _try in range(RELAY_TRIES):
+        record, _node = _relayed_block(store, flow_id, node_id)
+        prior_ts = record.updated_ts
+        if store.get(flow_id).updated_ts != prior_ts:
+            continue
+        try:
+            stored, _migrated, reanchored = store.save_and_report(
+                record, measured={node_id: angle})
+        except ValueError as e:
+            # A refusal the store words itself (read-only, library full, a
+            # graph that does not validate): operator words, no path.
+            raise LayoutRelayRefused(
+                f"the flow could not be saved at the measured angle: {e}"
+            ) from None
+        except Exception as e:      # noqa: BLE001 - its text may name a path
+            raise LayoutRelayRefused(
+                f"the flow could not be saved at the measured angle "
+                f"({type(e).__name__})") from None
+        return _relaid(stored, flow_id, node_id, reanchored, prior_ts,
+                       _time.time() if now is None else now)
+    raise LayoutRelayRefused(
+        "the flow was saved by somebody else while its layout was being "
+        "written, three times running")
+
+
+def _relaid(stored, flow_id: str, node_id: str, reanchored: list[dict],
+            prior_ts: float, when: float) -> Relaid:
+    """The group and members of ``node_id`` in a compile of ``stored``."""
+    from ..sequence.models import LayoutRelayRefused
+    try:
+        plan, _unmapped = to_sequence_plan(
+            compile_plan(stored.graph, stored.name), stored.graph,
+            flow_id=flow_id, when=when)
+    except GraphNotRunnable as e:
+        raise LayoutRelayRefused(
+            f"the flow no longer compiles at the measured angle: {e}"
+        ) from None
+    group = next((g for g in plan.groups
+                  if g.node_id == node_id and g.measure_angle), None)
+    if group is None:
+        raise LayoutRelayRefused(
+            "the block compiles to no grid at the measured angle (no "
+            "coordinates, or every panel skipped)")
+    row = next((r for r in reanchored if r.get("node_id") == node_id), None)
+    return Relaid(group=group,
+                  members=[t for t in plan.targets
+                           if t.mosaic_group == group.id],
+                  reanchored=row, prior_updated_ts=prior_ts,
+                  saved_ts=stored.updated_ts)

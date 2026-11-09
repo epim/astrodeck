@@ -26,7 +26,7 @@ import {
   loopArc, nodeLayoutHeight, type EdgeMode, type FlowTier, type LoopArc, type LoopArcOpts,
 } from "./geometry";
 import { AUTO_PAD, FLOW_LANE_GAP, layoutHeight } from "./autoLayout";
-import { NODE_DEFS, TARGET_ANGLES, targetAngle } from "./nodeDefs";
+import { MEASURE_ANGLE, NODE_DEFS, TARGET_ANGLES, targetAngle } from "./nodeDefs";
 import {
   isMultiPanel, loopWires, midLanePassWires, panelLane, NEXT_PORT, type LaneGraph,
 } from "./panelLane";
@@ -82,6 +82,13 @@ function angleWords(p: Record<string, string | number>): string {
     angle = targetAngle({ rotation: p.rotation });
   }
   if (angle === "Any angle") return "any angle";
+  // MEASURE AT THE FIRST SOLVE (#187): the rotation is the run's, the angle
+  // the grid was last laid out at, so the card says what the run does and
+  // the last angle it laid out at once it has one.
+  if (angle === MEASURE_ANGLE) {
+    const m = decimal(p.rotation);
+    return Number.isFinite(m) && m >= 0 ? `measured, last PA ${m.toFixed(1)}` : "measures its angle";
+  }
   // An unreadable rotation is -1 to the compile, as it is here: the card shows
   // the number the run would read, and the doctor says what is wrong with it.
   const r = decimal(p.rotation);

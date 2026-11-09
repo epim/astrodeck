@@ -472,8 +472,11 @@ def _progress_blocks() -> list[dict]:
     block takes: a single TARGET locked to an angle, a POOL, and a 2x2
     mosaic with a panel skipped and, since WP-141 (#727), one panel a DORMANT
     session holds a standing set-aside record for (so the mosaic block carries
-    ``set_aside``, which only such a block does). JSON-rendered, as the route
-    serves it."""
+    ``set_aside``, which only such a block does). A FOURTH BLOCK, since WP 6.1
+    (#187): a mosaic at "Measure at the first solve" whose session plan
+    carries the relay's ``measured`` record, the one block that carries
+    ``measured_angle``, so the declaration flowsApi.ts holds for it is both
+    declared and sent. JSON-rendered, as the route serves it."""
     from astrodeck.flows.compile import compile_plan
     from astrodeck.flows.models import FlowEdge, FlowGraph, FlowNode
     from astrodeck.flows.progress import flow_progress
@@ -499,14 +502,26 @@ def _progress_blocks() -> list[dict]:
                  dec="-13 49 00", rotation=30, angle="Rotate to PA", rows=2,
                  cols=2, overlap=25, fovX=2.0, fovY=1.33, skip="2-2"),
                n("k", "capture", 250, filter="Ha", exposure=300, gain=100,
+                 bin="1", count=2, goal=0),
+               n("w", "target", 300, name="M42", ra="05h 35m 17s",
+                 dec="-05 23 28", rotation=10, angle="Measure at the first solve",
+                 rows=1, cols=2, overlap=25, fovX=1.0, fovY=0.7),
+               n("x", "capture", 350, filter="L", exposure=60, gain=100,
                  bin="1", count=2, goal=0)],
         edges=[e("t", "target", "c", "run"), e("c", "complete", "p", "arm"),
                e("p", "target", "q", "run"), e("q", "complete", "m", "arm"),
-               e("m", "target", "k", "run")])
+               e("m", "target", "k", "run"), e("k", "complete", "w", "arm"),
+               e("w", "target", "x", "run")])
     flow = "flow-mirror-progress"
     compiled = compile_plan(graph, "n")
     plan, _ = to_sequence_plan(compiled, graph, flow_id=flow)
     single = plan.targets[0]
+    # WP 6.1 (#187): what the relay wrote on the measuring group, the record
+    # the progress route reads back as the block's `measured_angle`.
+    next(g for g in plan.groups if g.measure_angle).measured = {
+        "pa_deg": 37.0, "from_pa_deg": 30.0, "night": "2026-11-08",
+        "carried": False, "max_move_deg": 0.26, "threshold_deg": 0.17,
+        "reason": "move", "orphaned_frames": 4}
     session = Session(id="s", status="dormant", nights=["n1"],
                       plan=plan, frames=[], origin="flow", origin_id=flow,
                       locked_angles={single.id: {
@@ -591,11 +606,17 @@ def test_the_progress_block_type_is_what_the_route_answers():
     blocks = _progress_blocks()
     kinds = [(b["kind"], "grid" in b, "locked_angle" in b) for b in blocks]
     assert kinds == [("target", False, True), ("pool", False, False),
-                     ("target", True, False)], (
-        f"premise: a locked single target, a pool and a mosaic: {kinds}")
-    assert [("set_aside" in b) for b in blocks] == [False, False, True], (
+                     ("target", True, False), ("target", True, False)], (
+        f"premise: a locked single target, a pool, a mosaic and a measuring "
+        f"mosaic: {kinds}")
+    assert [("set_aside" in b) for b in blocks] == [False, False, True,
+                                                    False], (
         "premise: only the mosaic block of the dormant session carries "
         "set_aside")
+    assert [("measured_angle" in b) for b in blocks] == [False, False, False,
+                                                         True], (
+        "premise: only the measuring mosaic carries measured_angle (WP 6.1, "
+        "#187)")
 
     for what, records in (("FlowProgressBlock", blocks),
                           ("FlowProgressPanel",

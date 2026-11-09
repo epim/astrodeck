@@ -464,8 +464,8 @@ test("every constant mirrored from wizard.py equals wizard.py's", () => {
   const names = opts![1].split(",").map((s) => s.trim()).filter((s) => s !== "OPT_GUIDING");
   eq([...M.DOOR_OPTIONS].sort(), names.map(pyString).sort(), "DOOR_OPTIONS is not DEFAULT_OPTIONS less Guiding:");
   // The two mosaic angles, unpacked from TARGET_ANGLES there as here.
-  assert(/^ANY_ANGLE, ROTATE_TO_PA, CAMERA_FIXED_AT_PA = TARGET_ANGLES$/m.test(WIZARD_PY),
-    "wizard.py no longer unpacks TARGET_ANGLES as (any, rotate, fixed)");
+  assert(/^ANY_ANGLE, ROTATE_TO_PA, CAMERA_FIXED_AT_PA, MEASURE_AT_FIRST_SOLVE = TARGET_ANGLES$/m.test(WIZARD_PY),
+    "wizard.py no longer unpacks TARGET_ANGLES as (any, rotate, fixed, measure)");
   assert(/^MOSAIC_ANGLES: tuple\[str, \.\.\.\] = \(ROTATE_TO_PA, CAMERA_FIXED_AT_PA\)$/m.test(WIZARD_PY),
     "wizard.py's MOSAIC_ANGLES is no longer (ROTATE_TO_PA, CAMERA_FIXED_AT_PA)");
   eq([...M.MOSAIC_ANGLES], [TARGET_ANGLES[1], TARGET_ANGLES[2]], "MOSAIC_ANGLES:");

@@ -43,8 +43,8 @@ from .compile import (
     PANEL_EXPOSURE_FORM, grid_size, parse_panel_exposure)
 from .identity import typed_coordinates
 from .models import FlowGraph
-from .nodes import (DUSK_FLATS_METHODS, NODE_DEFS, flats_method,
-                    parse_cycle_plan, port_kind, target_angle)
+from .nodes import (DUSK_FLATS_METHODS, MEASURE_ANGLE, NODE_DEFS,
+                    flats_method, parse_cycle_plan, port_kind, target_angle)
 from .rig import RigFacts
 
 
@@ -254,11 +254,16 @@ def _pa(node) -> float | None:
     """The block's position angle when it has one to lay panels out at, else
     None: "Any angle", or a rotation that is negative (spec 3.1: negative means
     none), unparseable or not finite. A "Rotate to PA" with rotation -1 rotates
-    to nothing, so it has no angle either."""
-    if target_angle(node.params) == "Any angle":
+    to nothing, so it has no angle either. "Measure at the first solve" always
+    has one to lay out at: its rotation, or provisionally 0, north up, until
+    the first solve of a night has measured it (``to_plan._angles``)."""
+    angle = target_angle(node.params)
+    if angle == "Any angle":
         return None
     rot = _num(node.params.get("rotation"), -1.0)
-    return rot if math.isfinite(rot) and rot >= 0 else None
+    if math.isfinite(rot) and rot >= 0:
+        return rot
+    return 0.0 if angle == MEASURE_ANGLE else None
 
 
 def _whole(value, default: int = 1) -> int:
@@ -649,8 +654,8 @@ def _mosaic_rules(graph: FlowGraph, rig: RigFacts | None) -> list[Issue]:
     if has_rotator is not None:
         for b in blocks:
             pa, angle = _pa(b), target_angle(b.params)
-            if pa is None:
-                continue        # M2 speaks
+            if pa is None or angle == MEASURE_ANGLE:
+                continue        # M2 speaks; measure says its own (below)
             if angle == "Rotate to PA" and has_rotator:
                 continue
             spec = specs[b.id]
@@ -667,6 +672,31 @@ def _mosaic_rules(graph: FlowGraph, rig: RigFacts | None) -> list[Issue]:
                 f"{pa:.1f} before the first panel. The run measures the angle "
                 f"at every panel and holds the mosaic {limit}.",
                 "warn" if angle == "Rotate to PA" else "note"))
+
+    # "Measure at the first solve" (#187). On a grid it is a camera fixed at
+    # an angle nobody has to know: M2 does not refuse it and M8's hand-turn
+    # sentence would contradict it, so it says what the run does instead.
+    # On a rig that has a rotator, the choice that turns the camera to a
+    # planned angle is the other one. A block of one panel has no grid to lay
+    # out: it keeps its first solve's angle as "Any angle" does (ruling 9).
+    for b in [n for n in graph.nodes if n.type == "target"
+              and target_angle(n.params) == MEASURE_ANGLE]:
+        if is_multi_panel(b):
+            out.append(Issue(
+                f"▸ {_block_name(b)} - camera fixed, angle measured: the grid "
+                f"is laid out at the angle the camera reads on the first "
+                f"centring solve of each night, so the angle needs no guess.",
+                "note"))
+            if has_rotator is True:
+                out.append(Issue(
+                    f"▸ {_block_name(b)} - this rig has a rotator: Rotate to "
+                    f"PA turns the camera to a planned angle, and measure at "
+                    f"the first solve never turns it.", "note"))
+        else:
+            out.append(Issue(
+                f"▸ {_block_name(b)} - measure at the first solve lays a grid "
+                f"out at the camera's angle; this block is one panel, which "
+                f"keeps the angle of its first solve anyway.", "note"))
 
     # M9. The `quota_unbounded` refusal, before Run rather than at it: in
     # accepted mode with both reject guards off, only a stop boundary ends a
