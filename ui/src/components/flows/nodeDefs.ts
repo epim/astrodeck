@@ -295,6 +295,18 @@ export const AUTO_RESUME_HELP =
   "On a rig with a motorized roof or dust cover, it opens them before the first slew of " +
   "the night, on a resume as on a first start.";
 
+/** What TARGET's maximum time does when it is reached (#1207, owner ruling
+ *  2026-11-08), for the editor's field hint and both NEW FLOW wizards. Each
+ *  clause is the engine's: the count starts at the target's first attempt
+ *  (`_time_bound_met`); the target is DONE for tonight and its owed frames
+ *  wait for a later night (`_enforce_time_bound`, `_persist_set_aside`); the
+ *  scheduler goes on to the next target (`TargetTimeUp` is caught as done, not
+ *  skipped). No non-ASCII. */
+export const MAX_TIME_HELP =
+  "Counted from the target's first attempt, so setup counts; when it is reached the target is " +
+  "done for tonight, the frames it still owes wait for a later night, and the run moves on to " +
+  "the next target.";
+
 // ------------------------------------------------------ the capability table
 // MIRRORS nodes.py `Capability`, `DUSK_FLATS_METHODS` and `AUTOMATION_CHIPS`
 // row for row (#1111 C-05, #843, #820): which choices the engine keeps. The
@@ -470,7 +482,7 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
       { key: "ifNotCentred", label: "If a panel will not centre or reach its angle", control: "select", options: ["Auto", "Skip it this pass", "Shoot anyway"] },
       // A single target's bound (#1094): the run moves on after this long with
       // frames owed. 0 is none, spelled in the label.
-      { key: "maxTime", label: "Most time on the target (0 = no limit)", control: "text", unit: "min" },
+      { key: "maxTime", label: "Most time on the target (0 = no limit)", control: "text", unit: "min", help: MAX_TIME_HELP },
     ],
     desc: "One target, or a mosaic of panels at one camera angle: coordinates, grid, centring, and identity for the multi-night session log. The stages wired to 'each panel' run on every panel; wire the last stage's 'pass done' to 'next panel' to rotate panels every pass.",
     sum: (p) => txt(p.name),

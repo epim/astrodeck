@@ -74,7 +74,7 @@ import { flowsApi, type FlowCompileResult, type FlowUnmapped } from "../../../li
 import { cyclePlanRows, resolveWheel, setSlotExposure, toggleSlot } from "../cyclePlanRows";
 import { askContinue, isRunPhaseLive, runAnsweringQuestions, runBlockedReason } from "../flowRunControls";
 import { FLOW_NOT_OPENED } from "../flowsSlice";
-import { AUTO_RESUME_HELP, AUTO_RESUME_LABEL } from "../nodeDefs";
+import { AUTO_RESUME_HELP, AUTO_RESUME_LABEL, MAX_TIME_HELP } from "../nodeDefs";
 import {
   ANGLE_WORDS, AUTO_RESUME_CHOICES, CLOCK_TIME, DUSK_STARTS, DUSK_STOPS, MIN_ALT_MAX_DEG, MIN_ALT_MIN_DEG,
   MOSAIC_ANGLES, STEP_TITLE, STEPS, UNGUIDED_CAP_S,
@@ -678,9 +678,12 @@ export default function SendToWizardSheet(p: SendToWizardSheetProps): JSX.Elemen
         onChange={(v) => set({ minAlt: v })} mode="decimal"
         placeholder={`${MIN_ALT_MIN_DEG} to ${MIN_ALT_MAX_DEG}`} />
       {!plansMosaic(prefill, answers) && (
-        <Ask k="max-time" label="MAX MINUTES ON TARGET" value={answers.maxTime}
-          onChange={(v) => set({ maxTime: v })} mode="numeric"
-          placeholder="blank for no limit" />
+        <>
+          <Ask k="max-time" label="MAX MINUTES ON TARGET" value={answers.maxTime}
+            onChange={(v) => set({ maxTime: v })} mode="numeric"
+            placeholder="blank for no limit" />
+          <p className="swz-note" data-testid="wizard-max-time-note">{MAX_TIME_HELP}</p>
+        </>
       )}
       <p className="swz-note" data-testid="wizard-night-note">
         {STOP_NONE_NOTE}

@@ -22,7 +22,7 @@
 // Run alone:  npx tsx src/components/flows/__tests__/nodeDefs.test.ts
 import {
   AUTO_RESUME_CHOICES, AUTO_RESUME_HELP, AUTO_RESUME_LABEL,
-  COUNT_MODES, LEGACY_TYPES, NODE_DEFS, ROWLESS_PARAMS, TARGET_ANGLES,
+  COUNT_MODES, LEGACY_TYPES, MAX_TIME_HELP, NODE_DEFS, ROWLESS_PARAMS, TARGET_ANGLES,
   createParams, fieldValue, targetAngle,
 } from "../nodeDefs";
 import type { FieldDef, NodeDef, PortDef } from "../nodeDefs";
@@ -771,17 +771,36 @@ test("capture's integration-goal unit keeps its zero sentinel", () => {
 
 // -------------------------------------------------------------------- help
 
-test("exactly one field in the whole vocabulary carries help text, DUSK WINDOW's autoResume", () => {
+test("exactly two fields in the whole vocabulary carry help text: DUSK WINDOW's autoResume and TARGET's maxTime", () => {
   // Pinned the same way as the cycleplan control above (#195): `help` exists
-  // for exactly the field whose plain label cannot say what a flow that is OFF
-  // does on a subsequent night. A second field growing one unnoticed is not a
-  // defect by itself, but this count moving is the signal that a field's own
-  // help needs the same compiled-behaviour check (and the same claims table,
-  // server/tests/test_w14_autoresume_claims.py) the next test runs on this one.
+  // for the fields whose plain label cannot say what happens next: what a flow
+  // that is OFF does on a subsequent night, and what a target does when its
+  // time is up (#1207). A further field growing one unnoticed is not a defect
+  // by itself, but this count moving is the signal that a field's own help
+  // needs the same compiled-behaviour check (and, for autoResume, the claims
+  // table server/tests/test_w14_autoresume_claims.py) the next tests run.
   const found = TYPES.flatMap((t) =>
     defOf(t).fields.filter((f) => "help" in f && (f.help ?? "").length > 0)
       .map((f) => `${t}.${f.key}`));
-  eq(found.join(","), "dusk.autoResume", "fields carrying help text");
+  eq(found.sort().join(","), "dusk.autoResume,target.maxTime", "fields carrying help text");
+});
+
+test("TARGET's maxTime help says what happens when the target's time is up (#1207)", () => {
+  // Each clause is the engine's (`_time_bound_met`, `_enforce_time_bound`,
+  // `_persist_set_aside`): counted from the first attempt, setup included; the
+  // target is DONE for tonight with its frames still owed to a later night;
+  // `TargetTimeUp` is caught as done, not skipped, and the scheduler goes on.
+  //
+  // NAMED MUTANT "help removed": the `help` taken off the maxTime field.
+  // RED, observed:
+  //     TARGET's maxTime carries no help text
+  const help = defOf("target").fields.find((f) => f.key === "maxTime")?.help ?? "";
+  assert(help.length > 0, "TARGET's maxTime carries no help text");
+  assert(help.includes("first attempt, so setup counts"), "the help does not say where the count starts");
+  assert(help.includes("done for tonight"), "the help does not say the target is done for tonight");
+  assert(help.includes("wait for a later night"), "the help does not say the owed frames wait");
+  assert(help.includes("the run moves on to the next target"), "the help does not say the run moves on");
+  eq(help, MAX_TIME_HELP, "the field carries the exported text");
 });
 
 test("DUSK WINDOW's Automatic resume is the owner's exact label, an On/Off select, default On", () => {

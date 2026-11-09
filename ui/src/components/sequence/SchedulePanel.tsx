@@ -16,6 +16,17 @@ import { scheduleSummary } from "../../lib/schedule";
 import { Segmented, type SegmentedOption } from "../Segmented";
 import { InfoDot, Stepper, Toggle } from "../ui";
 
+/** What the max-run cap does when it is reached (#1207). Each clause is the
+ *  engine's: the count starts at the target's first attempt (`_first_attempt`);
+ *  the cap closes the target's window, so it is skipped and leaves the run's
+ *  remaining targets (`_enforce_stop_boundary`, WindowClosed); the scheduler
+ *  goes on to the next target, which has its own allowance. "Of the run", not
+ *  "of the night": a restart the same night is a new run. How the run is later
+ *  labelled is #1239 and is left unsaid. */
+export const MAX_RUN_NOTE =
+  "Counted from the target's first attempt, so setup counts. When it is reached, the target is " +
+  "skipped for the rest of the run and the run goes on to the next target.";
+
 const START_OPTIONS: SegmentedOption<Schedule["start_mode"]>[] = [
   { value: "now", label: "Now" },
   { value: "dusk", label: "Dusk" },
@@ -213,6 +224,7 @@ export default function SchedulePanel({ schedule, disabled, onChange }: {
               min={0} max={600} step={15} disabled={disabled}
               format={(v) => (v === 0 ? "no cap" : `${v} min`)}
             />
+            <p className="basis-full text-dim" data-testid="schedule-max-run-note">{MAX_RUN_NOTE}</p>
           </div>
 
           {/* --------------------------------------------------- on missed */}

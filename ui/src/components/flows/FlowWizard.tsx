@@ -24,7 +24,7 @@ import { accessPhrase, useCanControlCapture } from "../../lib/caps";
 import { handleRadioKeyDown, rovingTabIndex } from "../../lib/radiogroup";
 import { flowsApi } from "../../lib/flowsApi";
 import { useStore } from "../../store";
-import { AUTO_RESUME_LABEL, createParams } from "./nodeDefs";
+import { AUTO_RESUME_LABEL, MAX_TIME_HELP, createParams } from "./nodeDefs";
 import type { FlowNodeRec } from "./flowsTypes";
 // The night's two answers (#718) are the #/next sheet's own model, imported so
 // the body, the defaults and the gap on a Clock time stop exist once.
@@ -368,20 +368,25 @@ export default function FlowWizard() {
           target's own bound, so a pool, which picks its member at dusk, is
           not asked. */}
       {asksMaxTime(kind) && (
-        <label className="flex flex-col gap-[5px]">
-          <span className="font-display font-semibold text-[9.5px] tracking-[0.18em] text-dim">
-            MOST MINUTES ON THE TARGET (BLANK FOR NO LIMIT)
-          </span>
-          <input
-            value={night.maxTime}
-            onChange={(e) => setNight((n) => ({ ...n, maxTime: e.target.value }))}
-            inputMode="numeric"
-            placeholder="60"
-            aria-label="Most minutes on the target, blank for no limit"
-            data-testid="flows-wiz-max-time"
-            className="field !text-[13px] !p-2.5 min-h-[44px]"
-          />
-        </label>
+        <>
+          <label className="flex flex-col gap-[5px]">
+            <span className="font-display font-semibold text-[9.5px] tracking-[0.18em] text-dim">
+              MOST MINUTES ON THE TARGET (BLANK FOR NO LIMIT)
+            </span>
+            <input
+              value={night.maxTime}
+              onChange={(e) => setNight((n) => ({ ...n, maxTime: e.target.value }))}
+              inputMode="numeric"
+              placeholder="60"
+              aria-label="Most minutes on the target, blank for no limit"
+              data-testid="flows-wiz-max-time"
+              className="field !text-[13px] !p-2.5 min-h-[44px]"
+            />
+          </label>
+          <p className="text-[11px] text-faint leading-[1.5] [text-wrap:pretty]" data-testid="flows-wiz-max-time-note">
+            {MAX_TIME_HELP}
+          </p>
+        </>
       )}
 
       {/* ── 6. whether the flow resumes on later nights: the owner's question,

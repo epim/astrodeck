@@ -43,7 +43,7 @@ import {
 import {
   FLOW_OPEN_FAILED, flowOpenFailure, libraryErrorNow, openFlowById,
 } from "../openFlow";
-import { AUTO_RESUME_LABEL } from "../../../../../components/flows/nodeDefs";
+import { AUTO_RESUME_LABEL, MAX_TIME_HELP } from "../../../../../components/flows/nodeDefs";
 import {
   AUTOMATIONS, AUTOMATION_DEFAULTS, AUTO_RESUME_CHOICES, BLANK_FAILED, BLANK_NAME,
   BLANK_TAGLINE, BUSY_REASON, CLOCK_TIME, DUSK_STOPS, GENERATE_FAILED, KIND_SUB, KINDS,
@@ -287,7 +287,8 @@ export function FlowNewSheet(): JSX.Element {
             </Field>
           )}
           {asksMaxTime(kind) && (
-            <Field label="MOST MINUTES ON THE TARGET (BLANK FOR NO LIMIT)" htmlFor="flow-wizard-max-time">
+            <Field label="MOST MINUTES ON THE TARGET (BLANK FOR NO LIMIT)" htmlFor="flow-wizard-max-time"
+              hint={MAX_TIME_HELP} data-testid="flow-wizard-max-time-field">
               <TextInput
                 id="flow-wizard-max-time"
                 data-testid="flow-wizard-max-time"

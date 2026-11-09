@@ -29,8 +29,10 @@
 // A FIELD WITH `help` GETS AN INFO ICON (#195, owner ruling 7 on #189), in every
 // branch: hover on a fine pointer, tap on a coarse one, a 44 px target, carrying
 // the field's `help`. This hub turned most of its InfoDots into visible hints,
-// and the owner's ruling for this one field is an ICON, so the exception is
-// deliberate and is one field wide: no other field carries `help`.
+// and the owner's ruling for DUSK WINDOW's autoResume is an ICON, so the
+// exception is deliberate. TARGET's maxTime carries `help` too (#1207): what
+// happens when a target's time is up cannot be read off its label. No other
+// field carries `help` (`nodeDefs.test.ts` pins the pair).
 //
 // THE ICON IS THIS FILE'S OWN (`InfoButton`), on the new UI's `Popover`, and not
 // the legacy `InfoDot`: `r7Parity.test.ts` holds that nothing under `next/`
