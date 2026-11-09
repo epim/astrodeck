@@ -97,28 +97,33 @@ BASE_MOSAIC_STEP_IDS = [
 ]
 BASE_MOSAIC_SKIPPED = ["27e6e4ba744f5ef09a746fbafc076609"]
 
-#: Plan hashes (instruction ids blanked, sorted keys) of flows with NEITHER a
-#: chain NOR a POOL, as origin/main d4549f22 compiled them (rule 14: these
-#: must not move). Taken with ``flow_id`` as keyed below.
+#: Plan hashes (instruction ids blanked, sorted keys, floats through
+#: ``_rounded``) of flows with NEITHER a chain NOR a POOL, as origin/main
+#: d4549f22 compiled them (rule 14: these must not move). Taken with
+#: ``flow_id`` as keyed below. RE-TAKEN ROUNDED by the coordinator after CI
+#: (Linux) failed the two mosaic pins in the last bit of their geometry:
+#: on Windows the unrounded dumps of this tree were byte-identical to
+#: d4549f22's (the unrounded pins passed there), so these rounded hashes
+#: are d4549f22's too.
 BASE_HASHES = {
     "single_cycle":
-        "bad612d971898d33caf7ffb2db59ed2260af20b7ce1cd4fdf0f357a59f5f4783",
+        "3400456c02cc44fe5b57aabab1bfe06df967f925baf9a684b35b50b7e5b66f5a",
     "blocks":
-        "ed9187f0295e8eb9a897fb009bd0ae3b2a4a3ada1acd56629e97d3e9e94d0b4d",
+        "34848b10ef04a1775ab6c3626c656e69b0368cb906de811411d2415cfb8499bb",
     "mosaic":
-        "b5159598595b85b1200878ade9035493459eec538b1f4b2ca7d04d3305270eb4",
+        "f6308ff582535c08acf0ee12a30891a6aa725016d4e9a031c3c6b8504e08d6b2",
     "example-m31":
-        "fcc1cb6592e284ecb6962a04c87a31d0dff381309740a1dab3a90d12c41958b8",
+        "e2efac880e7029e1a5fc29aa42a62dcbe21ecdc9c704718e78e3754bee94e1b7",
     "example-m16":
-        "d2e333abd343ef3267e84ba82e9d13e765b5cf6f5a82346cae60f311eace95df",
+        "e6f5144f1828ba11f8e09b8f711c781278856995ccb503bb7a54ccaf0fe34762",
     "example-cycle":
-        "8a3c7fb81d1a0b41284d05405c7065e1b6ca623ddb5abe5533ca718fe8ce33cf",
+        "3c6bc25648ee3f2e5f0e88c3d1284f3f5f89b84d0fb0dd77b95ca4d12e1f4f2f",
     "example-nb":
-        "6567e5999cf9ddf4c700e4f1095f1680d5eb557acc660261a6766990746c308f",
+        "71d3104b5db4be33a931e9ec2731ecb423c1d2e76162a7647f174cafa85cd627",
     "example-eaa":
-        "b3690db6c0ffbcb23f3fe904a5356591a2b2af75962c26867cff480394d42f21",
+        "af88bfcab734a21632ea036c3399b0b14df35feb903ba1913a23179b62bd040b",
     "example-m31-mosaic":
-        "f02bd8473abe29e0532ebbef5628b25096403366c40811eb9833ac4aef2f3489",
+        "aca84d04b4ea17f956bacd9bb6d045895c00fae16c15047d5abcd2611adc2c39",
 }
 
 
@@ -188,12 +193,27 @@ def compiled(g: FlowGraph, flow_id: str):
                             when=WHEN)
 
 
+def _rounded(value):
+    """Floats to 9 decimals, and no negative zero. A mosaic's panel geometry
+    goes through trigonometry whose last bit differs between the Windows and
+    the Linux C library, so an unrounded hash taken on one failed on the
+    other (CI on PR #1246: the two mosaic pins only)."""
+    if isinstance(value, float):
+        return round(value, 9) + 0.0
+    if isinstance(value, dict):
+        return {k: _rounded(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_rounded(v) for v in value]
+    return value
+
+
 def digest(g: FlowGraph, flow_id: str) -> str:
     plan, _ = compiled(g, flow_id)
     got = plan.model_dump(mode="json")
     for ins in got.get("instructions", []):
         ins["id"] = ""
-    return hashlib.sha256(json.dumps(got, sort_keys=True).encode()).hexdigest()
+    return hashlib.sha256(
+        json.dumps(_rounded(got), sort_keys=True).encode()).hexdigest()
 
 
 def _phases(plan) -> list[tuple[str, int]]:
