@@ -180,7 +180,7 @@ export const DRAFT_KEYS = [
   "name", "ra", "dec",
   "rows", "cols", "overlap", "fovX", "fovY", "fovFrom",
   "angle", "rotation",
-  "skip", "passes", "minVisit", "order",
+  "skip", "panelExposure", "passes", "minVisit", "order",
   "centerTol", "centerTries", "ifNotCentred",
 ] as const;
 export type DraftKey = (typeof DRAFT_KEYS)[number];
@@ -1258,6 +1258,112 @@ export function toggleSkip(text: string | number | undefined, rows: number, cols
   const has = skip.some(([r, c]) => r === row && c === col);
   const next = has ? skip.filter(([r, c]) => !(r === row && c === col)) : [...skip, [row, col] as [number, number]];
   return [formatSkip(next), ...unread].filter((s) => s !== "").join(", ");
+}
+
+// ------------------------------------------------ panel exposure mirror (#186)
+//
+// compile.py `parse_panel_exposure`, rule for rule, because the PANELS list
+// draws a panel's own exposure from ITS reading and the run shoots what the
+// server reads. Graded against server/tests/fixtures/w5_panel_exposure_cases.json,
+// which test_w5_panel_overrides.py grades parse_panel_exposure against too.
+//
+// ASCII digits only on both sides, so unlike `parseSkip` there is no Unicode
+// digit set to copy. The one limit shared with `parseSkip` is CPython's
+// integer string limit: a row, column or count of more than 4300 digits makes
+// `int()` raise on the server, so `pyInt` reads it as NaN here and the entry
+// is unread. Seconds past a float's range are Infinity on both sides.
+
+const PANEL_EXPOSURE_RE = /^([0-9]+) *- *([0-9]+) *: *([0-9]*\.?[0-9]+)(?: *[xX] *([0-9]+))?$/;
+
+/** One panel's own exposure, 1-based. `secondsText` and `countText` are the
+ *  digits as typed ("" for no count), which are what is written back. */
+export interface PanelExposure {
+  row: number;
+  col: number;
+  seconds: number;
+  secondsText: string;
+  count: number | null;
+  countText: string;
+}
+
+export interface PanelExposureReading {
+  /** Each panel once, in grid order. */
+  panels: PanelExposure[];
+  /** Every entry that overrides nothing, as typed. */
+  unread: string[];
+}
+
+/** compile.py `parse_panel_exposure(text, rows, cols)`. */
+export function parsePanelExposure(
+  text: string | number | null | undefined, rows: number, cols: number,
+): PanelExposureReading {
+  const src = text === undefined || text === null || text === "" || text === 0 ? "" : String(text);
+  const found = new Map<number, PanelExposure>();
+  const unread: string[] = [];
+  for (const chunk of src.split(/[,;]/)) {
+    const token = pyStrip(chunk);
+    if (!token) continue;
+    const m = PANEL_EXPOSURE_RE.exec(token);
+    if (m === null) { unread.push(token); continue; }
+    const row = pyInt(m[1]);
+    const col = pyInt(m[2]);
+    const count = m[4] === undefined ? null : pyInt(m[4]);
+    const seconds = Number(m[3]);
+    const k = row * 1e6 + col;
+    if (!(row >= 1 && row <= rows && col >= 1 && col <= cols)
+      || !(Number.isFinite(seconds) && seconds > 0)
+      || (count !== null && !(count >= 1))
+      || found.has(k)) {
+      unread.push(token);
+      continue;
+    }
+    found.set(k, { row, col, seconds, secondsText: m[3], count, countText: m[4] ?? "" });
+  }
+  const panels = [...found.values()].sort((a, b) => a.row - b.row || a.col - b.col);
+  return { panels, unread };
+}
+
+/** A panel's entry as the node stores it: "1-1:30" or "1-1:30x40". */
+function panelExposureEntry(p: Pick<PanelExposure, "row" | "col" | "secondsText" | "countText">): string {
+  return `${p.row}-${p.col}:${p.secondsText}${p.countText === "" ? "" : `x${p.countText}`}`;
+}
+
+/** Why `seconds` and `count`, as typed into a panel's two boxes, are not an
+ *  override, or null when they are one. Both blank is not an override but a
+ *  clear, which is the caller's to tell apart (`setPanelExposure`). The
+ *  words say what the boxes hold; the entry's grammar is the server's. */
+export function panelExposureProblem(seconds: string, count: string): string | null {
+  const s = pyStrip(seconds);
+  const n = pyStrip(count);
+  if (s === "" && n === "") return null;
+  if (s === "") return "a count needs an exposure: give seconds, or clear both boxes";
+  const read = parsePanelExposure(`1-1:${s}${n === "" ? "" : `x${n}`}`, 1, 1);
+  if (read.panels.length === 1) return null;
+  return n === "" ? "seconds must be a number above zero, such as 30 or 0.5"
+    : "seconds must be a number above zero, and the count a whole number of 1 or more";
+}
+
+/** Set, change or clear panel (row, col)'s own exposure in the node's text.
+ *  Blank seconds and count clear it. The text comes back in grid order, and
+ *  every entry the grid cannot read is KEPT, as typed, after the panels, as
+ *  `toggleSkip` keeps its own: a "4-1:30" on a grid cut to three rows names a
+ *  panel the operator may grow back. Null when the boxes are not an override
+ *  (`panelExposureProblem`) or the panel is off the grid: nothing to write. */
+export function setPanelExposure(
+  text: string | number | undefined, rows: number, cols: number,
+  row: number, col: number, seconds: string, count: string,
+): string | null {
+  if (!(Number.isInteger(row) && Number.isInteger(col) && row >= 1 && row <= rows && col >= 1 && col <= cols)) {
+    return null;
+  }
+  if (panelExposureProblem(seconds, count) !== null) return null;
+  const { panels, unread } = parsePanelExposure(text, rows, cols);
+  const s = pyStrip(seconds);
+  const n = pyStrip(count);
+  const others = panels.filter((p) => !(p.row === row && p.col === col));
+  const mine = s === "" ? [] : [{ row, col, secondsText: s, countText: n }];
+  const next = [...others, ...mine].sort((a, b) => a.row - b.row || a.col - b.col).map(panelExposureEntry);
+  return [...next, ...unread].join(", ");
 }
 
 // ------------------------------------------------ the panel file (#178)

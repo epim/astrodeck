@@ -39,7 +39,7 @@ from .compile import (
     LANE_TYPES, NEXT_PORT, OWNER_TYPES, PASS_PORT, PASS_TYPES, _grid_dim,
     _lane_index, _stage_label, angle_code, campaign_block, compile_plan, is_multi_panel,
     lane_branched, lane_tail, loop_wires, one_panel_pass_wires, owner_of,
-    panel_lane)
+    panel_lane, PANEL_EXPOSURE_FORM, grid_size, parse_panel_exposure)
 from .identity import typed_coordinates
 from .models import FlowGraph
 from .nodes import (DUSK_FLATS_METHODS, NODE_DEFS, flats_method,
@@ -421,7 +421,8 @@ def _m13_text(stage, by_id, parents) -> str:
 
 
 def _mosaic_rules(graph: FlowGraph, rig: RigFacts | None) -> list[Issue]:
-    """M1 to M15 (spec 1.8), in the table's order. ``graph`` has its defaults.
+    """M1 to M15 (spec 1.8), in the table's order, then the panel exposure
+    check (#186). ``graph`` has its defaults.
 
     Most of them read a multi-panel block, so they cannot fire on a graph saved
     before mosaics. The ones that could (M11, M13) are held to graphs that
@@ -856,6 +857,21 @@ def _mosaic_rules(graph: FlowGraph, rig: RigFacts | None) -> list[Issue]:
         out.append(Issue(
             f"▸ {_block_name(b)} - {why}, which leaves no room for camera "
             f"angle error. Widen the overlap or use fewer columns.", "danger"))
+
+    # Panel exposures (#186). An entry that does not read overrides nothing,
+    # and the panel it was meant for shoots the lane's exposure: said here,
+    # where the operator can fix it, and not left to the compile's note.
+    for b in blocks:
+        rows, cols = _grid(b)
+        _, unread = parse_panel_exposure(b.params.get("panelExposure"),
+                                         rows, cols)
+        if unread:
+            out.append(Issue(
+                f"▸ {_block_name(b)} - panel exposure "
+                f"{', '.join(repr(u) for u in unread)} does not read for "
+                f"this grid of {grid_size(rows, cols)}, so nothing is "
+                f"overridden for it and the panel shoots the lane's "
+                f"exposure. {PANEL_EXPOSURE_FORM}", "danger"))
 
     return out
 

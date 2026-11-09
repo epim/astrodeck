@@ -1248,8 +1248,9 @@ def _per_panel_s(step: dict) -> float:
     times its count, a FILTER CYCLE's slot exposures times its cycles and
     subs per pass (the counts ``to_plan._cycle_steps`` gives each slot)."""
     if step.get("strategy") == "cycle":
-        per = max(1, int(_num(step.get("cycles"), 1))) * max(
-            1, int(_num(step.get("per_cycle"), 1)))
+        per = (_count(step["count"]) if "count" in step else
+               max(1, int(_num(step.get("cycles"), 1))) * max(
+                   1, int(_num(step.get("per_cycle"), 1))))
         return sum(_num(s.get("exposure_s")) for s in step.get("slots") or []) \
             * per
     return _num(step.get("exposure_s")) * _num(step.get("count"))
@@ -1315,13 +1316,52 @@ def _visits_per_panel(entry: dict) -> int:
     rounds = 0
     for step in entry.get("steps") or []:
         if step.get("strategy") == "cycle":
-            owed = max(1, int(_num(step.get("cycles"), 1)))
+            owed = (-(-_count(step["count"]) // _count(step.get("per_cycle")))
+                    if "count" in step
+                    else max(1, int(_num(step.get("cycles"), 1))))
         else:
             count = max(0, int(_num(step.get("count"))))
             per = max(1, int(_num(step.get("per_visit"), 1) or 1))
             owed = -(-count // per)
         rounds = max(rounds, owed)
     return max(1, -(-rounds // _visit_passes(entry)))
+
+
+def _with_panel_exposure(step: dict, override: dict | None) -> dict:
+    """``step`` as a panel with an exposure of its own shoots it
+    (``to_plan._panel_steps``, #186): that exposure on a capture or on every
+    slot of a cycle, and its count when it gave one. A cycle then carries
+    ``count``, the subs each slot takes in all, which ``_per_panel_s`` and
+    ``_visits_per_panel`` read in place of cycles times subs per cycle."""
+    if override is None:
+        return step
+    out = dict(step)
+    count = override.get("count")
+    if step.get("strategy") == "cycle":
+        out["slots"] = [{**slot, "exposure_s": override["exposure_s"]}
+                        for slot in step.get("slots") or []]
+        if count is not None:
+            out["count"] = count
+    else:
+        out["exposure_s"] = override["exposure_s"]
+        if count is not None:
+            out["count"] = count
+    return out
+
+
+def _panel_step_lists(entry: dict) -> list[list[dict]] | None:
+    """The steps each live panel of a mosaic entry shoots, in grid order, when
+    the block gives a panel an exposure of its own (``mosaic.panel_exposure``,
+    #186); None otherwise, and every panel then shoots the entry's steps."""
+    grid = _mosaic_grid(entry)
+    own = {(int(o["row"]) - 1, int(o["col"]) - 1): o
+           for o in (entry.get("mosaic") or {}).get("panel_exposure") or []}
+    if grid is None or not own:
+        return None
+    rows, cols, skip = grid
+    return [[_with_panel_exposure(s, own.get((r, c)))
+             for s in entry.get("steps") or []]
+            for r in range(rows) for c in range(cols) if (r, c) not in skip]
 
 
 def _drawn(step: dict) -> bool:
@@ -1474,11 +1514,21 @@ def _budget(plan: dict, banked: Callable[[], Mapping[str, float]] | None,
             continue
         names = _entry_target_names(target)
         drawn = [s for s in target.get("steps") or [] if _drawn(s)]
+        # Each live panel's own steps, when a panel has an exposure of its own
+        # (#186): a row's hours are then the sum over the panels, and the hops
+        # are each panel's visits, not the lane's times the panel count.
+        own_steps = _panel_step_lists(target)
+        shot = [[s for s in steps if _drawn(s)] for steps in own_steps or []]
         hops: list[float | None] = [None] * len(drawn)
         if live is not None and hop_s is not None and drawn:
-            hops = _shares(live * _visits_per_panel(target) * hop_s / 3600.0,
-                           [_per_panel_s(s) for s in drawn])
-        for step, hop_h in zip(drawn, hops):
+            visits = (sum(_visits_per_panel({**target, "steps": steps})
+                          for steps in own_steps) if own_steps is not None
+                      else live * _visits_per_panel(target))
+            hops = _shares(visits * hop_s / 3600.0,
+                           [sum(_per_panel_s(panel[i]) for panel in shot)
+                            if shot else _per_panel_s(s)
+                            for i, s in enumerate(drawn)])
+        for index, (step, hop_h) in enumerate(zip(drawn, hops)):
             cycle = step.get("strategy") == "cycle"
             if cycle:
                 filters = _slot_filters(step)
@@ -1511,7 +1561,9 @@ def _budget(plan: dict, banked: Callable[[], Mapping[str, float]] | None,
                 "filter": ", ".join(filters) or "—",
                 "goal_h": None if goal is None else round(goal * per, 2),
                 "banked_h": None,  # filled below, once a row's names are final
-                "tonight_h": round(tonight_h * per, 2),
+                "tonight_h": round(
+                    sum(_per_panel_s(panel[index]) for panel in shot) / 3600.0
+                    if shot else tonight_h * per, 2),
                 "has_ledger": have_ledger,
             }
             if cycle:

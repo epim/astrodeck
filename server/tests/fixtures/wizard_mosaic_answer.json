@@ -56,6 +56,7 @@
       "fovY": 0.9,
       "fovFrom": "the rig's optics, matched 2026-09-28",
       "skip": "2-3",
+      "panelExposure": "",
       "passes": 1,
       "minVisit": 0,
       "order": "Least complete first",

@@ -9,6 +9,12 @@
 // bar of what the ledger banked for it (the progress route, never a count
 // kept here). Then the ORDER select.
 //
+// A PANEL'S OWN EXPOSURE AND COUNT (#186, WP 5.4). Under each panel that is
+// shot, two boxes set what that panel shoots in place of the lane's steps,
+// written to the block's `panelExposure` text beside `skip`; blank is the
+// lane's. A bright core takes shorter subs than a faint edge, and until this
+// the only way to say so was a block of its own, which loses the rotation.
+//
 // THE RUN ORDER, AS FAR AS THIS SIDE CAN KNOW IT. `sequence/panel_order.py`
 // orders the panels at every pass (spec 5.2). Two of its three keys are known
 // here: snake order from `compute_mosaic` (row 1 west to east, row 2 back,
@@ -77,12 +83,13 @@
 // nothing, as the counts do not (`progressByCell`). No reason is shown: the
 // route sends none, only the panel and whether it may still expire tonight.
 
-import type { JSX, ReactNode } from "react";
+import { useEffect, useState, type JSX, type ReactNode } from "react";
 import { HonestButton } from "../../../ui";
 import type { FlowProgressBlock } from "../../../../lib/flowsApi";
 import type { MosaicPanel } from "../../../../types";
 import type { PanelRunState } from "../../flowRunState";
 import { NODE_DEFS } from "../../nodeDefs";
+import { panelExposureProblem, type PanelExposure } from "../framingModel";
 
 export const ORDERS: readonly string[] =
   NODE_DEFS.target.fields.find((f) => f.key === "order")?.options ?? [];
@@ -167,6 +174,10 @@ export interface PanelRow {
    *  and in run mode for one set aside tonight (#528). */
   order: number | null;
   skipped: boolean;
+  /** The panel's own exposure in seconds and its own count, as typed, or ""
+   *  where it has none and shoots the lane's (#186). */
+  exposure?: string;
+  count?: string;
   /** Banked and owed-in-all subs from the progress route; `total` 0 when the
    *  route has no count for this panel (never run, or a grid it does not
    *  describe). */
@@ -271,6 +282,9 @@ export function panelRows(a: {
   cols: number;
   /** 1-based [row, col] pairs (framingModel `parseSkip`). */
   skip: ReadonlyArray<readonly [number, number]>;
+  /** The panels with an exposure of their own (framingModel
+   *  `parsePanelExposure`), 1-based. Absent is none. */
+  exposures?: ReadonlyArray<PanelExposure>;
   progress: ProgressBlockWithSetAside | null | undefined;
   /** The route's panels for the CURRENT spec, or null. */
   answerPanels: readonly MosaicPanel[] | null;
@@ -283,6 +297,7 @@ export function panelRows(a: {
   const counts = progressByCell(a.progress, rows, cols);
   const dormantAside = setAsideByCell(a.progress, rows, cols);
   const skipped = new Set(a.skip.map(([r, c]) => `${r - 1},${c - 1}`));
+  const own = new Map((a.exposures ?? []).map((e) => [`${e.row - 1},${e.col - 1}`, e]));
   const alt = new Map<string, MosaicPanel>();
   for (const p of a.answerPanels ?? []) alt.set(`${p.row},${p.col}`, p);
   const cells: (PanelRow & { snake: number; fraction: number })[] = [];
@@ -293,7 +308,9 @@ export function panelRows(a: {
       const ap = alt.get(k);
       cells.push({
         row: r0 + 1, col: c0 + 1, label: `${r0 + 1}-${c0 + 1}`, order: null,
-        skipped: skipped.has(k), banked: n.banked, total: n.total,
+        skipped: skipped.has(k),
+        exposure: own.get(k)?.secondsText ?? "", count: own.get(k)?.countText ?? "",
+        banked: n.banked, total: n.total,
         peakAlt: ap && finite(ap.transit_alt) ? ap.transit_alt : null,
         altError: ap?.transit_alt_error ?? null,
         // A LIVE STATE WINS; a dormant session's standing set-aside speaks
@@ -337,6 +354,9 @@ export interface PanelsSectionProps {
   onOrder: (v: string) => void;
   /** 1-based row and col. */
   onToggle: (row: number, col: number) => void;
+  /** Set a panel's own exposure and count as typed, or clear it with both
+   *  blank (#186). 1-based row and col. Absent draws no boxes. */
+  onExposure?: (row: number, col: number, seconds: string, count: string) => void;
   /** Freeze the ORDER select and the SHOOT toggles (the sheet's `frozen`:
    *  read-only, a run live, or DONE writing). Their own fieldset, so the
    *  retry button below stays pressable while they are frozen. Absent is
@@ -354,6 +374,79 @@ export interface PanelsSectionProps {
   /** How a locked press explains itself (HonestButton's channel). The reason
    *  is already on screen below the button, so absent is a no-op. */
   explain?: (reason: string) => void;
+}
+
+export const EXPOSURE_LABEL = "EXPOSURE";
+export const COUNT_LABEL = "COUNT";
+/** What an operator setting a panel's exposure would not guess: the panel's
+ *  frames are counted per exposure, so a new exposure is a count of its own
+ *  (#186; the step id is keyed on the exposure, and the ledger counts by it). */
+export const EXPOSURE_NOTE =
+  "Changing a panel's exposure starts that panel's count again at the new exposure. "
+  + "Frames already taken at the old exposure are kept, and count again if the override is cleared.";
+/** What an empty box says: the panel is on the lane's own steps. */
+export const LANE_PLACEHOLDER = "lane";
+
+/** A panel's two boxes: its own exposure in seconds and its own count, under
+ *  its row (#186). Blank is the lane's. The text is committed on blur or
+ *  Enter, never keystroke by keystroke: "3." is on the way to "3.5", and a
+ *  half-typed number must not be written, or refused, on the way. A pair that
+ *  is not an override says why under the boxes, once a box has been left, and
+ *  writes nothing. Emptying the exposure empties the count too. The boxes
+ *  start again from the stored text whenever it changes. */
+function PanelExposureCells(p: {
+  label: string;
+  row: number;
+  col: number;
+  seconds: string;
+  count: string;
+  onExposure: NonNullable<PanelsSectionProps["onExposure"]>;
+}): JSX.Element {
+  const [seconds, setSeconds] = useState(p.seconds);
+  const [count, setCount] = useState(p.count);
+  const [left, setLeft] = useState(false);
+  useEffect(() => { setSeconds(p.seconds); setCount(p.count); setLeft(false); }, [p.seconds, p.count]);
+  const problem = panelExposureProblem(seconds, count);
+  const shown = left && problem !== null;
+  const commit = () => {
+    setLeft(true);
+    if (problem === null && (seconds !== p.seconds || count !== p.count)) {
+      p.onExposure(p.row, p.col, seconds, count);
+    }
+  };
+  const typed = (set: (v: string) => void) => (e: { target: { value: string } }) => {
+    set(e.target.value);
+    setLeft(false);
+  };
+  // Emptying the exposure empties the count with it: a count alone is no
+  // override, and clearing a panel is one gesture, not two.
+  const typedSeconds = (e: { target: { value: string } }) => {
+    typed(setSeconds)(e);
+    if (e.target.value.trim() === "") setCount("");
+  };
+  const onEnter = (e: { key: string; currentTarget: { blur: () => void } }) => {
+    if (e.key === "Enter") e.currentTarget.blur();
+  };
+  return (
+    <div className="tfs-row tfs-note" role="row" data-testid="framing-panel-exposure"
+      data-panel-exposure={p.label}>
+      <span role="cell" style={{ display: "flex", flex: "1 1 auto", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+        <span className="tfs-label">{EXPOSURE_LABEL} s</span>
+        <input type="text" inputMode="decimal" className="field tfs-input tfs-mono"
+          placeholder={LANE_PLACEHOLDER} value={seconds} title={EXPOSURE_NOTE}
+          aria-label={`Exposure in seconds for panel ${p.label}`} aria-invalid={shown}
+          onChange={typedSeconds} onBlur={commit} onKeyDown={onEnter} />
+        <span className="tfs-label">{COUNT_LABEL}</span>
+        <input type="text" inputMode="numeric" className="field tfs-input tfs-mono"
+          placeholder={LANE_PLACEHOLDER} value={count}
+          aria-label={`Frame count for panel ${p.label}`} aria-invalid={shown}
+          onChange={typed(setCount)} onBlur={commit} onKeyDown={onEnter} />
+        {shown && (
+          <span role="alert" className="tfs-note" data-testid="framing-panel-exposure-why">{problem}</span>
+        )}
+      </span>
+    </div>
+  );
 }
 
 export function PanelsSection(p: PanelsSectionProps): JSX.Element {
@@ -412,6 +505,13 @@ export function PanelsSection(p: PanelsSectionProps): JSX.Element {
                 </span>
               )}
             </div>,
+            // The panel's own exposure and count, a row of its own under it
+            // (#186): a skipped panel shoots nothing, so has none to set.
+            p.onExposure !== undefined && !r.skipped && (
+              <PanelExposureCells key={`${r.label}-exposure`}
+                label={r.label} row={r.row} col={r.col} seconds={r.exposure ?? ""} count={r.count ?? ""}
+                onExposure={p.onExposure} />
+            ),
             // The run's line for this panel, a row of its own under it so a
             // long reason wraps rather than squeezing the bar.
             runRowText(r.label, r.run) !== null && (
@@ -423,6 +523,9 @@ export function PanelsSection(p: PanelsSectionProps): JSX.Element {
           ])}
         </div>
       </fieldset>
+      {p.onExposure !== undefined && p.rows.some((r) => !r.skipped) && (
+        <div className="tfs-row tfs-note" data-testid="framing-exposure-note">{EXPOSURE_NOTE}</div>
+      )}
       {retryShown && (
         <div className="tfs-row" data-testid="framing-retry">
           <HonestButton className="tfs-btn" reason={p.retryLocked ?? null}

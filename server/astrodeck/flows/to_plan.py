@@ -1720,6 +1720,42 @@ def _mosaic_numbers(entry: dict) -> dict:
             "fov_x": _number(m.get("fov_x")), "fov_y": _number(m.get("fov_y"))}
 
 
+def _panel_steps(steps: list[dict], override: dict | None) -> list[dict]:
+    """One panel's copy of the lane's steps, taking the panel's own exposure,
+    and its count when the override gave one (#186). Every step of the panel
+    takes it: the override is the panel's exposure, not one filter's.
+
+    The step's id is made from the step as it stands here (``_identify``), so
+    an overridden exposure is keyed as the lane's exposure is: a recipe of its
+    own, with its own count, and a count alone moves no id."""
+    out = copy.deepcopy(steps)
+    if override is not None:
+        for step in out:
+            step["exposure_s"] = override["exposure_s"]
+            if override["count"] is not None:
+                step["count"] = override["count"]
+    return out
+
+
+def _flattening_note(label: str, panel: str, steps: list[dict],
+                     override: dict) -> dict | None:
+    """The note for an override on a panel whose lane shoots more than one
+    exposure (a FILTER CYCLE of 60 s L and 90 s R): the panel takes its one
+    exposure on every filter, which an operator who meant one filter would
+    not guess. None for a lane of a single exposure, which has nothing to
+    flatten."""
+    lane = sorted({float(s["exposure_s"]) for s in steps})
+    if len(lane) < 2:
+        return None
+    words = ", ".join(f"{x:g}" for x in lane)
+    return _note(
+        f"targets[{label}].mosaic.panel_exposure",
+        f"{label}: panel {panel} takes every sub at {override['exposure_s']:g} "
+        f"s, as its panel exposure says, where the lane's own steps take "
+        f"{words} s. It is one exposure for the whole panel, whichever the "
+        f"filter", "note")
+
+
 def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
                    dec_deg: float, canonical: str | None, base_schedule: dict,
                    flow_id: str, unmapped: list[dict],
@@ -1746,6 +1782,12 @@ def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
     flow id (an unsaved preview) the group id is a fresh uuid4 and the
     panels' ids follow it: fresh on each compile, as uuid4s are, but agreeing
     with each other.
+
+    A PANEL WITH AN EXPOSURE OF ITS OWN (``mosaic.panel_exposure``, #186)
+    takes it, and its count when it gave one, on every step it shoots
+    (``_panel_steps``); every other panel keeps the lane's steps. The ids
+    follow the step as it stands: an overridden exposure is a recipe of its
+    own, as a changed lane exposure is, and no other panel's id moves.
 
     A block whose every panel is skipped shoots nothing: it is dropped with a
     warn, not emitted as a group of no members, which ``plan_identity_errors``
@@ -1796,6 +1838,10 @@ def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
     group_id = (identity.group_id(flow_id, node_id, key)
                 if flow_id and node_id else uuid4().hex)
     skip = {(int(r) - 1, int(c) - 1) for r, c in (m.get("skip") or [])}
+    # The panels with an exposure of their own (`compile.parse_panel_exposure`,
+    # #186), by 0-based cell; every other panel keeps the lane's steps.
+    overrides = {(o["row"] - 1, o["col"] - 1): o
+                 for o in m.get("panel_exposure") or []}
     steps = _steps(entry, name or "?", unmapped)
     cycles = entry.get("loop") is True or any(
         (s or {}).get("strategy") == "cycle"
@@ -1817,12 +1863,17 @@ def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
                  "rotation_deg": p["pa_deg"] if corrected else commanded,
                  "schedule": _target_schedule(base_schedule, entry,
                                               is_pool=False),
-                 "steps": copy.deepcopy(steps),
+                 "steps": _panel_steps(steps, overrides.get((row, col))),
                  "mosaic_group": group_id, "panel_row": row,
                  "panel_col": col, "autofocus_skip_if_fresh": True,
                  **centring}
         if cycles:
             panel["acquisition"] = "cycle"
+        if (row, col) in overrides:
+            flat = _flattening_note(label, f"{row + 1}-{col + 1}", steps,
+                                    overrides[(row, col)])
+            if flat is not None:
+                unmapped.append(flat)
         _identify(panel, entry, flow_id=flow_id, is_pool=False,
                   members_seen={}, tid=tid)
         panels.append(panel)

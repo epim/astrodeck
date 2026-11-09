@@ -653,8 +653,15 @@ _S3_POOL_KEYS = {"counts"}
 #: every one of the 576 dumped graphs carries it. Checked, not assumed: with
 #: ``maxTime`` popped from each TARGET (asserting it is 0 on every one) the
 #: same dump hashes to the PREVIOUS pin, ``0443f1c77294...``, byte for byte.
+#:
+#: RE-PINNED IN WP 5.4 (#186), deliberately, for one change and nothing else:
+#: TARGET gained its ``panelExposure`` param at "" (no panel has an exposure of
+#: its own), which ``generate()`` writes onto every TARGET node it creates, so
+#: every one of the 576 dumped graphs carries it. Checked, not assumed: with
+#: ``panelExposure`` popped from each TARGET (asserting it is "" on every one)
+#: the same dump hashes to the PREVIOUS pin, ``3ada16aad2f9...``, byte for byte.
 THREE_ANSWER_GRAPHS_SHA256 = \
-    "3ada16aad2f9cdb7d2e1dba0207e8e8e9f4040ce851da1cb0345607daacfb61d"
+    "db11314fb1d6f3ffb2eb9f4ce9a72392794dda878edcf84b34638dac38555453"
 
 #: The pre-S3 generator's PLAN for every three-answer body with target "M31"
 #: (THREE_KINDS x all 64 chip subsets), ids blanked, hashed the same way.

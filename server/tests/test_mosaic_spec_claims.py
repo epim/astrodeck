@@ -17027,9 +17027,9 @@ def test_2_4_to_2_7_say_the_sections_done_run_mode_and_storage_as_s4_built():
         draft, the draft's keys, no prefs for an unsaved flow) =
         (['applyFraming(nodeId, patch, loopArg)', 'await applied;',
         'setSetting("whenWaiting", waiting)', 'compileFlow()'], True,
-        'setExplained(null); setQuestion(null);', [], 18, True); 2.5 and 2.7
+        'setExplained(null); setQuestion(null);', [], 19, True); 2.5 and 2.7
         say so
-        assert (['applyFrami... [], 18, True) == (['setSetting... [], 18, True)
+        assert (['applyFrami... [], 19, True) == (['setSetting... [], 19, True)
           At index 0 diff: ['applyFraming(nodeId, patch, loopArg)', 'await
           applied;', 'setSetting("whenWaiting", waiting)', 'compileFlow()'] !=
           ['setSetting("whenWaiting", waiting)', 'applyFraming(nodeId, patch,
@@ -17045,8 +17045,8 @@ def test_2_4_to_2_7_say_the_sections_done_run_mode_and_storage_as_s4_built():
         draft, the draft's keys, no prefs for an unsaved flow) =
         (['setSetting("whenWaiting", waiting)', 'applyFraming(nodeId, patch,
         loopArg)', 'await applied;', 'compileFlow()'], True,
-        'setExplained(null);', [], 18, True); 2.5 and 2.7 say so
-        assert (['setSetting... [], 18, True) == (['setSetting... [], 18, True)
+        'setExplained(null);', [], 19, True); 2.5 and 2.7 say so
+        assert (['setSetting... [], 19, True) == (['setSetting... [], 19, True)
           At index 2 diff: 'setExplained(null);' != 'setExplained(null);
           setQuestion(null);'
           Use -v to get more diff
@@ -17071,9 +17071,9 @@ def test_2_4_to_2_7_say_the_sections_done_run_mode_and_storage_as_s4_built():
         draft, the draft's keys, no prefs for an unsaved flow) =
         (['setSetting("whenWaiting", waiting)', 'applyFraming(nodeId, patch,
         loopArg)', 'await applied;', 'compileFlow()'], True,
-        'setExplained(null); setQuestion(null);', [], 18, False); 2.5 and 2.7
+        'setExplained(null); setQuestion(null);', [], 19, False); 2.5 and 2.7
         say so
-        assert (['setSetting...[], 18, False) == (['setSetting... [], 18, True)
+        assert (['setSetting...[], 19, False) == (['setSetting... [], 19, True)
           At index 5 diff: False != True
           Use -v to get more diff
 
@@ -17090,9 +17090,9 @@ def test_2_4_to_2_7_say_the_sections_done_run_mode_and_storage_as_s4_built():
         draft, the draft's keys, no prefs for an unsaved flow) =
         (['setSetting("whenWaiting", waiting)', 'applyFraming(nodeId, patch,
         loopArg)', 'await applied;', 'compileFlow()'], True,
-        'setExplained(null); setQuestion(null);', [], 18, False); 2.5 and 2.7
+        'setExplained(null); setQuestion(null);', [], 19, False); 2.5 and 2.7
         say so
-        assert (['setSetting...[], 18, False) == (['setSetting... [], 18, True)
+        assert (['setSetting...[], 19, False) == (['setSetting... [], 19, True)
           At index 5 diff: False != True
           Use -v to get more diff
 
@@ -17187,7 +17187,7 @@ def test_2_4_to_2_7_say_the_sections_done_run_mode_and_storage_as_s4_built():
     assert got == (['setSetting("whenWaiting", waiting)',
                     "applyFraming(nodeId, patch, loopArg)", "await applied;",
                     "compileFlow()"], True,
-                   "setExplained(null); setQuestion(null);", [], 18, True), (
+                   "setExplained(null); setQuestion(null);", [], 19, True), (
         f"(commit's calls in order, its own compile only for the setting "
         f"alone, the reset on a draft move, the server's keys in the draft, "
         f"the draft's keys, no prefs for an unsaved flow) = {got}; 2.5 and "
