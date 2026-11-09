@@ -127,10 +127,11 @@ from ..solve.light import (BIAS_MASTER, CLOUD, DARK_MASTER, EXPLICIT,
                            NO_LIGHT_WORDS, SELF_SHOT, FailedSolveError,
                            NoLightError)
 from . import schedule
-from .group_rules import CENTRING, SET_ASIDE_EXPIRY_S, set_aside_expiry
+from .group_rules import (CENTRING, SET_ASIDE_EXPIRY_S, current_phase_ids,
+                          pool_sky_scores, set_aside_expiry)
 from .models import (Target, TargetGroup, duplicate_name_warning,
                      plan_identity_errors, quota_unbounded, replan_cooling)
-from .panel_order import OrderSnapshot, order_panels
+from .panel_order import OrderSnapshot, order_panels, order_pool
 from .policy import resolve_policy
 from .roof import open_for_the_night
 from .session import Session, SessionUnreadable, session_store
@@ -686,7 +687,8 @@ def _set_aside_tonight(target: Target, remaining: dict[str, int],
 
 def _group_order(group: TargetGroup, members: list[Target],
                  live: list[Target], done: dict[str, int],
-                 last_ts: dict[str, float]) -> list[Target]:
+                 last_ts: dict[str, float],
+                 pool_scores: dict[str, float] | None = None) -> list[Target]:
     """``live``, the group's panels the run can still shoot tonight, in the
     order ``panel_order.order_panels`` gives them from the ledger (spec 5.2,
     5.9). ``members`` is every panel of the group, complete ones included,
@@ -711,10 +713,22 @@ def _group_order(group: TargetGroup, members: list[Target],
     when a whole column was skipped, gives the same order, and a stale
     geometry cannot make a panel "outside the grid".
 
+    A POOL (#183) is ordered by its strategy (``panel_order.order_pool``),
+    the pick first, as the run selects. ``pool_scores`` is the "best"
+    strategy's sky score, which the caller works out when it has a site; a
+    candidate with none sorts last.
+
     A GROUP THAT CANNOT BE ORDERED IS TAKEN IN PLAN ORDER, with a warning. A
     panel with no grid position makes ``order_panels`` raise, and raised
     here it would end every tick ("resume-arm tick failed") a minute apart
     for the rest of the night."""
+    if group.kind == "pool":
+        return order_pool(
+            live, strategy=group.pool_strategy or "best",
+            snapshot=OrderSnapshot(
+                last_visit_ts={m.id: last_ts[m.id] for m in live
+                               if m.id in last_ts},
+                pool_score=pool_scores or {}))
     fraction: dict[str, float] = {}
     for m in live:
         owed = sum(s.count for s in m.steps)
@@ -739,6 +753,22 @@ def _group_order(group: TargetGroup, members: list[Target],
                            f"out ({e}), so it re-centres on its panels in "
                            f"plan order", "sequence")
         return list(live)
+
+
+def _pool_scores(group: TargetGroup, candidates: list[Target], site,
+                 now: float | None) -> dict[str, float] | None:
+    """The "best available" score of each candidate of a pool (#183), as the
+    run computes it (`group_rules.pool_sky_scores`); None for any other
+    group or strategy, and when there is no saved site or no clock to score
+    at, which `_group_order` reads as no score."""
+    from ..site_gate import site_lat_lon
+    if (group.kind != "pool" or (group.pool_strategy or "best") != "best"
+            or site is None or now is None):
+        return None
+    latlon = site_lat_lon(site)
+    if latlon is None:
+        return None
+    return pool_sky_scores(candidates, latlon[0], latlon[1], now)
 
 
 def _past_meridian_first(panels: list[Target], site,
@@ -929,9 +959,19 @@ def recentre_candidates(session: Session, night: str,
                              and m.after_group != group.id}
                 if waits_for & owing_groups:
                     continue
-                ordered = _group_order(group, members,
-                                       [m for m in members if live(m)],
-                                       done, last_ts)
+                # ONLY THE CURRENT PHASE'S MEMBERS (#1074), the ones the run
+                # may select (`group_rules.current_phase_ids`): a member of a
+                # later phase is not re-centred on, and with the current
+                # phase set aside or past its window none of the group is.
+                phase = current_phase_ids(
+                    group.phases,
+                    {m.id for m in members if not _owes(m, remaining)})
+                eligible = [m for m in members if live(m)
+                            and (phase is None or m.id in phase)]
+                ordered = _group_order(
+                    group, members, eligible, done, last_ts,
+                    _pool_scores(group, eligible, site if gate else None,
+                                 now))
                 if gate and flipped_tonight(group):
                     ordered = _past_meridian_first(ordered, site, now)
                 out.extend(ordered)

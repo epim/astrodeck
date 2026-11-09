@@ -37,6 +37,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
 from .coords import round_az_deg
+from .moon_factor import moon_factor
 
 import astropy.units as u
 import warnings
@@ -391,21 +392,10 @@ def _moon_rise_set(
 
 # ----------------------------------------------------------------- best window
 
-def _moon_factor(sep_deg: float, illumination: float, moon_up: bool) -> float:
-    """Moon penalty multiplier for a candidate window.
-
-    ``moon_up=False`` ⇒ 1.0: a 95%-illuminated moon that has set is irrelevant —
-    moon *altitude* gates whether separation matters at all (design spec §9 /
-    critique C2-#5). When the moon is up, penalise small separations from a
-    bright moon: full strength at the moon, easing to ~1.0 far away, scaled by
-    illumination. Clamped to [0.3, 1.0] so a window is never zeroed out.
-    """
-    if not moon_up:
-        return 1.0
-    # 0 at the moon → 1 at ~120° away; weighted by how bright the moon is.
-    proximity = max(0.0, 1.0 - sep_deg / 120.0)
-    penalty = proximity * max(0.0, illumination)
-    return max(0.3, min(1.0, 1.0 - 0.7 * penalty))
+#: The Moon's penalty on a window's score, shared with a target pool's "best
+#: available" strategy (``catalog.moon_factor``); the old name stays for its
+#: callers.
+_moon_factor = moon_factor
 
 
 def _best_window(
