@@ -87,9 +87,9 @@ from .group_rules import (CENTRING, CENTRING_HOLD_RETRY_S,
                           ExpiryCause, GroupRun, PanelDeferred, PanelMeridian,
                           PassEnd, VisitBound, angle_decision,
                           forward_clear_ts, meridian_eligibility,
-                          no_guider_defers, set_aside_expiry)
+                          no_guider_defers, pool_sky_scores, set_aside_expiry)
 from .models import ExposureStep, SequencePlan, Target, TargetGroup
-from .panel_order import OrderSnapshot, order_panels
+from .panel_order import OrderSnapshot, order_panels, order_pool
 from .recovery import Action, RecoveryLadder
 from .report import FrameRecord, SessionReporter
 from .policy import (MIN_GUIDE_SCALE_ARCSEC_PX, guide_rms_floor_arcsec,
@@ -1973,6 +1973,13 @@ class SequenceEngine:
         self._group_gates: dict[str, tuple[str, ...]] = {}
         #: ``(group id, group waited for)`` pairs whose wait has been said.
         self._group_gate_said: set[tuple[str, str]] = set()
+        #: The phase each group with phases was last seen in (#1074), by
+        #: group id, so a change is said once; and the candidate each pool
+        #: last picked (#183), so a new pick is. Both for the log only: the
+        #: phase is derived from the ledger and the pick from the sky at
+        #: every selection, never read back from here.
+        self._group_phase: dict[str, int | None] = {}
+        self._pool_pick: dict[str, str] = {}
         #: The last `_run_visit` ended at its deadline (a flip point or a
         #: follower's ``group_ready_ts``), not at a round or at completion.
         self._visit_ended_by_deadline = False
@@ -2660,6 +2667,8 @@ class SequenceEngine:
         self._after_group_said = set()
         self._group_gates = {}
         self._group_gate_said = set()
+        self._group_phase = {}
+        self._pool_pick = {}
         self._visit_ended_by_deadline = False
         self._group_angle_read = {}
         self._angle_lock_pending = None
@@ -5724,6 +5733,8 @@ class SequenceEngine:
                 # members carry no verdict, and `_group_ready_ts` gives the
                 # group no time.
                 continue
+            members = self._hold_later_phases(group, run, members, remaining,
+                                              gs_now, elig, refused)
             candidates: list[Target] = []
             for t in members:
                 if gs_now[id(t)]["state"] != "ready":
@@ -5761,6 +5772,8 @@ class SequenceEngine:
                         elig[t.id] = _Eligibility(
                             False, run.defer_until, None, "defer",
                             self._defer_words(run))
+            if group.kind == "pool":
+                self._select_pool_member(group, candidates, elig)
             # WHAT THIS PASS COULD VISIT (the #315 follow-up, S3 orchestrator
             # ruling 6): the members this selection lets through, kept for
             # the pass, so the no-guider rule counts the members the pass can
@@ -5841,6 +5854,108 @@ class SequenceEngine:
                     False, now + max(0.0, mv.wake_h or 0.0) * 3600.0
                     + MERIDIAN_WAKE_PAD_S, None, "meridian", mv.reason)
         return out
+
+    def _hold_later_phases(self, group: TargetGroup, run: GroupRun,
+                           members: list[Target], remaining: list[Target],
+                           gs_now: dict[int, dict],
+                           elig: dict[str, _Eligibility],
+                           refused: list[Target]) -> list[Target]:
+        """THE GROUP'S CURRENT PHASE (#1074): of the live ``members``, returns
+        those the group may visit now. The current phase is the first one
+        that owes a member (`group_rules.current_phase_ids`), derived from
+        the ledger at every selection, so a resumed or CONTINUEd night lands
+        in the right one and nothing is stored.
+
+        A member of a later phase is a waiter with no wake time, ``held``
+        ``"phase"``: the phase after "cycle 1 complete" does not start
+        early. While the current phase can still shoot tonight that is all.
+        When it cannot (every member of it set aside for the night, or past
+        its window) the later phases cannot start tonight either, and a
+        group left holding them would idle to dawn with the cooler running:
+        they are set aside for tonight with the reason, kind ``"phase"``,
+        and the ledger still owes them to the next night. A member set aside
+        FOR NOW, awaiting its expiry, still counts as able to shoot.
+
+        A group with no phases asks nothing and returns ``members``."""
+        if not run.phases:
+            return members
+        at = run.phase_index()
+        known = self._group_phase.setdefault(group.id, at)
+        if at != known:
+            self._group_phase[group.id] = at
+            if at is not None and known is not None:
+                bus.log("info", f"{group.name or group.id}: phase {known + 1} "
+                                f"is complete; phase {at + 1} of "
+                                f"{len(run.phases)} starts", "sequence")
+        later = [t for t in members if not run.in_phase(t.id)]
+        if not later:
+            return members
+        now_in = [t for t in members if run.in_phase(t.id)]
+        number = (at or 0) + 1
+        if self._group_can_shoot_tonight(group, remaining, gs_now):
+            for t in later:
+                label = run.members.get(t.id, t.name)
+                elig[t.id] = _Eligibility(
+                    False, None, None, "phase",
+                    f"{label} waits for phase {number} to finish")
+            return now_in
+        mosaic = group.name or group.id
+        holding = [run.members[p] for p in run.phases[at or 0]
+                   if p not in run.completed]
+        for t in later:
+            label = run.members.get(t.id, t.name)
+            self._set_panel_aside(
+                group, t, f"phase {number} of {mosaic} cannot finish "
+                          f"tonight, so {label}, in a later phase, does not "
+                          f"start", decided=True, kind="phase", say=False)
+            refused.append(t)
+        bus.log("warning",
+                f"{mosaic}: phase {number} cannot finish tonight "
+                f"({', '.join(holding)} set aside or out of window), so the "
+                f"later phases are set aside for tonight "
+                f"({', '.join(run.members.get(t.id, t.name) for t in later)}"
+                f"): a restart tonight does not retry them, "
+                f"{self._next_night_does()}", "sequence")
+        return now_in
+
+    def _select_pool_member(self, group: TargetGroup,
+                            candidates: list[Target],
+                            elig: dict[str, _Eligibility]) -> None:
+        """A POOL'S PICK (#183): of the candidates the gating, the mount's
+        limits, the meridian rule and the deferral wait let through, the one
+        ``group.pool_strategy`` selects is the only one eligible. The rest
+        wait with no wake time, ``held`` ``"pool"``, and the scheduler takes
+        the pick. Asked at every selection, and a visit's end is one, so the
+        pick is made again at each visit boundary: a member runs while it is
+        the pick and leaves on complete, floor or window, as any panel
+        does (`_visit_panel`).
+
+        The candidates are ordered by the plan's rank (`order_pool` takes
+        them in the plan's order), whatever order `remaining` has put them
+        in. A pick that changes is said once, in the member's label alone:
+        the "best" score is the sky's, and neither it nor the strategy's
+        arithmetic is ever said."""
+        able = [t for t in candidates
+                if elig[t.id].eligible]
+        if not able:
+            return
+        rank = {t.id: k for k, t in enumerate(self.plan.targets)}
+        able.sort(key=lambda t: rank[t.id])
+        run = self._group_runs[group.id]
+        strategy = group.pool_strategy or "best"
+        pick = order_pool(able, strategy=strategy,
+                          snapshot=self._order_snapshot(group, able))[0]
+        for t in able:
+            if t is not pick:
+                elig[t.id] = _Eligibility(
+                    False, None, None, "pool",
+                    f"{run.members.get(t.id, t.name)} waits: the pool "
+                    f"picked {run.members.get(pick.id, pick.name)}")
+        if self._pool_pick.get(group.id) != pick.id and len(able) > 1:
+            self._pool_pick[group.id] = pick.id
+            bus.log("info", f"{group.name or group.id}: the pool picks "
+                            f"{run.members.get(pick.id, pick.name)}",
+                    "sequence", site_derived=strategy == "best")
 
     def _note_meridian_waits(self, ready: Target | None,
                              remaining: list[Target],
@@ -5981,6 +6096,11 @@ class SequenceEngine:
             if self._group_of(t) is not group or not (
                     run.is_live(t.id) or self._awaiting_expiry(run, t.id)):
                 continue
+            if not run.in_phase(t.id):
+                # A member of a later phase (#1074) shoots nothing until
+                # the current phase is complete, so its sky says nothing
+                # about whether the group can shoot tonight.
+                continue
             gs = gs_now.get(id(t))
             if gs is None or gs.get("state") not in ("window_closed",
                                                      "never_rises"):
@@ -6040,7 +6160,7 @@ class SequenceEngine:
             # aside for nothing.
             live = run.is_live(t.id)
             awaiting = not live and self._awaiting_expiry(run, t.id)
-            if not (live or awaiting):
+            if not (live or awaiting) or not run.in_phase(t.id):
                 continue
             gs = gs_now.get(id(t)) or {}
             state = gs.get("state")
@@ -6565,6 +6685,8 @@ class SequenceEngine:
         self._group_last_index = {}
         self._group_gates = {}
         self._group_gate_said = set()
+        self._group_phase = {}
+        self._pool_pick = {}
         members: dict[str, list[tuple[int, Target]]] = {}
         for ti, t in enumerate(plan.targets):
             g = self._group_of(t)
@@ -6584,16 +6706,23 @@ class SequenceEngine:
         for gid, mem in members.items():
             g = self._groups[gid]
             run = GroupRun({t.id: self._panel_name(t) for _ti, t in mem},
-                           max_failed_visits=g.max_failed_visits)
+                           max_failed_visits=g.max_failed_visits,
+                           phases=g.phases)
             for ti, t in mem:
-                if t.id in self._set_aside_targets:
+                # COMPLETE WINS OVER SET ASIDE. The ledger is the truth: a
+                # member that was set aside tonight and then finished (a
+                # centring set-aside that expired and shot the rest) is
+                # complete after a same-night restart, whatever its record
+                # says. Read back as set aside it would hold its phase and
+                # keep the group from ever being complete.
+                if self._target_complete(ti, t):
+                    run.completed.add(t.id)
+                elif t.id in self._set_aside_targets:
                     # With the kind its record carries (#534): a centring
                     # set-aside read back may still expire tonight.
                     kind = (self._set_aside_meta.get(t.id) or (None,))[0]
                     run.set_aside_panel(t.id, self._set_aside_targets[t.id],
                                         kind=kind or "panel")
-                elif self._target_complete(ti, t):
-                    run.completed.add(t.id)
             self._note_starved_panels(run, [t for _ti, t in mem])
             self._group_runs[gid] = run
             self._restore_group_pier(g, run)
@@ -6912,7 +7041,23 @@ class SequenceEngine:
                    if group.order == "setting_first" else {})
         return OrderSnapshot(fraction_banked=fraction, last_visit_ts=last,
                              time_to_floor_s=setting,
-                             last_visited=last_visited)
+                             last_visited=last_visited,
+                             pool_score=self._pool_scores(group, members, now))
+
+    def _pool_scores(self, group: TargetGroup, members: list[Target],
+                     now: float) -> dict[str, float]:
+        """The "best available" score of each candidate of a pool (#183):
+        altitude times the Moon's factor at ``now`` (`pool_sky_scores`).
+        Empty for any other group or strategy, which read no score, and when
+        no site is saved to say where the sky is. SITE-DERIVED: handed to
+        `order_pool` and never said."""
+        if group.kind != "pool" or (group.pool_strategy or "best") != "best":
+            return {}
+        from ..site_gate import site_lat_lon
+        latlon = site_lat_lon(self.hub.site)
+        if latlon is None:
+            return {}
+        return pool_sky_scores(members, latlon[0], latlon[1], now)
 
     def _time_to_floor_s(self, target: Target, now: float) -> float | None:
         """Seconds until ``target`` sinks below the mount's altitude floor, its

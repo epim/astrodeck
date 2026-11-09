@@ -119,6 +119,9 @@ class OrderSnapshot:
     #: that visit has left the list, and the walk still resumes after its
     #: place. None: no visit yet.
     last_visited: tuple[int, int] | None = None
+    #: A pool candidate's score, higher is better (``order_pool``'s "best").
+    #: Missing or None: no score, which sorts last.
+    pool_score: Mapping[str, float | None] = field(default_factory=dict)
 
 
 def snake_index(row: int, col: int, cols: int) -> int:
@@ -218,3 +221,66 @@ def order_panels(
         return (last is not None and snake <= last, snake)
 
     return sorted(panels, key=key)
+
+
+PoolStrategy = Literal["best", "priority", "round_robin"]
+
+#: The strategies ``TargetGroup.pool_strategy`` may name (#183), the default
+#: first: the TARGET POOL node's "Best available (alt x moon)", "Priority
+#: order" and "Round robin".
+POOL_STRATEGIES: tuple[str, ...] = ("best", "priority", "round_robin")
+
+
+class _Identified(Protocol):
+    @property
+    def id(self) -> str: ...
+
+
+Q = TypeVar("Q", bound=_Identified)
+
+
+def order_pool(
+    candidates: Iterable[Q],
+    *,
+    strategy: PoolStrategy = "best",
+    snapshot: OrderSnapshot | None = None,
+) -> list[Q]:
+    """A pool's candidates in the order its strategy would pick them, the
+    first being the pick (#183). ``candidates`` come in the plan's order,
+    which is the pool's rank.
+
+    * ``best``: score descending (``snapshot.pool_score``), a candidate with
+      no score last; ties keep the plan order.
+    * ``priority``: the plan's order.
+    * ``round_robin``: the least recently visited first, never-visited ones
+      before any visited; ties keep the plan order.
+
+    Like ``order_panels`` it only reorders: every candidate passed in comes
+    out once, and which ones are eligible is the caller's decision, made
+    before the call. Raises ``ValueError`` for an unknown strategy or a
+    snapshot number that is not finite."""
+    if strategy not in POOL_STRATEGIES:
+        raise ValueError(f"unknown pool strategy {strategy!r}; expected one "
+                         f"of {POOL_STRATEGIES}")
+    snap = snapshot if snapshot is not None else OrderSnapshot()
+    ordered = list(candidates)
+    if strategy == "priority":
+        return ordered
+
+    def finite(value: object, what: str, c: Q) -> float | None:
+        if value is None:
+            return None
+        f = float(value)  # type: ignore[arg-type]
+        if not math.isfinite(f):
+            raise ValueError(f"{what} of candidate {c.id} is {value!r}")
+        return f
+
+    if strategy == "best":
+        def key(c: Q) -> tuple:
+            score = finite(snap.pool_score.get(c.id), "pool score", c)
+            return (score is None, 0.0 if score is None else -score)
+    else:
+        def key(c: Q) -> tuple:
+            seen = finite(snap.last_visit_ts.get(c.id), "last visit time", c)
+            return (seen is not None, 0.0 if seen is None else seen)
+    return sorted(ordered, key=key)

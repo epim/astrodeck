@@ -1242,11 +1242,21 @@ export interface Target {
  *
  *  Its members are the targets whose `mosaic_group` equals `id`. A plan's
  *  groups are written by the flow compile, never by a client, and the server
- *  sends every field (pydantic defaults), so none is optional here. */
+ *  sends every field (pydantic defaults), so none is optional here but the two
+ *  its serializer leaves out at their defaults, `phases` and `pool_strategy`. */
 export interface TargetGroup {
   id: string;
   name: string;
-  kind: "mosaic";
+  /** "pool" is a TARGET POOL: the members are candidates, and the run visits
+   *  the one `pool_strategy` selects at each visit boundary (#183). */
+  kind: "mosaic" | "pool";
+  /** The member target ids in the order the group shoots them (#1074): only
+   *  the first phase that still owes a member runs. ABSENT from the dump
+   *  while empty, like every default added after groups first shipped. */
+  phases?: string[][];
+  /** How a pool picks its next member (#183). ABSENT from the dump while
+   *  null; a pool without one reads as "best". */
+  pool_strategy?: "best" | "priority" | "round_robin" | null;
   /** "rotate" visits each panel in turn and comes back (the loop wire);
    *  "sequential" runs a panel to completion before the next. */
   mode: "rotate" | "sequential";

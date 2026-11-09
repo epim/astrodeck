@@ -267,7 +267,25 @@ class TargetGroup(BaseModel):
     whichever entry it met first."""
     id: str
     name: str = ""                           # the block's name, for the log
-    kind: Literal["mosaic"] = "mosaic"
+    # "pool" is a TARGET POOL (#183): the members are CANDIDATES, and the
+    # driver visits the one ``pool_strategy`` selects at each visit boundary.
+    kind: Literal["mosaic", "pool"] = "mosaic"
+    # --- ordered phases (#1074; additive, ABSENT from the dump while empty) --
+    #
+    # The member target ids in the order the group shoots them: the group
+    # runs only the members of its CURRENT phase, and the current phase is
+    # the first one that owes a member, read off the ledger every time it is
+    # asked (``group_rules.current_phase_ids``) and never stored, so a resume
+    # lands in the right one. A member set aside tonight holds its phase for
+    # tonight. [] is one phase of every member, which is every group saved
+    # before this. ``plan_identity_errors`` refuses an id that names no
+    # member, a member listed twice or in no phase, and phases on a pool.
+    phases: list[list[str]] = []
+    # How a pool picks its next member (#183; additive, ABSENT from the dump
+    # while None). None on a mosaic. On a pool None reads as "best", and
+    # ``plan_identity_errors`` refuses a strategy on a mosaic: a rule the
+    # run would not follow.
+    pool_strategy: Literal["best", "priority", "round_robin"] | None = None
     # "rotate" visits each panel in turn for ``visit_passes`` filter passes
     # and comes back (the loop wire); "sequential" runs the chosen panel to
     # completion before the next (no loop wire, spec 5.1).
@@ -304,6 +322,21 @@ class TargetGroup(BaseModel):
     skipped_ids: list[str] = []
     # Provenance only (rows, cols, overlap, fov, key): nothing steers by it.
     geometry: dict = {}
+
+    @model_serializer(mode="wrap")
+    def _omit_the_defaults_added_later(self,
+                                       handler: SerializerFunctionWrapHandler):
+        """The dump without ``phases`` while it is empty and without
+        ``pool_strategy`` while it is None, whatever the mode, and nested in
+        a ``SequencePlan`` or a ``Session`` too, so every group saved before
+        either existed dumps byte for byte as it did. A wrap serializer, so
+        every other field, and the JSON schema, are pydantic's own."""
+        out = handler(self)
+        if isinstance(out, dict) and not out.get("phases"):
+            out.pop("phases", None)
+        if isinstance(out, dict) and out.get("pool_strategy") is None:
+            out.pop("pool_strategy", None)
+        return out
 
 
 _HHMM_RE = re.compile(r"^(\d{2}):(\d{2})$")
@@ -891,6 +924,43 @@ def _and_list(items: list[str]) -> str:
         f"{', '.join(items[:-1])} and {items[-1]}"
 
 
+def _phase_errors(plan: SequencePlan) -> list[str]:
+    """What ``plan_identity_errors`` refuses about a group's ``phases`` and
+    ``pool_strategy`` (#1074, #183), one sentence each: a phase that names a
+    target that is no member of the group, a member listed more than once,
+    a member left out of every phase (it would never run), phases on a pool
+    (its members are candidates, not a sequence), and a pool strategy on a
+    mosaic."""
+    errors: list[str] = []
+    for g in plan.groups:
+        label = f"group {g.id!r}" + (f" ({g.name!r})" if g.name else "")
+        if g.kind != "pool" and g.pool_strategy is not None:
+            errors.append(f"{label} is a mosaic and names the pool strategy "
+                          f"{g.pool_strategy!r}, which only a pool follows")
+        if not g.phases:
+            continue
+        if g.kind == "pool":
+            errors.append(f"{label} is a pool and has phases: its members "
+                          f"are candidates, and a pool has one phase")
+            continue
+        member_ids = [t.id for t in plan.targets
+                      if t.mosaic_group == g.id and not t.calibration]
+        listed = [tid for phase in g.phases for tid in phase]
+        for tid in dict.fromkeys(listed):
+            if tid not in member_ids:
+                errors.append(f"{label} lists {tid!r} in a phase, and no "
+                              f"member of it has that id")
+        for tid, at in _repeats(listed).items():
+            if tid in member_ids:
+                errors.append(f"{label} lists member {tid!r} {len(at)} times "
+                              f"across its phases; a member is in one phase")
+        for tid in member_ids:
+            if tid not in listed:
+                errors.append(f"{label} has a member {tid!r} that is in no "
+                              f"phase, so it would never run")
+    return errors
+
+
 def plan_identity_errors(plan: SequencePlan) -> list[str]:
     """Why ``plan`` must not start, one sentence per problem, or [] (#156,
     spec 3.5). Pure: every problem at once, so a plan is fixed in one pass
@@ -915,6 +985,9 @@ def plan_identity_errors(plan: SequencePlan) -> list[str]:
       group's list says nothing about it;
     * a TARGET LISTED IN THE PLAN'S OWN ``skipped_ids`` (#335), the list of
       panels of blocks the compile left out whole, for the same reason;
+    * A GROUP'S PHASES THAT DO NOT HOLD TOGETHER (#1074, ``_phase_errors``): a
+      phase naming a target that is no member, a member in two phases or in
+      none, phases on a pool, and a pool strategy on a mosaic;
     * a CALIBRATION TARGET IN A GROUP. Darks, bias and flats skip the slew,
       the centring, the focus and the guider, and a member is hopped to,
       centred and angle-checked, so the two cannot both hold. A calibration
@@ -995,6 +1068,7 @@ def plan_identity_errors(plan: SequencePlan) -> list[str]:
         if t.id in left_out:
             errors.append(f"target {t.name!r} is in the plan's skipped_ids; "
                           f"a skipped panel is not shot, and a target is")
+    errors.extend(_phase_errors(plan))
     for t in targets:
         if t.calibration and t.mosaic_group in group_ids:
             errors.append(f"calibration target {t.name!r} is in group "
