@@ -599,13 +599,14 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     // AUTOFOCUS after a looped FILTER CYCLE stranded the loop mid-lane (M12)
     // with no port to carry it to. Appended last, so `focused` keeps its row.
     outs: [_f("focused", "focused"), _e("pass", "pass done")],
-    params: { method: "V-curve sweep", step: 12, samples: 9 },
+    params: { method: "V-curve sweep", step: 12, samples: 9, when: "When stale" },
     fields: [
       { key: "method", label: "Method", control: "select", options: ["V-curve sweep", "Native (delegate)"] },
       { key: "step", label: "Step size", control: "text" },
       { key: "samples", label: "Samples", control: "text" },
+      { key: "when", label: "In a mosaic, sweep", control: "select", options: ["When stale", "Every panel", "First panel only"] },
     ],
-    desc: "V-curve sweep: measure median HFR per step, fit a parabola, approach best focus from below for backlash consistency.",
+    desc: "V-curve sweep: measure median HFR per step, fit a parabola, approach best focus from below for backlash consistency. In a mosaic a due sweep runs on the panel with the most stars, never on a star-poor one; a single target ignores the choice.",
     sum: (p) => txt(p.method) + " · " + txt(p.samples) + " pts",
   },
   guide: {

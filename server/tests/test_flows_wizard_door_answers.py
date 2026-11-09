@@ -236,8 +236,14 @@ class _Wheel:
 #: from each generated TARGET node (asserting it is "" on every one) the digest
 #: is the previous pin, a61479fb..., byte for byte. Regenerated from the SAME
 #: code path.
+#: RE-PINNED AGAIN IN WP 5.3 (#185), on top of WP 5.4: AUTOFOCUS gained its ``when`` param, "When
+#: stale" by default, so every generated autofocus node carries it and the
+#: blobs move by that one param and nothing else. PROVEN, not assumed: with
+#: ``when`` popped from each generated autofocus node (asserting it is "When
+#: stale" on every one) the digest is the WP 5.4 pin, 576ecc49..., byte for
+#: byte. Regenerated from the SAME code path.
 TODAYS_ANSWERS_SHA256 = \
-    "576ecc493fbb701c7d0948e79a385a75f47f39eb3148d6667bf9dfee042bb6d3"
+    "f91903ab92f28150dfb7b30eb1151bbba3586e73dc66b0568e7959de487f2097"
 
 #: The chip subsets the route is asked, one of each shape a new answer's
 #: default could move: none, the Guiding chip alone, every chip but it, and
@@ -1030,6 +1036,9 @@ class TestTheRecordedAnswer:
         the recorded TARGET node gained ``"panelExposure": ""`` (no panel
         exposure), and nothing else moved (the byte diff of the file is that
         one line).
+        RE-RECORDED IN WP 5.3 (``ASTRODECK_REWRITE_WIZARD_FIXTURE=1``, #185):
+        the recorded AUTOFOCUS node gained ``"when": "When stale"``, and
+        nothing else moved (the byte diff of the file is that one line).
         """
         text = _recording(client, monkeypatch)
         if REWRITE:

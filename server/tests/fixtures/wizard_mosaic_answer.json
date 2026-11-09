@@ -77,7 +77,8 @@
      "params": {
       "method": "V-curve sweep",
       "step": 12,
-      "samples": 9
+      "samples": 9,
+      "when": "When stale"
      }
     },
     {

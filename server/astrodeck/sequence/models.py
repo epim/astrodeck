@@ -210,6 +210,14 @@ class Target(BaseModel):
     # compile is to set it on every panel (spec 3.3). False keeps the sweep at
     # every target start that every saved plan has always had.
     autofocus_skip_if_fresh: bool = False
+    # WHEN A MOSAIC'S HOP OWES A SWEEP (#185, the AUTOFOCUS stage's "When"
+    # choice; additive, and ABSENT from the dump while "stale", so every plan
+    # saved before it dumps byte for byte as it did): "stale" is the rule
+    # above (no good sweep, the group's first acquisition, or a refocus
+    # due), "every" a sweep at each hop, "first" one per group per run. Read
+    # only for a target with `autofocus_skip_if_fresh` in a group, and where
+    # the sweep runs is `SequenceEngine._focus_site`'s whichever it says.
+    autofocus_when: Literal["stale", "every", "first"] = "stale"
     # --- mosaic panels (#189 S2, spec 3.4; additive — None = not a panel) ---
     #
     # The panel's place in its block's grid, 0-based: row 0 col 0 is panel
@@ -240,13 +248,15 @@ class Target(BaseModel):
 
     @model_serializer(mode="wrap")
     def _omit_no_time_bound(self, handler: SerializerFunctionWrapHandler):
-        """The dump without ``max_time_min`` when it is 0, whatever the mode,
-        and nested in a ``SequencePlan`` or a ``Session`` too. A wrap
-        serializer, so every other field, and the JSON schema, are pydantic's
-        own."""
+        """The dump without ``max_time_min`` when it is 0, and without
+        ``autofocus_when`` when it is "stale", whatever the mode, and nested
+        in a ``SequencePlan`` or a ``Session`` too. A wrap serializer, so
+        every other field, and the JSON schema, are pydantic's own."""
         out = handler(self)
         if isinstance(out, dict) and not out.get("max_time_min"):
             out.pop("max_time_min", None)
+        if isinstance(out, dict) and out.get("autofocus_when") == "stale":
+            out.pop("autofocus_when", None)
         return out
 
 

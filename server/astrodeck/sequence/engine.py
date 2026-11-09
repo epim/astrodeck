@@ -1782,6 +1782,18 @@ class SequenceEngine:
         #: after a hold, reuse a focus that is still good. Per run, reset in
         #: `start()`: a resume is a new run and focuses each group once more.
         self._focus_groups_acquired: set[tuple[str, str]] = set()
+        #: The stars each mosaic panel's latest visit counted, the most of any
+        #: of its frames (`_note_panel_stars`), by target id: what
+        #: `_focus_site` reads to put a due sweep on the richest panel and
+        #: never on a star-poor one (#185). A panel not seen yet has no
+        #: entry, which is unknown and not poor. Per run, reset in `start()`.
+        self._panel_stars: dict[str, int] = {}
+        #: The panels whose next counted frame opens a new visit's count
+        #: instead of raising the last one's (`_note_panel_stars`).
+        self._panel_stars_stale: set[str] = set()
+        #: The panel whose due refocus `_refocus_left_to_the_hop` has said it
+        #: leaves for the next hop, so it says so once a visit.
+        self._refocus_left_said: str | None = None
         #: The recovery ladder's sweep this run was started on (#402), until
         #: the first acquisition that reaches its focus decision takes it:
         #: that acquisition's initial autofocus is owed only under the hop
@@ -2569,6 +2581,9 @@ class SequenceEngine:
         self._trail_abandons = 0
         self._accepted_seen = None
         self._focus_groups_acquired = set()
+        self._panel_stars = {}
+        self._panel_stars_stale = set()
+        self._refocus_left_said = None
         # THE LADDER'S SWEEP IS THIS RUN'S GOOD SWEEP (#402), on a resume
         # only: a fresh session is a new campaign whatever the focuser did
         # a minute ago. Seeded here rather than at the decision, so every
@@ -11469,22 +11484,41 @@ class SequenceEngine:
         # whether or not it focuses: the sweep was the focus for the target
         # the run opened on, and any later acquisition keeps its own rule.
         recovery, self._recovery_sweep = self._recovery_sweep, None
+        first_here = (self._focus_group_key(target)
+                      not in self._focus_groups_acquired)
+        site: Target | None = None
         if target.autofocus_first and "focuser" in self.hub.devices and (
                 (recovery is None
                  and not getattr(target, "autofocus_skip_if_fresh", False))
                 or await self._hop_focus_is_owed(target, recovery=recovery)):
+            # WHERE A SWEEP THAT FALLS DUE ON A HOP RUNS (#185): on the
+            # mosaic's panel with the most stars, never on a star-poor one.
+            # This panel when it is that one, and always for a target that is
+            # not a mosaic panel on the hop rule.
+            site = target
+            if member is not None and getattr(target, "autofocus_skip_if_fresh",
+                                              False):
+                site = self._focus_site(target)
+                if site is None:
+                    self._defer_hop_sweep(target, first_here)
+        if site is not None:
             # THE CENTRING IS SPENT BY THE TIME GUIDING STARTS. Measured
             # 2026-09-07: centred to 0.08', first light frame 2.0' off nine
             # minutes later — the sweep runs UNGUIDED between the two, and this rig
             # drifts about 15"/min unguided. See `_recentre_after_unguided_focus`.
             guided_before = await self._guiding_active_now()
             _af_t0 = time.monotonic()
-            await self._autofocus("initial autofocus", target=target)
+            if not await self._autofocus_for_hop(target, site, member):
+                self._give_back_first_acquisition(target, first_here)
             af_s = time.monotonic() - _af_t0
             sweep_s = af_s
             guided_through = guided_before and await self._guiding_active_now()
+            # ``swept_on`` only when the sweep ran elsewhere, so every other
+            # sweep calls this exactly as it always has.
             await self._recentre_after_unguided_focus(
-                target, af_s, guided=bool(guided_through))
+                target, af_s, guided=bool(guided_through),
+                **({} if site is target else {"swept_on": site}))
+        self._begin_panel_visit(target)
 
         # THE DECISION IS MADE WHENEVER THE PLAN ASKED FOR GUIDING — not only
         # when a guider happens to be present. This whole block used to sit
@@ -12566,7 +12600,8 @@ class SequenceEngine:
                 await self._autofocus("sparse-field re-sweep", step=step,
                                       target=target, resweep=True)
                 self._frame_had_event = True
-            elif await self._refocus_due():
+            elif (not self._refocus_left_to_the_hop(target)
+                  and await self._refocus_due()):
                 await self._autofocus("refocus", step=step, target=target)
                 self._frame_had_event = True
 
@@ -17274,6 +17309,7 @@ class SequenceEngine:
         ``verdict`` is what the guider's samples inside THIS frame's exposure
         said (`_grade_guiding`); None for a frame it was not guiding, which
         carries no guide figure, since an idle guider's is stale."""
+        self._note_panel_stars(target, info)
         if self._session is None:
             return None
         metrics: dict[str, float] = {}
@@ -19074,7 +19110,9 @@ class SequenceEngine:
 
     async def _recentre_after_unguided_focus(self, target: Target,
                                              elapsed_s: float, *,
-                                             guided: bool) -> None:
+                                             guided: bool,
+                                             swept_on: Target | None = None
+                                             ) -> None:
         """Re-centre after an initial autofocus that ran with nothing holding
         the field.
 
@@ -19097,11 +19135,16 @@ class SequenceEngine:
         after it), and a field held still through the sweep does not drift and
         must not buy a re-slew. Writing it down is what stops the day the order
         changes from silently costing a slew per target.
+
+        ``swept_on`` is the panel a mosaic sweep ran on when it was not this
+        one (`_focus_site`, #185): the mount is on that panel, so this goes
+        back whatever the sweep's length or the guiding, and says so.
         """
-        if guided:
-            return
-        if elapsed_s < RECENTRE_AFTER_UNGUIDED_S:
-            return
+        if swept_on is None:
+            if guided:
+                return
+            if elapsed_s < RECENTRE_AFTER_UNGUIDED_S:
+                return
         if "telescope" not in self.hub.devices:
             return
         # `target.center` is the existing statement of intent — "this target is
@@ -19118,11 +19161,18 @@ class SequenceEngine:
         if self._position_unknown():
             await self._stop_run_position_unknown(
                 target, "re-centring after the unguided sweep")
-        bus.log("info",
-                f"{target.name}: the initial autofocus ran {elapsed_s / 60:.1f} "
-                f"min unguided — re-centring before guiding starts, because "
-                f"this rig was measured drifting about 15 arcsec/min with "
-                f"nothing holding the field", "sequence")
+        if swept_on is not None:
+            bus.log("info",
+                    f"{target.name}: the focus sweep ran on {swept_on.name}, "
+                    f"so re-centring on this panel before guiding starts",
+                    "sequence")
+        else:
+            bus.log("info",
+                    f"{target.name}: the initial autofocus ran "
+                    f"{elapsed_s / 60:.1f} min unguided — re-centring before "
+                    f"guiding starts, because this rig was measured drifting "
+                    f"about 15 arcsec/min with nothing holding the field",
+                    "sequence")
         t0 = time.time()
         commanded = None
         try:
@@ -22457,6 +22507,30 @@ class SequenceEngine:
             return ("group", str(group))
         return ("target", str(getattr(target, "id", None) or target.name))
 
+    def _hop_policy_owes(self, target: Target, first: bool,
+                         recovery: RecoverySweep | None) -> bool | None:
+        """What the AUTOFOCUS stage's "When" choice says about a hop to
+        ``target`` (#185), or None when it leaves the question to the hop
+        rule in `_hop_focus_is_owed`, which is "When stale", the default.
+
+        "First panel only": a sweep on the group's first acquisition and on
+        none after it, a failed sweep and a due refocus included, and the
+        recovery ladder's sweep counts as that first one. "Every panel": a
+        sweep at each hop, except that a recovery sweep is the first
+        acquisition's and leaves that one to the hop rule. Where a sweep
+        runs is `_focus_site`'s to say either way."""
+        when = getattr(target, "autofocus_when", "stale")
+        if when == "first":
+            if first and recovery is None:
+                return True
+            bus.log("info",
+                    f"{target.name}: focus reused: the AUTOFOCUS stage "
+                    f"sweeps on the first panel only", "sequence")
+            return False
+        if when == "every" and recovery is None:
+            return True
+        return None
+
     async def _hop_focus_is_owed(self, target: Target, *,
                                  recovery: RecoverySweep | None = None
                                  ) -> bool:
@@ -22493,6 +22567,11 @@ class SequenceEngine:
         gate: it decides nothing in `_refocus_due` either, and a hop owes a
         sweep only when the frame loop would have taken one.
 
+        THE AUTOFOCUS STAGE'S "WHEN" CHOICE comes first (`_hop_policy_owes`,
+        #185): "Every panel" owes a sweep at each hop and "First panel only"
+        only at the group's first. This answers WHETHER a sweep is owed;
+        WHERE it runs is `_focus_site`'s, asked by the setup after this.
+
         THE RECOVERY SWEEP IS THE GROUP'S FIRST (#402). With ``recovery``
         given, the sweep the ladder made before the run is the one this
         acquisition would have made, so being the group's first owes
@@ -22505,6 +22584,9 @@ class SequenceEngine:
         key = self._focus_group_key(target)
         first = key not in self._focus_groups_acquired
         self._focus_groups_acquired.add(key)
+        chosen = self._hop_policy_owes(target, first, recovery)
+        if chosen is not None:
+            return chosen
         if self._last_focus_at is None:
             return True
         if first and recovery is None:
@@ -22544,6 +22626,165 @@ class SequenceEngine:
                 f"{target.name}: focus reused: swept {age_s / 60:.0f} min ago, "
                 f"{since}", "sequence")
         return False
+
+    def _note_panel_stars(self, target: Target, info) -> None:
+        """Keep the stars a mosaic panel's frame counted, for `_focus_site`
+        (#185): the most of any frame of the panel's latest visit, so a visit
+        that ends on a narrowband sub does not read as a poor field. The
+        first frame after `_begin_panel_visit` starts the count again. Only
+        a group member's light frames count, and a frame with no star count
+        leaves the panel as it was."""
+        if (not isinstance(info, dict) or getattr(target, "calibration", False)
+                or self._group_of(target) is None):
+            return
+        stars = info.get("stars")
+        if isinstance(stars, bool) or not isinstance(stars, (int, float)):
+            return
+        n = int(stars)
+        if target.id in self._panel_stars_stale or target.id not in self._panel_stars:
+            self._panel_stars_stale.discard(target.id)
+            self._panel_stars[target.id] = n
+        else:
+            self._panel_stars[target.id] = max(self._panel_stars[target.id], n)
+
+    def _begin_panel_visit(self, target: Target) -> None:
+        """A visit to ``target`` begins: its next counted frame replaces the
+        stars of the last visit, which stand until then (`_focus_site` reads
+        them at the hop, before any frame of this visit exists)."""
+        if self._group_of(target) is not None:
+            self._panel_stars_stale.add(target.id)
+        self._refocus_left_said = None
+
+    def _refocus_left_to_the_hop(self, target: Target) -> bool:
+        """Whether a refocus that falls due at a frame boundary of ``target``
+        is left for the next hop instead of taken here (#185): ``target`` is
+        a mosaic panel on the hop rule that is known to be star-poor
+        (`_panel_is_poor`), the plan arms a refocus at all, and the panel is
+        centred, so a hop can place the sweep (`_focus_site`) on a richer
+        one. A sweep taken on the poor field fails as a sparse field. The
+        refocus is still owed: `_hop_focus_is_owed` asks `_refocus_due`
+        itself at the next hop. A rich or unmeasured panel refocuses where it
+        stands, with the failure handling it always had. Said once a visit."""
+        if not (getattr(target, "autofocus_skip_if_fresh", False)
+                and target.center and self._panel_is_poor(target)
+                and (self.plan.autofocus_every
+                     or self._policy.refocus_on_temp_delta_c > 0)):
+            return False
+        if self._refocus_left_said != target.id:
+            self._refocus_left_said = target.id
+            bus.log("info",
+                    f"{target.name}: this panel counted "
+                    f"{self._panel_stars[target.id]} stars, under the "
+                    f"{SPARSE_FIELD_WARN} a sweep needs, so a refocus that "
+                    f"falls due here is left for the next hop to place on a "
+                    f"richer panel", "sequence")
+        return True
+
+    def _panel_is_poor(self, target: Target) -> bool:
+        """Whether ``target`` is a mosaic panel whose latest visit counted
+        fewer stars than the sweep's own floor, ``SPARSE_FIELD_WARN``: the
+        line below which a sweep fails as a sparse field (#185). A panel
+        not seen yet is unknown, and is not poor."""
+        counted = self._panel_stars.get(target.id)
+        return (self._group_of(target) is not None and counted is not None
+                and counted < SPARSE_FIELD_WARN)
+
+    def _focus_site(self, target: Target) -> Target | None:
+        """The panel a sweep that falls due on a hop to ``target`` runs on
+        (#185), or None when it should not run now.
+
+        ``target`` ITSELF unless it is known to be star-poor (`_panel_is_poor`):
+        a panel that is rich or not seen yet sweeps where the hop landed, as
+        it always did, and no detour is made to find a slightly richer one.
+        From a poor panel the sweep goes to the member with the most stars in
+        its latest visit among the members eligible now (the live members
+        this pass can visit, `GroupRun.visitable`; with no run state for the
+        group, every member) that counted at least the floor, the first in
+        the group's order on a tie; failing that, to a member not seen yet,
+        which is unknown and not poor. None when every eligible member is
+        poor: the sweep waits for the next hop rather than running on a poor
+        field.
+
+        A panel the plan does not centre is never left for another, or
+        gone to: the mount comes back by centring, so a target that opts out
+        of centring sweeps where the hop put it, as it always did."""
+        if not target.center or not self._panel_is_poor(target):
+            return target
+        group = self._group_of(target)
+        run = self._group_runs.get(group.id)
+        can = set(run.visitable()) if run is not None else None
+        others = [t for t in self.plan.targets
+                  if t is not target and self._group_of(t) is group
+                  and t.center and (can is None or (run.is_live(t.id)
+                                                    and t.id in can))]
+        stars = self._panel_stars
+        rich = [t for t in others if stars.get(t.id, -1) >= SPARSE_FIELD_WARN]
+        if rich:
+            top = max(stars[t.id] for t in rich)
+            return next(t for t in rich if stars[t.id] == top)
+        return next((t for t in others if t.id not in stars), None)
+
+    def _give_back_first_acquisition(self, target: Target,
+                                     first_here: bool) -> None:
+        """A sweep this hop owed did not run, so the next hop still owes it:
+        the group's first acquisition is given back when this hop was it. A
+        due refocus and a temperature drift stay due on their own."""
+        if first_here:
+            self._focus_groups_acquired.discard(self._focus_group_key(target))
+
+    def _defer_hop_sweep(self, target: Target, first_here: bool) -> None:
+        """A sweep is owed on this hop and no eligible panel has the stars
+        for it (`_focus_site`): it waits for the next hop."""
+        self._give_back_first_acquisition(target, first_here)
+        seen = self._panel_stars.get(target.id)
+        bus.log("info",
+                f"{target.name}: a focus sweep is owed, but no panel the "
+                f"mosaic can visit now counted the {SPARSE_FIELD_WARN} stars "
+                f"a sweep needs ("
+                + (f"this one counted {seen}" if seen is not None
+                   else "this one is unmeasured")
+                + "); it waits for the next hop and this visit goes on at "
+                  "the focus the run has", "sequence")
+
+    async def _autofocus_for_hop(self, target: Target, site: Target,
+                                 member: TargetGroup | None) -> bool:
+        """The sweep a hop to ``target`` owes, run on ``site``
+        (`_focus_site`); False when it did not run. When ``site`` is another
+        panel the mount goes there first and says why; the caller centres
+        back on ``target`` after it.
+
+        A FOCUS FAILURE NEVER DEFERS A PANEL (#185). On the hop rule an
+        ``af_failure_action`` of skip would end the visit with a plain
+        `StopTarget`, which the group driver defers and, three failed
+        passes later, sets aside: a panel lost to a sweep, and the panel that
+        failed was often not even the one the visit was for. The failure is
+        said and the visit goes on at the focus the run has; the sweep stays
+        owed (`_last_focus_at` is cleared by the failed sweep itself). Abort
+        is the operator's own word and still ends the run."""
+        if site is not target:
+            bus.log("info",
+                    f"{target.name}: the focus sweep falls due; it runs on "
+                    f"{site.name}, the panel the mosaic can visit with the "
+                    f"most stars, and the mount goes back after it",
+                    "sequence")
+            self._set_state(detail=f"slewing to {site.name} to focus")
+            res = await self._centre_once(site, None)
+            if not (isinstance(res, dict) and res.get("centered")):
+                bus.log("warning",
+                        f"{site.name}: not centred for the focus sweep; the "
+                        f"sweep waits for the next hop", "sequence")
+                return False
+        try:
+            await self._autofocus("initial autofocus", target=site)
+        except StopTarget as e:
+            if member is None or not getattr(target, "autofocus_skip_if_fresh",
+                                             False):
+                raise
+            bus.log("warning",
+                    f"{target.name}: {e}; a focus failure does not defer a "
+                    f"panel, so this visit goes on at the focus the run has",
+                    "sequence")
+        return True
 
     async def _autofocus(self, label: str, *, step=None,
                          target: Target | None = None,
