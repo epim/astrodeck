@@ -62,9 +62,20 @@ from test_trigger_frame_banked import _plan, _rule, _run, _shot
 P12 = f"{GROUP_NAME} 1-2"
 
 
+def _completion_trigger(name: str) -> tuple[str, str]:
+    """``(trigger, only_target)`` for the completion rules of ``name``. A
+    panel is no target the operator drew (#184): the completion rules of the
+    mosaic's last panel are the group's ``on_mosaic_complete`` rules, gated by
+    the group's name. Every other target's are ``on_target_complete``."""
+    if name == P12:
+        return "on_mosaic_complete", GROUP_NAME
+    return "on_target_complete", name
+
+
 def _done_rule(name: str) -> Instruction:
-    return Instruction(id=f"done-{name}", trigger="on_target_complete",
-                       action="notify", level="info", only_target=name,
+    trigger, only = _completion_trigger(name)
+    return Instruction(id=f"done-{name}", trigger=trigger,
+                       action="notify", level="info", only_target=only,
                        message=f"{name} is done")
 
 
@@ -187,9 +198,10 @@ async def test_a_completion_rules_own_consumed_jump_is_not_owed_again(
         assert ['M31 1-2', 'Later', 'Then'] == ['M31 1-2', 'Then', 'Later']
     """
     first, then = ("B", "C") if who == "A" else ("Later", "Then")
-    onward = Instruction(id="onward", trigger="on_target_complete",
+    trigger, only = _completion_trigger(who)
+    onward = Instruction(id="onward", trigger=trigger,
                          action="run_target", target_arg=then,
-                         only_target=who)
+                         only_target=only)
     if who == P12:
         plan = grid_plan(rows=1, cols=2,
                          panel_kw={"filters": ("L",), "count": 1},

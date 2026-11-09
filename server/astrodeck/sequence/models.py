@@ -326,6 +326,13 @@ TriggerKind = Literal[
     # here that the engine cannot produce turns an honest "this rule will not
     # run" into silence - which is worse than the warning it replaces.
     "on_altitude_floor",
+    # A `TargetGroup`'s LAST member completed: raised once per group per run,
+    # by `SequenceEngine._fire_target_complete`, with the group's name as the
+    # active target. A group with a member set aside tonight is not complete
+    # tonight, so it does not fire. A panel's own completion is not
+    # `on_target_complete`: a member of a group is not a target the operator
+    # drew (#184).
+    "on_mosaic_complete",
 ]
 ActionKind = Literal[
     "notify", "pause", "refocus", "dither", "abort",

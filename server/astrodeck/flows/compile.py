@@ -1079,7 +1079,21 @@ def _target_entry(n: FlowNode, graph: FlowGraph, loop_keys: set,
     return entry
 
 
-def _trigger_for(node: FlowNode, from_port: str) -> str:
+def ends_mosaic_lane(graph: FlowGraph, node: FlowNode) -> bool:
+    """True when ``node``'s one flow parent is a multi-panel TARGET block, or
+    a stage that block owns (`owner_of`): the node ends the mosaic's own lane
+    (#184). A node with two flow parents, or none, is nobody's."""
+    by_id, parents = _lane_index(graph)
+    ups = parents.get(node.id, [])
+    if len(ups) != 1:
+        return False
+    up = ups[0]
+    owner = up if up.type in OWNER_TYPES else owner_of(graph, up.id)
+    return owner is not None and is_multi_panel(owner)
+
+
+def _trigger_for(node: FlowNode, from_port: str, *,
+                 mosaic_lane: bool = False) -> str:
     """The `when` string for an event edge leaving ``node``.
 
     Named per source type rather than per port, because the engine's trigger
@@ -1130,7 +1144,12 @@ def _trigger_for(node: FlowNode, from_port: str) -> str:
     if node.type == "dusk" and from_port == "nightend":
         return "on_night_end"
     if node.type == "report" and from_port == "done":
-        return "on_target_complete"
+        # ``mosaic_lane``: the REPORT ends a multi-panel block's own lane
+        # (`ends_mosaic_lane`). Its 'target done' is the MOSAIC done, once,
+        # when the last panel completes. A panel is no target the operator
+        # drew, so the engine raises ``on_target_complete`` for no panel, and
+        # every other REPORT keeps it (#184).
+        return "on_mosaic_complete" if mosaic_lane else "on_target_complete"
     if node.type == "parkclose" and from_port == "closed":
         return "on_shutdown_complete"
     if node.type == "pool" and from_port == "floor":
@@ -1514,7 +1533,10 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
         # Additive: `to_port` is a new key on the rule. Nothing that reads the
         # compiled plan today looks for it, and the PLAN tab renders the dict
         # verbatim, so the operator now simply sees which input a rule lands on.
-        rule: dict = {"when": _trigger_for(src, e.fromPort),
+        rule: dict = {"when": _trigger_for(
+                          src, e.fromPort,
+                          mosaic_lane=(src.type == "report"
+                                       and ends_mosaic_lane(graph, src))),
                       "action": dst.type if dst is not None else "?",
                       "to_port": e.toPort}
         thr = src.params.get("threshold")

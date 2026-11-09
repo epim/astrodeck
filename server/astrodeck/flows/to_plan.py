@@ -174,17 +174,29 @@ HONOURED_BY: dict[tuple[str, str, str], str] = {
     ("on_clouds_clear", "calib", "stop"): "cloud_hold_darks",
     ("on_shutdown_complete", "calib", "do"): "day_darks",
     ("on_target_complete", "calib", "do"): "day_darks",
+    ("on_mosaic_complete", "calib", "do"): "day_darks",
 }
 
 #: The triggers whose wire into a CALIBRATION QUEUE's ``do`` asks for the
 #: end-of-night darks, the wind-down's day-darks phase (#818). SHUTDOWN
 #: COMPLETE is the campaign Example's wiring; 'target done' is what the quick
-#: sheet's DARKS AFTER chip draws (SESSION REPORT's ``done`` into the queue).
-#: Both mean "darks when the work is over", and the engine has one place where
-#: that is true, so both fund it. The wire is honoured by that phase, never run
+#: sheet's DARKS AFTER chip draws (SESSION REPORT's ``done`` into the queue),
+#: and ``on_mosaic_complete`` when that REPORT ends a mosaic's lane (#184).
+#: All mean "darks when the work is over", and the engine has one place where
+#: that is true, so all fund it. The wire is honoured by that phase, never run
 #: as a rule.
 END_OF_NIGHT_TRIGGERS: frozenset[str] = frozenset(
-    {"on_shutdown_complete", "on_target_complete"})
+    {"on_shutdown_complete", "on_target_complete", "on_mosaic_complete"})
+
+_DAY_DARKS_AFTER_THE_WORK = (
+    "the wind-down takes these darks itself, once, at the end of the "
+    "night rather than after each target: in the window between the park "
+    "and the warm ramp, the one moment the mount is stowed, the cover is "
+    "shut and the sensor is still at setpoint. They are matched to the "
+    "lights this plan actually shot and capped at what the library still "
+    "needs (the whole quota when the queue's Darks is Always), and only a "
+    "night that ended normally takes them: an abort, an "
+    "unsafe trip or a cooling skip goes straight to the warm")
 
 HOLD_HONOURED: dict[tuple[str, str, str], str] = {
     ("on_clouds_in", "calib", "do"): (
@@ -200,15 +212,8 @@ HOLD_HONOURED: dict[tuple[str, str, str], str] = {
         "needs (the whole quota when the queue's Darks is Always), and only a "
         "night that ended normally takes them: an abort, an "
         "unsafe trip or a cooling skip goes straight to the warm"),
-    ("on_target_complete", "calib", "do"): (
-        "the wind-down takes these darks itself, once, at the end of the "
-        "night rather than after each target: in the window between the park "
-        "and the warm ramp, the one moment the mount is stowed, the cover is "
-        "shut and the sensor is still at setpoint. They are matched to the "
-        "lights this plan actually shot and capped at what the library still "
-        "needs (the whole quota when the queue's Darks is Always), and only a "
-        "night that ended normally takes them: an abort, an "
-        "unsafe trip or a cooling skip goes straight to the warm"),
+    ("on_target_complete", "calib", "do"): _DAY_DARKS_AFTER_THE_WORK,
+    ("on_mosaic_complete", "calib", "do"): _DAY_DARKS_AFTER_THE_WORK,
     ("on_clouds_clear", "calib", "stop"): (
         "the hold ends when the sky clears and its darks stop with it, so this "
         "wire is not needed - it is kept in the graph and does no harm"),
