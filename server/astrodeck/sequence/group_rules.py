@@ -41,7 +41,7 @@ order reads.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Container, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -741,36 +741,6 @@ def pass_boundary(exposures: int, deferrals: int) -> PassBoundary:
     return "next_pass"
 
 
-def current_phase_index(phases: Sequence[Sequence[str]],
-                        complete: Container[str]) -> int | None:
-    """The index of a group's CURRENT PHASE (#1074): the first phase with a
-    member that is not in ``complete``. None when no phases are given (the
-    group is one phase of every member) and when every phase is complete.
-
-    DERIVED EVERY TIME FROM WHAT IS COMPLETE, NEVER STORED. The caller's
-    ``complete`` is the ledger's word, so a resume, a CONTINUE and a restart
-    tonight all land in the phase the frames say, and there is no cursor to
-    lose. A member set aside tonight is not complete, so it holds its phase:
-    the next one does not start early."""
-    for i, phase in enumerate(phases):
-        if any(tid not in complete for tid in phase):
-            return i
-    return None
-
-
-def current_phase_ids(phases: Sequence[Sequence[str]],
-                      complete: Container[str]) -> frozenset[str] | None:
-    """The members the group may run now (#1074): those of its current
-    phase. None means no limit (no phases given). Empty when every phase is
-    complete, because nothing is left to run. ONE FUNCTION FOR EVERY
-    CALLER, the engine's selection and ResumeArm's re-centre alike, so the
-    two cannot disagree about which members are eligible."""
-    if not phases:
-        return None
-    at = current_phase_index(phases, complete)
-    return frozenset() if at is None else frozenset(phases[at])
-
-
 def pool_sky_scores(targets: Iterable[Any], lat: float, lon: float,
                     now: float) -> dict[str, float]:
     """``{target id: altitude x moon factor}`` at ``now`` for a pool's
@@ -849,8 +819,7 @@ class GroupRun:
       group and night, which behave exactly as before.
     """
 
-    def __init__(self, members: Mapping[str, str], *, max_failed_visits: int,
-                 phases: Sequence[Sequence[str]] = ()):
+    def __init__(self, members: Mapping[str, str], *, max_failed_visits: int):
         if not members:
             raise ValueError("a group needs at least one member")
         if (isinstance(max_failed_visits, bool)
@@ -860,11 +829,6 @@ class GroupRun:
                 f"max_failed_visits must be an int of at least 1, "
                 f"got {max_failed_visits!r}")
         self.members: dict[str, str] = {str(k): str(v) for k, v in members.items()}
-        # The group's ordered phases (#1074), narrowed to the members this
-        # run has: a listed id that is no member (the start paths refuse it)
-        # is never waited for. Empty is one phase of every member.
-        self.phases: tuple[tuple[str, ...], ...] = tuple(
-            tuple(p for p in phase if p in self.members) for phase in phases)
         self.max_failed_visits = max_failed_visits
         self.pass_no = 1
         self.visited: set[str] = set()
@@ -930,17 +894,6 @@ class GroupRun:
     def live(self) -> list[str]:
         """The live members, in the group's order."""
         return [p for p in self.members if self.is_live(p)]
-
-    def phase_index(self) -> int | None:
-        """The group's current phase (:func:`current_phase_index`), read off
-        ``completed``; None with no phases or with every phase complete."""
-        return current_phase_index(self.phases, self.completed)
-
-    def in_phase(self, panel: str) -> bool:
-        """May ``panel`` run now? True for a member of the current phase, and
-        for every member when the group has no phases (:func:`current_phase_ids`)."""
-        ids = current_phase_ids(self.phases, self.completed)
-        return ids is None or panel in ids
 
     def note_let_through(self, panels: Iterable[str]) -> None:
         """Record the members one selection found it may visit now: ready by

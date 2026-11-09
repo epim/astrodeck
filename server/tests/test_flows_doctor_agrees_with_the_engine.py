@@ -254,7 +254,10 @@ class TestTheExamplesUnderTheMosaicRules:
         from astrodeck.flows import examples as ex
         ledger = '▸ no session report stage - the night will not have a saved report'
         for rec in ex.examples():
-            notes = [i.text for i in check(rec.graph) if i.level == "note"]
+            # Without WP 5.1b2's note (#774) that a POOL over CAPTURE LOOPs does
+            # not read its quota, which tests/test_w5_1b2_lane_doctor.py holds.
+            notes = [i.text for i in check(rec.graph) if i.level == "note"
+                     and "quota is not read" not in i.text]
             l1 = [t for t in notes if "part of the TARGET block now" in t]
             slews = [n for n in rec.graph.nodes if n.type == "slew"]
             assert len(l1) == len(slews), (

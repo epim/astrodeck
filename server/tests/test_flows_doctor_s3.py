@@ -1522,7 +1522,10 @@ class TestOutputUnchangedBeforeS3:
                 if tx == OLD_RULE_4 else (lv, tx)
                 for lv, tx in GOLDEN_BEFORE_S3[name]
                 if not (tx == OLD_RULE_4 and blocked)]
-        got = [(i.level, i.text) for i in check(graph)]
+        # Without WP 5.1b2's note (#774) that a POOL over CAPTURE LOOPs does not
+        # read its quota, which tests/test_w5_1b2_lane_doctor.py holds.
+        got = [(i.level, i.text) for i in check(graph)
+               if "quota is not read" not in i.text]
         assert got == want, (name, got)
 
     def test_the_corpus_is_what_the_control_says_it_is(self):

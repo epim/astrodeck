@@ -127,8 +127,8 @@ from ..solve.light import (BIAS_MASTER, CLOUD, DARK_MASTER, EXPLICIT,
                            NO_LIGHT_WORDS, SELF_SHOT, FailedSolveError,
                            NoLightError)
 from . import schedule
-from .group_rules import (CENTRING, SET_ASIDE_EXPIRY_S, current_phase_ids,
-                          pool_sky_scores, set_aside_expiry)
+from .group_rules import (CENTRING, SET_ASIDE_EXPIRY_S, pool_sky_scores,
+                          set_aside_expiry)
 from .models import (Target, TargetGroup, duplicate_name_warning,
                      plan_identity_errors, quota_unbounded, replan_cooling)
 from .panel_order import OrderSnapshot, order_panels, order_pool
@@ -674,14 +674,18 @@ def _set_aside_tonight(target: Target, remaining: dict[str, int],
     target with a whole record has nothing to shoot tonight, and so does one
     whose every owed step has a step record: the run skips each of those
     steps tonight, and nothing of the target is left for it. A target with
-    one of its owed steps set aside still owes the others tonight."""
+    one of its owed steps set aside still owes the others tonight, except
+    that a chain's later phases (#1074) are held behind the first phase
+    that owes frames: the run shoots nothing of them while it is set aside."""
     whole = {r.get("target_id") for r in records if r.get("step_id") is None}
     if target.id in whole:
         return True
     steps = {r.get("step_id") for r in records
              if r.get("target_id") == target.id
              and r.get("step_id") is not None}
-    owed = [s.id for s in target.steps if remaining.get(s.id, 0) > 0]
+    owed_steps = [s for s in target.steps if remaining.get(s.id, 0) > 0]
+    first = min((s.phase for s in owed_steps), default=0)
+    owed = [s.id for s in owed_steps if s.phase == first]
     return bool(owed) and all(sid in steps for sid in owed)
 
 
@@ -959,15 +963,7 @@ def recentre_candidates(session: Session, night: str,
                              and m.after_group != group.id}
                 if waits_for & owing_groups:
                     continue
-                # ONLY THE CURRENT PHASE'S MEMBERS (#1074), the ones the run
-                # may select (`group_rules.current_phase_ids`): a member of a
-                # later phase is not re-centred on, and with the current
-                # phase set aside or past its window none of the group is.
-                phase = current_phase_ids(
-                    group.phases,
-                    {m.id for m in members if not _owes(m, remaining)})
-                eligible = [m for m in members if live(m)
-                            and (phase is None or m.id in phase)]
+                eligible = [m for m in members if live(m)]
                 ordered = _group_order(
                     group, members, eligible, done, last_ts,
                     _pool_scores(group, eligible, site if gate else None,

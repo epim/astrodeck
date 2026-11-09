@@ -1985,12 +1985,9 @@ class SequenceEngine:
         self._group_gates: dict[str, tuple[str, ...]] = {}
         #: ``(group id, group waited for)`` pairs whose wait has been said.
         self._group_gate_said: set[tuple[str, str]] = set()
-        #: The phase each group with phases was last seen in (#1074), by
-        #: group id, so a change is said once; and the candidate each pool
-        #: last picked (#183), so a new pick is. Both for the log only: the
-        #: phase is derived from the ledger and the pick from the sky at
-        #: every selection, never read back from here.
-        self._group_phase: dict[str, int | None] = {}
+        #: The candidate each pool last picked (#183), so a new pick is said
+        #: once. For the log only: the pick is made from the sky at every
+        #: selection, never read back from here.
         self._pool_pick: dict[str, str] = {}
         #: The last `_run_visit` ended at its deadline (a flip point or a
         #: follower's ``group_ready_ts``), not at a round or at completion.
@@ -2682,7 +2679,6 @@ class SequenceEngine:
         self._after_group_said = set()
         self._group_gates = {}
         self._group_gate_said = set()
-        self._group_phase = {}
         self._pool_pick = {}
         self._visit_ended_by_deadline = False
         self._group_angle_read = {}
@@ -3010,7 +3006,9 @@ class SequenceEngine:
         if target.id in self._set_aside_targets or (
                 run is not None and target.id in run.set_aside):
             return 0
-        rounds = 0
+        # A chain's phases (#1074) are shot one after another, so their
+        # rounds add; the steps of one phase share every round.
+        phase_rounds: dict[int, int] = {}
         for s in target.steps:
             key = f"{target.id}:{s.id}"
             if key in self._set_aside:
@@ -3019,7 +3017,10 @@ class SequenceEngine:
                    else self._done.get(key, 0))
             short = max(0, s.count - got)
             if short:
-                rounds = max(rounds, -(-short // max(1, int(s.per_visit or 1))))
+                phase_rounds[s.phase] = max(
+                    phase_rounds.get(s.phase, 0),
+                    -(-short // max(1, int(s.per_visit or 1))))
+        rounds = sum(phase_rounds.values())
         if not rounds:
             return 0
         visits = (-(-rounds // group.visit_passes) if group.mode == "rotate"
@@ -5773,8 +5774,6 @@ class SequenceEngine:
                 # members carry no verdict, and `_group_ready_ts` gives the
                 # group no time.
                 continue
-            members = self._hold_later_phases(group, run, members, remaining,
-                                              gs_now, elig, refused)
             candidates: list[Target] = []
             for t in members:
                 if gs_now[id(t)]["state"] != "ready":
@@ -5894,69 +5893,6 @@ class SequenceEngine:
                     False, now + max(0.0, mv.wake_h or 0.0) * 3600.0
                     + MERIDIAN_WAKE_PAD_S, None, "meridian", mv.reason)
         return out
-
-    def _hold_later_phases(self, group: TargetGroup, run: GroupRun,
-                           members: list[Target], remaining: list[Target],
-                           gs_now: dict[int, dict],
-                           elig: dict[str, _Eligibility],
-                           refused: list[Target]) -> list[Target]:
-        """THE GROUP'S CURRENT PHASE (#1074): of the live ``members``, returns
-        those the group may visit now. The current phase is the first one
-        that owes a member (`group_rules.current_phase_ids`), derived from
-        the ledger at every selection, so a resumed or CONTINUEd night lands
-        in the right one and nothing is stored.
-
-        A member of a later phase is a waiter with no wake time, ``held``
-        ``"phase"``: the phase after "cycle 1 complete" does not start
-        early. While the current phase can still shoot tonight that is all.
-        When it cannot (every member of it set aside for the night, or past
-        its window) the later phases cannot start tonight either, and a
-        group left holding them would idle to dawn with the cooler running:
-        they are set aside for tonight with the reason, kind ``"phase"``,
-        and the ledger still owes them to the next night. A member set aside
-        FOR NOW, awaiting its expiry, still counts as able to shoot.
-
-        A group with no phases asks nothing and returns ``members``."""
-        if not run.phases:
-            return members
-        at = run.phase_index()
-        known = self._group_phase.setdefault(group.id, at)
-        if at != known:
-            self._group_phase[group.id] = at
-            if at is not None and known is not None:
-                bus.log("info", f"{group.name or group.id}: phase {known + 1} "
-                                f"is complete; phase {at + 1} of "
-                                f"{len(run.phases)} starts", "sequence")
-        later = [t for t in members if not run.in_phase(t.id)]
-        if not later:
-            return members
-        now_in = [t for t in members if run.in_phase(t.id)]
-        number = (at or 0) + 1
-        if self._group_can_shoot_tonight(group, remaining, gs_now):
-            for t in later:
-                label = run.members.get(t.id, t.name)
-                elig[t.id] = _Eligibility(
-                    False, None, None, "phase",
-                    f"{label} waits for phase {number} to finish")
-            return now_in
-        mosaic = group.name or group.id
-        holding = [run.members[p] for p in run.phases[at or 0]
-                   if p not in run.completed]
-        for t in later:
-            label = run.members.get(t.id, t.name)
-            self._set_panel_aside(
-                group, t, f"phase {number} of {mosaic} cannot finish "
-                          f"tonight, so {label}, in a later phase, does not "
-                          f"start", decided=True, kind="phase", say=False)
-            refused.append(t)
-        bus.log("warning",
-                f"{mosaic}: phase {number} cannot finish tonight "
-                f"({', '.join(holding)} set aside or out of window), so the "
-                f"later phases are set aside for tonight "
-                f"({', '.join(run.members.get(t.id, t.name) for t in later)}"
-                f"): a restart tonight does not retry them, "
-                f"{self._next_night_does()}", "sequence")
-        return now_in
 
     def _select_pool_member(self, group: TargetGroup,
                             candidates: list[Target],
@@ -6136,11 +6072,6 @@ class SequenceEngine:
             if self._group_of(t) is not group or not (
                     run.is_live(t.id) or self._awaiting_expiry(run, t.id)):
                 continue
-            if not run.in_phase(t.id):
-                # A member of a later phase (#1074) shoots nothing until
-                # the current phase is complete, so its sky says nothing
-                # about whether the group can shoot tonight.
-                continue
             gs = gs_now.get(id(t))
             if gs is None or gs.get("state") not in ("window_closed",
                                                      "never_rises"):
@@ -6200,7 +6131,7 @@ class SequenceEngine:
             # aside for nothing.
             live = run.is_live(t.id)
             awaiting = not live and self._awaiting_expiry(run, t.id)
-            if not (live or awaiting) or not run.in_phase(t.id):
+            if not (live or awaiting):
                 continue
             gs = gs_now.get(id(t)) or {}
             state = gs.get("state")
@@ -6725,7 +6656,6 @@ class SequenceEngine:
         self._group_last_index = {}
         self._group_gates = {}
         self._group_gate_said = set()
-        self._group_phase = {}
         self._pool_pick = {}
         members: dict[str, list[tuple[int, Target]]] = {}
         for ti, t in enumerate(plan.targets):
@@ -6746,15 +6676,15 @@ class SequenceEngine:
         for gid, mem in members.items():
             g = self._groups[gid]
             run = GroupRun({t.id: self._panel_name(t) for _ti, t in mem},
-                           max_failed_visits=g.max_failed_visits,
-                           phases=g.phases)
+                           max_failed_visits=g.max_failed_visits)
             for ti, t in mem:
                 # COMPLETE WINS OVER SET ASIDE. The ledger is the truth: a
                 # member that was set aside tonight and then finished (a
                 # centring set-aside that expired and shot the rest) is
                 # complete after a same-night restart, whatever its record
-                # says. Read back as set aside it would hold its phase and
-                # keep the group from ever being complete.
+                # says. Read back as set aside it would keep the group from
+                # ever being complete, and a mosaic's on_mosaic_complete from
+                # ever firing.
                 if self._target_complete(ti, t):
                     run.completed.add(t.id)
                 elif t.id in self._set_aside_targets:
@@ -6892,9 +6822,29 @@ class SequenceEngine:
             self._drop_from(remaining, t)
 
     def _every_owed_step_set_aside(self, target: Target) -> bool:
-        owed = [s for s in target.steps if not self._step_complete(target, s)]
+        """Is every step the target may shoot now set aside? Its current
+        phase's, for a chain (`_current_phase`): the later phases wait behind
+        it, so a set-aside first phase leaves the target nothing tonight."""
+        owed, _later = self._current_phase(
+            [(si, s) for si, s in enumerate(target.steps)
+             if not self._step_complete(target, s)])
         return bool(owed) and all(f"{target.id}:{s.id}" in self._set_aside
-                                  for s in owed)
+                                  for _si, s in owed)
+
+    @staticmethod
+    def _current_phase(owed: list[tuple[int, Any]]
+                       ) -> tuple[list[tuple[int, Any]], list[tuple[int, Any]]]:
+        """``owed``, the ``(index, step)`` pairs a target still owes, split
+        into ``(current, later)`` by chain phase (#1074): the current ones are
+        those of the lowest phase that still owes frames, the only ones a
+        round may shoot. The phase is read off what is owed, never stored, so
+        a resume lands in the right one. A phase whose owed steps are all set
+        aside tonight holds the later phases for tonight: the operator drew
+        \"cycle 1 complete, then cycle 2\". Every step of a plan with no
+        chain is phase 0, so ``later`` is empty and ``current`` is ``owed``."""
+        first = min((s.phase for _si, s in owed), default=0)
+        return ([(si, s) for si, s in owed if s.phase == first],
+                [(si, s) for si, s in owed if s.phase != first])
 
     @staticmethod
     def _drop_from(remaining: list[Target], target: Target) -> None:
@@ -12212,6 +12162,14 @@ class SequenceEngine:
         pending list in both modes (and ``_run_step`` returns at once for it).
         It is still owed in the ledger. When every step still owed is set
         aside, the target's visit loop ends.
+
+        A CHAIN'S PHASES (#1074). A lane that chains stages after a FILTER
+        CYCLE gives each step the ``phase`` of its stage, and a round takes
+        only the steps of the lowest phase that still owes frames
+        (`_current_phase`): the cycle keeps its round robin inside the phase,
+        and a CAPTURE LOOP, one step, runs to its count. A phase whose owed
+        steps are all set aside ends the loop with the later phases still
+        owed, for the next night.
         """
         if visit is not None:
             await self._run_visit(ti, target, visit)
@@ -12232,13 +12190,14 @@ class SequenceEngine:
 
         rounds = 0
         while True:
-            owed = [(si, s) for si, s in steps
-                    if not self._step_complete(target, s)]
+            owed, later = self._current_phase(
+                [(si, s) for si, s in steps
+                 if not self._step_complete(target, s)])
             pending = [(si, s) for si, s in owed
                        if f"{target.id}:{s.id}" not in self._set_aside]
             if not pending:
                 if owed:
-                    self._say_every_owed_step_set_aside(target, owed)
+                    self._say_every_owed_step_set_aside(target, owed, later)
                 return
             rounds += 1
             before = _pass_counter()
@@ -12254,17 +12213,28 @@ class SequenceEngine:
                         f"stopping the cycle rather than spinning", "sequence")
                 return
 
-    def _say_every_owed_step_set_aside(self, target: Target, owed) -> None:
+    def _say_every_owed_step_set_aside(self, target: Target, owed,
+                                       later=()) -> None:
         """The visit loop's last word when every step a target still owes is
         set aside by its reject guard. SET ASIDE FOR TONIGHT, which is what is
         true since S2 persists it (#147 part 2, #208): the ledger keeps the
         frames owed, a restart tonight does not retry the steps, and the next
         night does. Until S2 it said "the rest of this run", and a restart
-        tonight did take them up again."""
+        tonight did take them up again.
+
+        ``later`` is what a chain still owes behind ``owed`` (`_current_phase`).
+        Those steps are not set aside, they are held behind the phase that
+        is, and the line says so: they do not start tonight either."""
         names = ", ".join(s.filter or "no filter" for _, s in owed)
+        which, held = "every step with remaining frames", ""
+        if later:
+            which = "every step of its current stage with remaining frames"
+            held = (f"; the later stages "
+                    f"({', '.join(s.filter or 'no filter' for _, s in later)}) "
+                    f"wait behind them and do not start tonight")
         bus.log("warning",
-                f"{target.name}: every step with remaining frames is set aside for tonight "
-                f"({names}) — moving on; their frames remain pending; a restart "
+                f"{target.name}: {which} is set aside for tonight "
+                f"({names}) — moving on{held}; their frames remain pending; a restart "
                 f"tonight does not retry them; {self._next_night_does()}",
                 "sequence")
 
@@ -12346,13 +12316,14 @@ class SequenceEngine:
             return
         rounds = 0
         while True:
-            owed = [(si, s) for si, s in steps
-                    if not self._step_complete(target, s)]
+            owed, later = self._current_phase(
+                [(si, s) for si, s in steps
+                 if not self._step_complete(target, s)])
             pending = [(si, s) for si, s in owed
                        if f"{target.id}:{s.id}" not in self._set_aside]
             if not pending:
                 if owed:
-                    self._say_every_owed_step_set_aside(target, owed)
+                    self._say_every_owed_step_set_aside(target, owed, later)
                 return
             before = _pass_counter()
             for si, step in pending:
