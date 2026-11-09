@@ -2324,6 +2324,53 @@ export interface MosaicResult {
   pixel_scale_arcsec: number;
 }
 
+/** One mosaic panel of `GET /api/flows/{id}/coverage` (server
+ *  sequence/coverage.py `_panel_row`; the keys are held to an allow-list by
+ *  server/tests/test_w16_coverage_route.py). Counts of the panel's banked
+ *  lights, never a sky coordinate: a viewer reads the route. `row` and `col`
+ *  are 0-based, as every progress cell is. `stamped` lights could be laid on
+ *  the tile (they carry a plate solve), `unstamped` could not and are NOT
+ *  counted as covered, `flagged` of the stamped cover less of the tile than
+ *  the group's `threshold`. The three `worst_*` are null where nothing was
+ *  stamped, and the angle where the plan has none. */
+export interface CoveragePanel {
+  target_id: string;
+  name: string;
+  row: number | null;
+  col: number | null;
+  frames: number;
+  stamped: number;
+  unstamped: number;
+  flagged: number;
+  /** Fraction of the panel the worst stamped light covers, 0..1. */
+  worst_overlap_frac: number | null;
+  /** The furthest a stamped light's centre is from the panel's, arcminutes. */
+  worst_offset_arcmin: number | null;
+  worst_angle_off_deg: number | null;
+}
+
+/** One mosaic group of the coverage answer: `group_id` is the plan group the
+ *  progress route names on the block (`FlowProgressBlock.group_id`). `threshold`
+ *  is the least fraction of its panel a light may cover without being
+ *  flagged. */
+export interface CoverageGroup {
+  group_id: string;
+  name: string;
+  threshold: number;
+  panels: CoveragePanel[];
+}
+
+/** `GET /api/flows/{id}/coverage` (`view.status`) and `GET
+ *  /api/sequence/coverage`. `session` is null, and `groups` empty, when the
+ *  flow has no session to read. `note` is the server's sentence for a mosaic
+ *  that runs with `stamping` off (no light then carries a solve to check). */
+export interface CoverageAnswer {
+  session: { id: string; status: string } | null;
+  stamping: boolean;
+  note: string | null;
+  groups: CoverageGroup[];
+}
+
 export interface FramingSession {
   target?: CatalogEntry;                   // origin object (undefined = free-roam)
   center: { ra_hours: number; dec_deg: number };

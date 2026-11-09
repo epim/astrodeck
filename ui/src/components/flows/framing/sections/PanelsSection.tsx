@@ -69,6 +69,15 @@
 // viewer reads why it is locked, in a line of its own as well as the tooltip
 // (the sheet's "explained" banner is not drawn read-only).
 //
+// COVERAGE, IN RUN MODE (#177 package 2, WP 6.5). The coverage route lays each
+// banked light's plate solve over the panel it was shot for; a panel with
+// lights that cover too little of it says how many and how bad in a line
+// under its row (`coverageModel.panelCoverage`, whose header holds the
+// rules), and the sky tints it. A panel nothing has been checked on says so
+// ("not checked yet"), a clean one and one with no frames say nothing, and
+// with stamping off the route's note is said ONCE under the heading
+// (`coverageNote`), where the same sentence under every row would be noise.
+//
 // A DORMANT SESSION'S SET-ASIDE PANELS ARE ROWS TOO (#727, backlog wave 16).
 // The rows above read set-aside state off the live `state.group`, so once a
 // run ended owing a set-aside panel nothing said so and no button could be
@@ -90,6 +99,7 @@ import type { MosaicPanel } from "../../../../types";
 import type { PanelRunState } from "../../flowRunState";
 import { NODE_DEFS } from "../../nodeDefs";
 import { panelExposureProblem, type PanelExposure } from "../framingModel";
+import { panelCoverage, type BlockCoverage, type PanelCoverage } from "../coverageModel";
 
 export const ORDERS: readonly string[] =
   NODE_DEFS.target.fields.find((f) => f.key === "order")?.options ?? [];
@@ -193,6 +203,9 @@ export interface PanelRow {
    *  set-aside panel (#727) carries the `set_aside` state here too, from the
    *  progress block, when no live state speaks for it. */
   run?: PanelRunState | null;
+  /** What the coverage route says of this panel's banked lights (run mode,
+   *  #177), or null: no answer, or nothing to say of this panel. */
+  coverage?: PanelCoverage | null;
 }
 
 /** One panel a DORMANT session holds a standing set-aside record for tonight
@@ -292,8 +305,12 @@ export function panelRows(a: {
   /** Run mode: framingModel `runPanelsOf`'s answer, by label. Absent outside
    *  run mode, which leaves every row's `run` null. */
   run?: Readonly<Record<string, PanelRunState>>;
+  /** Run mode: this block's coverage (coverageModel `blockCoverage`). Read
+   *  only where the progress block describes this grid, as the counts are. */
+  coverage?: BlockCoverage | null;
 }): PanelRow[] {
   const { rows, cols } = a;
+  const cover = a.coverage && a.progress && describesGrid(a.progress, rows, cols) ? a.coverage : null;
   const counts = progressByCell(a.progress, rows, cols);
   const dormantAside = setAsideByCell(a.progress, rows, cols);
   const skipped = new Set(a.skip.map(([r, c]) => `${r - 1},${c - 1}`));
@@ -317,6 +334,7 @@ export function panelRows(a: {
         // only where no run does, and never for a panel the draft skips
         // (#727: an unsaved SKIP says it will not be shot at all).
         run: a.run?.[`${r0 + 1}-${c0 + 1}`] ?? (skipped.has(k) ? null : dormantAside.get(k) ?? null),
+        coverage: cover ? panelCoverage(cover.panels.get(k), `${r0 + 1}-${c0 + 1}`, cover) : null,
         snake: snakeIndex(r0, c0, cols),
         fraction: n.total > 0 ? n.banked / n.total : 0,
       });
@@ -352,6 +370,9 @@ export interface PanelsSectionProps {
    *  view, or null. Never rendered for anyone else. */
   nightCard: ReactNode;
   onOrder: (v: string) => void;
+  /** Run mode with stamping off: the route's sentence that coverage cannot be
+   *  checked, said once above the rows. Null or absent says nothing. */
+  coverageNote?: string | null;
   /** 1-based row and col. */
   onToggle: (row: number, col: number) => void;
   /** Set a panel's own exposure and count as typed, or clear it with both
@@ -454,6 +475,9 @@ export function PanelsSection(p: PanelsSectionProps): JSX.Element {
   return (
     <section className="tfs-section" aria-labelledby="tfs-panels-h" data-testid="framing-panels">
       <h3 id="tfs-panels-h" className="tfs-section-h">PANELS</h3>
+      {p.coverageNote && (
+        <div className="tfs-row tfs-note" data-testid="framing-coverage-note">{p.coverageNote}</div>
+      )}
       <fieldset className="tfs-fieldset" disabled={p.frozen === true}>
         <div className="tfs-row">
           <label className="tfs-label" htmlFor="tfs-order">ORDER</label>
@@ -518,6 +542,13 @@ export function PanelsSection(p: PanelsSectionProps): JSX.Element {
               <div key={`${r.label}-run`} className="tfs-row tfs-note" role="row"
                 data-testid="framing-panel-run" data-panel-run={r.label}>
                 <span role="cell">{runRowText(r.label, r.run)}</span>
+              </div>
+            ),
+            // What the coverage route says of this panel's lights (run mode).
+            r.coverage?.line && (
+              <div key={`${r.label}-coverage`} className="tfs-row tfs-note" role="row"
+                data-testid="framing-panel-coverage" data-panel-coverage={r.label}>
+                <span role="cell">{r.coverage.line}</span>
               </div>
             ),
           ])}

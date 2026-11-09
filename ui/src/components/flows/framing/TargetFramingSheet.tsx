@@ -110,6 +110,8 @@ import {
   campaignLine, compiledReadouts, compiledRig, framedGraph, framingApi, framingTiming, liveRig,
 } from "./framingApi";
 import { FramingSky, type SkyPoint } from "./FramingSky";
+import { blockCoverage } from "./coverageModel";
+import { useCoverage } from "./useCoverage";
 import { WhereSection, NO_OBJECT, NO_SIZE } from "./sections/WhereSection";
 import { GridSection } from "./sections/GridSection";
 import { AngleSection } from "./sections/AngleSection";
@@ -400,6 +402,14 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
     JSON.stringify(runPanelsOf(groupForBlock(s.sequence, runGroupId), rows, cols, runGrid, s.sequence)));
   const run = useMemo(() => JSON.parse(runKey) as Record<string, PanelRunState>, [runKey]);
 
+  // ---- coverage (run mode, #177): the banked lights laid over their panels.
+  // Asked only here, only in run mode, and for this block only by its group
+  // and the session its progress counted (coverageModel).
+  const coverageAnswer = useCoverage(recordId, runMode, progress);
+  const coverage = useMemo(
+    () => blockCoverage(coverageAnswer, progressBlock?.group_id, progress?.session?.id),
+    [coverageAnswer, progressBlock, progress]);
+
   // ---- RETRY SET-ASIDE PANELS (#600): a run control, in run mode; and, for a
   // DORMANT session (#727, WP-141), the same button on a sheet that is not in
   // run mode. The dormant retry is the stored session's, so it names the
@@ -432,8 +442,8 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
   const rowsModel = useMemo(() => panelRows({
     rows, cols, skip: parseSkip(draft.skip, rows, cols).skip,
     exposures: parsePanelExposure(draft.panelExposure, rows, cols).panels, progress: progressBlock,
-    answerPanels: serverPanels, order: String(draft.order), run,
-  }), [rows, cols, draft.skip, draft.panelExposure, draft.order, progressBlock, serverPanels, run]);
+    answerPanels: serverPanels, order: String(draft.order), run, coverage,
+  }), [rows, cols, draft.skip, draft.panelExposure, draft.order, progressBlock, serverPanels, run, coverage]);
   const mirror = useMemo(() => (request ? mosaicGrid({
     ra_hours: request.ra_hours, dec_deg: request.dec_deg, rows: request.rows, cols: request.cols,
     overlap: request.overlap, rotation_deg: request.rotation_deg,
@@ -451,6 +461,7 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
         // and told to a screen reader in PANELS' words, never "shooting
         // now" (#451).
         words: r?.run?.kind === "current" ? runLine(r.run) ?? undefined : undefined,
+        coverage: r?.coverage?.verdict ?? undefined,
       };
     });
   }, [serverPanels, mirror, rowsModel]);
@@ -825,6 +836,7 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
                 order={String(draft.order)}
                 showAltitude={canSite}
                 nightCard={nightCard}
+                coverageNote={coverage?.note ?? null}
                 onOrder={(v) => patchDraft({ order: v })}
                 onToggle={(r, c) => onPanelTap(r - 1, c - 1)}
                 onExposure={onPanelExposure}
