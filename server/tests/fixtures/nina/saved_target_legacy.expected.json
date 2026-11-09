@@ -1,0 +1,98 @@
+{
+  "flow": {
+    "name": "M42",
+    "tagline": "Imported from a NINA saved target.",
+    "graph": {
+      "nodes": [
+        {
+          "id": "n1",
+          "type": "target",
+          "x": 270,
+          "y": 70,
+          "params": {
+            "name": "M42",
+            "ra": "05h 35m 17.30000s",
+            "dec": "-05\u00b0 23' 28.0000\"",
+            "angle": "Rotate to PA",
+            "rotation": 330.0
+          }
+        },
+        {
+          "id": "n2",
+          "type": "autofocus",
+          "x": 510,
+          "y": 70,
+          "params": {}
+        },
+        {
+          "id": "n3",
+          "type": "guide",
+          "x": 750,
+          "y": 70,
+          "params": {
+            "dither": 0
+          }
+        },
+        {
+          "id": "n4",
+          "type": "cycle",
+          "x": 990,
+          "y": 70,
+          "params": {
+            "plan": "R 180, G 180, B 180",
+            "cycles": 12,
+            "perCycle": 1,
+            "gain": 100,
+            "bin": "1"
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "from": "n1",
+          "fromPort": "target",
+          "to": "n2",
+          "toPort": "run"
+        },
+        {
+          "id": "e2",
+          "from": "n2",
+          "fromPort": "focused",
+          "to": "n3",
+          "toPort": "run"
+        },
+        {
+          "id": "e3",
+          "from": "n3",
+          "fromPort": "guiding",
+          "to": "n4",
+          "toPort": "run"
+        }
+      ],
+      "settings": {
+        "quickDitherEvery": 0
+      }
+    }
+  },
+  "warnings": [
+    {
+      "code": "converted",
+      "level": "note",
+      "type": "NINA.Sequencer.SequenceItem.Platesolving.CenterAndRotate"
+    },
+    {
+      "code": "not_carried",
+      "level": "warn",
+      "type": "NINA.Sequencer.SequenceItem.Imaging.TakeExposure"
+    },
+    {
+      "code": "dither_cadence",
+      "level": "note"
+    },
+    {
+      "code": "meridian_flip_added",
+      "level": "warn"
+    }
+  ]
+}

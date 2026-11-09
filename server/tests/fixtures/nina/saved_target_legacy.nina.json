@@ -1,0 +1,228 @@
+{
+  "$id": "1",
+  "$type": "NINA.Sequencer.Container.DeepSkyObjectContainer, NINA",
+  "Target": {
+    "$id": "2",
+    "$type": "NINA.Model.InputTarget, NINA",
+    "Expanded": true,
+    "TargetName": "M42",
+    "Rotation": 330.0,
+    "InputCoordinates": {
+      "$id": "3",
+      "$type": "NINA.Model.InputCoordinates, NINA",
+      "RAHours": 5,
+      "RAMinutes": 35,
+      "RASeconds": 17.3,
+      "NegativeDec": true,
+      "DecDegrees": -5,
+      "DecMinutes": 23,
+      "DecSeconds": 28.0
+    }
+  },
+  "Strategy": {
+    "$type": "NINA.Sequencer.Container.ExecutionStrategy.SequentialStrategy, NINA"
+  },
+  "Conditions": {
+    "$id": "4",
+    "$type": "System.Collections.ObjectModel.ObservableCollection`1[[NINA.Sequencer.Conditions.ISequenceCondition, NINA]], System",
+    "$values": []
+  },
+  "IsExpanded": true,
+  "Items": {
+    "$id": "5",
+    "$type": "System.Collections.ObjectModel.ObservableCollection`1[[NINA.Sequencer.SequenceItem.ISequenceItem, NINA]], System",
+    "$values": [
+      {
+        "$id": "6",
+        "$type": "NINA.Sequencer.SequenceItem.Platesolving.CenterAndRotate, NINA",
+        "Inherited": true,
+        "Rotation": 330.0,
+        "Coordinates": {
+          "$id": "7",
+          "$type": "NINA.Model.InputCoordinates, NINA",
+          "RAHours": 5,
+          "RAMinutes": 35,
+          "RASeconds": 17.3,
+          "NegativeDec": true,
+          "DecDegrees": -5,
+          "DecMinutes": 23,
+          "DecSeconds": 28.0
+        },
+        "Name": "Center and Rotate",
+        "Parent": {
+          "$ref": "1"
+        }
+      },
+      {
+        "$id": "8",
+        "$type": "NINA.Sequencer.SequenceItem.Autofocus.RunAutofocus, NINA",
+        "Name": "Run Autofocus",
+        "Parent": {
+          "$ref": "1"
+        }
+      },
+      {
+        "$id": "9",
+        "$type": "NINA.Sequencer.SequenceItem.Guider.StartGuiding, NINA",
+        "ForceCalibration": false,
+        "Name": "Start Guiding",
+        "Parent": {
+          "$ref": "1"
+        }
+      },
+      {
+        "$id": "10",
+        "$type": "NINA.Sequencer.Container.SequentialContainer, NINA",
+        "Strategy": {
+          "$type": "NINA.Sequencer.Container.ExecutionStrategy.SequentialStrategy, NINA"
+        },
+        "Conditions": {
+          "$id": "11",
+          "$type": "System.Collections.ObjectModel.ObservableCollection`1[[NINA.Sequencer.Conditions.ISequenceCondition, NINA]], System",
+          "$values": [
+            {
+              "$id": "12",
+              "$type": "NINA.Sequencer.Conditions.LoopCondition, NINA",
+              "CompletedIterations": 0,
+              "Iterations": 12,
+              "Parent": {
+                "$ref": "10"
+              }
+            }
+          ]
+        },
+        "IsExpanded": true,
+        "Items": {
+          "$id": "13",
+          "$type": "System.Collections.ObjectModel.ObservableCollection`1[[NINA.Sequencer.SequenceItem.ISequenceItem, NINA]], System",
+          "$values": [
+            {
+              "$id": "14",
+              "$type": "NINA.Sequencer.SequenceItem.FilterWheel.SwitchFilter, NINA",
+              "Filter": {
+                "$id": "15",
+                "$type": "NINA.Model.MyFilterWheel.FilterInfo, NINA",
+                "_name": "R",
+                "_focusOffset": 0,
+                "_position": 1,
+                "_autoFocusExposureTime": -1.0,
+                "_autoFocusFilter": false
+              },
+              "Name": "Switch Filter",
+              "Parent": {
+                "$ref": "10"
+              }
+            },
+            {
+              "$id": "16",
+              "$type": "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, NINA",
+              "ExposureTime": 180.0,
+              "Gain": 100,
+              "Offset": 50,
+              "Binning": {
+                "$id": "17",
+                "$type": "NINA.Model.MyCamera.BinningMode, NINA",
+                "X": 1,
+                "Y": 1
+              },
+              "ImageType": "LIGHT",
+              "ExposureCount": 0,
+              "Name": "Take Exposure",
+              "Parent": {
+                "$ref": "10"
+              }
+            },
+            {
+              "$id": "18",
+              "$type": "NINA.Sequencer.SequenceItem.FilterWheel.SwitchFilter, NINA",
+              "Filter": {
+                "$id": "19",
+                "$type": "NINA.Model.MyFilterWheel.FilterInfo, NINA",
+                "_name": "G",
+                "_focusOffset": 0,
+                "_position": 2,
+                "_autoFocusExposureTime": -1.0,
+                "_autoFocusFilter": false
+              },
+              "Name": "Switch Filter",
+              "Parent": {
+                "$ref": "10"
+              }
+            },
+            {
+              "$id": "20",
+              "$type": "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, NINA",
+              "ExposureTime": 180.0,
+              "Gain": 100,
+              "Offset": 50,
+              "Binning": {
+                "$id": "21",
+                "$type": "NINA.Model.MyCamera.BinningMode, NINA",
+                "X": 1,
+                "Y": 1
+              },
+              "ImageType": "LIGHT",
+              "ExposureCount": 0,
+              "Name": "Take Exposure",
+              "Parent": {
+                "$ref": "10"
+              }
+            },
+            {
+              "$id": "22",
+              "$type": "NINA.Sequencer.SequenceItem.FilterWheel.SwitchFilter, NINA",
+              "Filter": {
+                "$id": "23",
+                "$type": "NINA.Model.MyFilterWheel.FilterInfo, NINA",
+                "_name": "B",
+                "_focusOffset": 0,
+                "_position": 3,
+                "_autoFocusExposureTime": -1.0,
+                "_autoFocusFilter": false
+              },
+              "Name": "Switch Filter",
+              "Parent": {
+                "$ref": "10"
+              }
+            },
+            {
+              "$id": "24",
+              "$type": "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, NINA",
+              "ExposureTime": 180.0,
+              "Gain": 100,
+              "Offset": 50,
+              "Binning": {
+                "$id": "25",
+                "$type": "NINA.Model.MyCamera.BinningMode, NINA",
+                "X": 1,
+                "Y": 1
+              },
+              "ImageType": "LIGHT",
+              "ExposureCount": 0,
+              "Name": "Take Exposure",
+              "Parent": {
+                "$ref": "10"
+              }
+            }
+          ]
+        },
+        "Triggers": {
+          "$id": "26",
+          "$type": "System.Collections.ObjectModel.ObservableCollection`1[[NINA.Sequencer.Trigger.ISequenceTrigger, NINA]], System",
+          "$values": []
+        },
+        "Name": "RGB x12",
+        "Parent": {
+          "$ref": "1"
+        }
+      }
+    ]
+  },
+  "Triggers": {
+    "$id": "27",
+    "$type": "System.Collections.ObjectModel.ObservableCollection`1[[NINA.Sequencer.Trigger.ISequenceTrigger, NINA]], System",
+    "$values": []
+  },
+  "Name": "M42",
+  "Parent": null
+}

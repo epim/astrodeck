@@ -1,0 +1,138 @@
+{
+  "flow": {
+    "name": "M31 mosaic",
+    "tagline": "Imported from a NINA sequence.",
+    "graph": {
+      "nodes": [
+        {
+          "id": "n1",
+          "type": "dusk",
+          "x": 30,
+          "y": 70,
+          "params": {
+            "start": "Nautical dusk",
+            "offset": 0,
+            "minAlt": 0
+          }
+        },
+        {
+          "id": "n2",
+          "type": "target",
+          "x": 270,
+          "y": 70,
+          "params": {
+            "name": "M31",
+            "ra": "00h 42m 44.30110s",
+            "dec": "+41\u00b0 16' 09.0063\"",
+            "rows": 2,
+            "cols": 2,
+            "overlap": 20,
+            "fovX": 2.0,
+            "fovY": 1.33,
+            "fovFrom": "supplied with the import",
+            "angle": "Rotate to PA",
+            "rotation": 330.0,
+            "order": "Grid order"
+          }
+        },
+        {
+          "id": "n3",
+          "type": "autofocus",
+          "x": 510,
+          "y": 70,
+          "params": {}
+        },
+        {
+          "id": "n4",
+          "type": "guide",
+          "x": 750,
+          "y": 70,
+          "params": {
+            "dither": 0
+          }
+        },
+        {
+          "id": "n5",
+          "type": "capture",
+          "x": 990,
+          "y": 70,
+          "params": {
+            "filter": "L",
+            "exposure": 180,
+            "gain": 100,
+            "bin": "1",
+            "count": 10,
+            "goal": 0
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "from": "n1",
+          "fromPort": "window",
+          "to": "n2",
+          "toPort": "arm"
+        },
+        {
+          "id": "e2",
+          "from": "n2",
+          "fromPort": "target",
+          "to": "n3",
+          "toPort": "run"
+        },
+        {
+          "id": "e3",
+          "from": "n3",
+          "fromPort": "focused",
+          "to": "n4",
+          "toPort": "run"
+        },
+        {
+          "id": "e4",
+          "from": "n4",
+          "fromPort": "guiding",
+          "to": "n5",
+          "toPort": "run"
+        }
+      ],
+      "settings": {
+        "quickDitherEvery": 0
+      }
+    }
+  },
+  "warnings": [
+    {
+      "code": "converted",
+      "level": "note",
+      "type": "NINA.Sequencer.SequenceItem.Utility.WaitForSunAltitude"
+    },
+    {
+      "code": "panels_renumbered",
+      "level": "note"
+    },
+    {
+      "code": "converted",
+      "level": "note",
+      "type": "NINA.Sequencer.SequenceItem.Platesolving.CenterAndRotate"
+    },
+    {
+      "code": "not_carried",
+      "level": "warn",
+      "type": "NINA.Sequencer.SequenceItem.Imaging.TakeExposure"
+    },
+    {
+      "code": "dither_cadence",
+      "level": "note"
+    },
+    {
+      "code": "meridian_flip_added",
+      "level": "warn"
+    },
+    {
+      "code": "engine_does_it",
+      "level": "note",
+      "type": "NINA.Sequencer.SequenceItem.Telescope.ParkScope"
+    }
+  ]
+}
