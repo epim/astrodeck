@@ -344,7 +344,11 @@ NODE_DEFS: dict[str, NodeDef] = {
                 "dec": "+41° 16′ 09″", "rotation": -1,
                 "rows": 1, "cols": 1, "overlap": Derived(target_overlap_pct),
                 "fovX": 0, "fovY": 0,
-                "fovFrom": "", "skip": "", "passes": 1, "minVisit": 0,
+                "fovFrom": "", "skip": "",
+                # Per-panel exposure, "1-1:30, 2-3:120x20" (#186): a panel's
+                # own exposure and, after an x, its own count. Blank is every
+                # panel on the lane's steps, as a block saved before it was.
+                "panelExposure": "", "passes": 1, "minVisit": 0,
                 "order": "Least complete first", "centerTol": 1.2,
                 "centerTries": 3, "ifNotCentred": "Auto",
                 "counts": "Every sub taken", "frameAnchor": "",

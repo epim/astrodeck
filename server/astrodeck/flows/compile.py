@@ -677,6 +677,13 @@ SHOOT_ANYWAY = "Shoot anyway"
 #: One entry of a TARGET's `skip` text: "<row>-<col>", both 1-based.
 _SKIP_RE = re.compile(r"^(\d+)\s*-\s*(\d+)$")
 
+#: One entry of a TARGET's `panelExposure` text: "<row>-<col>:<seconds>" and
+#: an optional "x<count>", as "1-1:30" or "2-3:120x20". ASCII digits and a
+#: plain decimal only: an exposure is a number the operator typed for a
+#: sensor, and "30s" or "1e2" is a slip to report, not a value to guess at.
+_PANEL_EXPOSURE_RE = re.compile(
+    r"^([0-9]+) *- *([0-9]+) *: *([0-9]*\.?[0-9]+)(?: *[xX] *([0-9]+))?$")
+
 
 def angle_code(params: dict) -> str:
     """``"any"``, ``"rotate"`` or ``"fixed"`` for a TARGET's params (spec 3.2).
@@ -746,6 +753,62 @@ def parse_skip(text, rows: int, cols: int) -> tuple[list[list[int]], list[str]]:
             continue
         skip.add((r, c))
     return [[r, c] for r, c in sorted(skip)], unread
+
+
+#: How a `panelExposure` entry is written, said wherever an entry did not
+#: read (the compile's note and the doctor's rule), so the two cannot teach
+#: two spellings.
+PANEL_EXPOSURE_FORM = (
+    "Write each as row-column:seconds, or row-column:secondsxcount, such as "
+    "1-1:30 or 2-3:120x20.")
+
+
+def parse_panel_exposure(text, rows: int, cols: int) -> tuple[list[dict], list[str]]:
+    """``(overrides, unread)`` for a TARGET's `panelExposure` text, e.g.
+    ``"1-1:30, 2-3:120x20"`` (#186).
+
+    ``overrides`` is ``[{"row", "col", "exposure_s", "count"}, ...]``, 1-based
+    as the operator writes the panel, each panel once, in grid order;
+    ``count`` is None for an entry that gave none, which leaves the lane's.
+    ``unread`` holds every entry that overrides nothing: not "r-c:seconds"
+    (with an optional "xcount"), a panel outside the grid, seconds that are
+    not a finite number above zero, a count below 1, or a panel named a
+    second time (the first stands). The compile and the doctor both say so: an
+    override that silently did nothing would shoot a panel at an exposure the
+    operator replaced, and one that guessed would shoot a different one.
+    Commas and semicolons both separate entries, as in ``parse_skip``.
+
+    AN ENTRY ``int()`` REFUSES IS UNREAD, as ``parse_skip``'s is (#441): past
+    CPython's integer string limit it raises ``ValueError``. Seconds past a
+    float's range read as ``inf`` and are unread as well. The bounds the plan
+    holds (at most 3600 s, 10000 frames) are not repeated here: the plan's
+    own models refuse a value past them by block and field."""
+    found: dict[tuple[int, int], dict] = {}
+    unread: list[str] = []
+    for chunk in re.split(r"[,;]", str(text or "")):
+        token = chunk.strip()
+        if not token:
+            continue
+        m = _PANEL_EXPOSURE_RE.match(token)
+        if m is None:
+            unread.append(token)
+            continue
+        try:
+            r, c = int(m.group(1)), int(m.group(2))
+            count = None if m.group(4) is None else int(m.group(4))
+        except ValueError:
+            unread.append(token)
+            continue
+        seconds = float(m.group(3))
+        if (not (1 <= r <= rows and 1 <= c <= cols)
+                or not (math.isfinite(seconds) and seconds > 0)
+                or (count is not None and count < 1)
+                or (r, c) in found):
+            unread.append(token)
+            continue
+        found[(r, c)] = {"row": r, "col": c, "exposure_s": seconds,
+                         "count": count}
+    return [found[k] for k in sorted(found)], unread
 
 
 def grid_size(rows: int, cols: int) -> str:
@@ -1041,6 +1104,14 @@ def _target_entry(n: FlowNode, graph: FlowGraph, loop_keys: set,
                 f"names no panel of this grid of {grid_size(rows, cols)}, so "
                 f"nothing is skipped for it. A panel is written row-column, "
                 f"from 1-1 to {rows}-{cols}.")})
+        overrides, unread_exposure = parse_panel_exposure(
+            params.get("panelExposure"), rows, cols)
+        if unread_exposure:
+            notes.append({"node_id": n.id, "level": "warn", "text": (
+                f"{_block_name(n)}: panel exposure "
+                f"{', '.join(repr(u) for u in unread_exposure)} "
+                f"does not read for this grid of {grid_size(rows, cols)}, so "
+                f"nothing is overridden for it. {PANEL_EXPOSURE_FORM}")})
         entry["mosaic"] = {
             "rows": rows, "cols": cols,
             # A percent, as the block holds it; `to_plan` divides by 100.
@@ -1065,6 +1136,10 @@ def _target_entry(n: FlowNode, graph: FlowGraph, loop_keys: set,
             "when_waiting": graph.setting("whenWaiting"),
             "frame_anchor": str(params.get("frameAnchor") or ""),
         }
+        if overrides:
+            # Written only when the block holds one, so a flow that has none
+            # compiles exactly as it did before the param existed.
+            entry["mosaic"]["panel_exposure"] = overrides
         entry["loop"] = any(k[2] == n.id for k in loop_keys)
     else:
         # A 1x1 block's anchor rides on the entry (spec 3.3), so a nudge the

@@ -99,9 +99,9 @@ import {
   angleLocks, angleOf, angleOffer, cameraFieldLine, currentAnswer, doneState, draftCentre,
   draftFromParams, driftBanner, framingPatch, gridAngleLock, gridLock, gridOf, layoutOf,
   loadViewPrefs, matchCamera, matchCameraLock, mergeImportedPanels, moveLine, mosaicRequest,
-  panelCsvExportLock, panelCsvRequest, panelDrawState, parseSkip,
+  panelCsvExportLock, panelCsvRequest, panelDrawState, parsePanelExposure, parseSkip,
   readoutStrip, reframeDecision, requestKey, runLines, runPanelsOf, saveViewPrefs, setAngleMode,
-  stripAngle, suggestGridFor, takeOffer, toggleSkip, toleranceLine, useMeasured, useMeasuredLine,
+  setPanelExposure, stripAngle, suggestGridFor, takeOffer, toggleSkip, toleranceLine, useMeasured, useMeasuredLine,
   ZOOM_MAX_DEG, ZOOM_MIN_DEG,
   type FramingDraft, type PanelAnswer, type ServerView, type TargetAngle,
 } from "./framingModel";
@@ -430,9 +430,10 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
 
   // ---- the panels, in run order, and as the sky draws them
   const rowsModel = useMemo(() => panelRows({
-    rows, cols, skip: parseSkip(draft.skip, rows, cols).skip, progress: progressBlock,
+    rows, cols, skip: parseSkip(draft.skip, rows, cols).skip,
+    exposures: parsePanelExposure(draft.panelExposure, rows, cols).panels, progress: progressBlock,
     answerPanels: serverPanels, order: String(draft.order), run,
-  }), [rows, cols, draft.skip, draft.order, progressBlock, serverPanels, run]);
+  }), [rows, cols, draft.skip, draft.panelExposure, draft.order, progressBlock, serverPanels, run]);
   const mirror = useMemo(() => (request ? mosaicGrid({
     ra_hours: request.ra_hours, dec_deg: request.dec_deg, rows: request.rows, cols: request.cols,
     overlap: request.overlap, rotation_deg: request.rotation_deg,
@@ -633,6 +634,12 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
     const g = gridOf(d);
     return { ...d, skip: toggleSkip(d.skip, g.rows, g.cols, row0 + 1, col0 + 1) };
   }), []);
+  const onPanelExposure = useCallback((row: number, col: number, seconds: string, count: string) =>
+    setDraft((d) => {
+      const g = gridOf(d);
+      const next = setPanelExposure(d.panelExposure, g.rows, g.cols, row, col, seconds, count);
+      return next === null ? d : { ...d, panelExposure: next };
+    }), []);
   const onMoveGrid = useCallback((on: boolean) => setSky((s) => ({
     ...s, moveGrid: on, viewCentre: on ? (s.viewCentre ?? draftCentre(draft)) : null,
   })), [draft]);
@@ -820,6 +827,7 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
                 nightCard={nightCard}
                 onOrder={(v) => patchDraft({ order: v })}
                 onToggle={(r, c) => onPanelTap(r - 1, c - 1)}
+                onExposure={onPanelExposure}
                 frozen={frozen}
                 onRetry={retryGroupId !== null ? onRetry : undefined}
                 retryLocked={!canControlMount ? RETRY_NEEDS_ACCESS : retrying ? RETRY_IN_FLIGHT : null}

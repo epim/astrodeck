@@ -228,8 +228,16 @@ class _Wheel:
 #: else. PROVEN, not assumed: with ``maxTime`` popped from each generated
 #: TARGET node (asserting it is 0 on every one) the digest is the previous
 #: pin, fc691c0b..., byte for byte. Regenerated from the SAME code path.
+#:
+#: RE-PINNED IN WP 5.4 (#186): NODE_DEFS gained TARGET's ``panelExposure``
+#: param at "" (no panel has an exposure of its own), so every generated
+#: TARGET node carries it and every one of the 768 blobs moves by that one
+#: param and nothing else. PROVEN, not assumed: with ``panelExposure`` popped
+#: from each generated TARGET node (asserting it is "" on every one) the digest
+#: is the previous pin, a61479fb..., byte for byte. Regenerated from the SAME
+#: code path.
 TODAYS_ANSWERS_SHA256 = \
-    "a61479fb1a469bc823d7c7191be1d6819ed9d0c5477a86d82f30f21c0fee75d9"
+    "576ecc493fbb701c7d0948e79a385a75f47f39eb3148d6667bf9dfee042bb6d3"
 
 #: The chip subsets the route is asked, one of each shape a new answer's
 #: default could move: none, the Guiding chip alone, every chip but it, and
@@ -1017,6 +1025,11 @@ class TestTheRecordedAnswer:
         RE-RECORDED IN WP 3.10 (``ASTRODECK_REWRITE_WIZARD_FIXTURE=1``, #1094):
         the recorded TARGET node gained ``"maxTime": 0`` (the bound, none),
         and nothing else moved (the byte diff of the file is that one line).
+
+        RE-RECORDED IN WP 5.4 (``ASTRODECK_REWRITE_WIZARD_FIXTURE=1``, #186):
+        the recorded TARGET node gained ``"panelExposure": ""`` (no panel
+        exposure), and nothing else moved (the byte diff of the file is that
+        one line).
         """
         text = _recording(client, monkeypatch)
         if REWRITE:

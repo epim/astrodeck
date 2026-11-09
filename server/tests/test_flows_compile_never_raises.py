@@ -90,6 +90,14 @@ PORTS = ["x", "pass", "next", "run", "target", "complete", "arm", "window",
 #: included, so a POOL with `rows` and a CAPTURE with `cycles` turn up too.
 EXTRA_KEYS = ["rows", "cols", "skip", "cycles", "perCycle", "quota"]
 
+#: Params the corpus leaves out of its draw. Each key a TARGET's table gains
+#: is one more draw per TARGET, which reshuffles every graph after it and with
+#: them the counts this file's floors were observed on (WP 5.4's
+#: ``panelExposure`` took the plan refusals from 50 to 32 against a floor of
+#: 40). The key is not left unfuzzed: ``test_w5_panel_overrides.py``
+#: (``TestAnyValueCompiles``) gives it every ``ODD`` value on a framed grid.
+NOT_DRAWN = frozenset({"panelExposure"})
+
 #: A rig with both reject guards off, so the doctor's M9 compiles the graph
 #: too (it reads the stop boundary from ``compile_plan``'s schedule).
 GUARDS_OFF = RigFacts(reject_guards_off=True)
@@ -105,7 +113,7 @@ def _graph(rng: random.Random) -> FlowGraph:
         kind = rng.choice(types)
         params = {k: rng.choice(ODD)
                   for k in [*NODE_DEFS[kind].params, *EXTRA_KEYS]
-                  if rng.random() < 0.3}
+                  if k not in NOT_DRAWN and rng.random() < 0.3}
         if kind == "target" and rng.random() < 0.5:
             # Half the blocks get a real grid, so the lane functions run.
             params.setdefault("rows", rng.choice([1, 2, 3]))

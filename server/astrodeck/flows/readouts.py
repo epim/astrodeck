@@ -47,6 +47,7 @@ there is one: the seed is a number nobody timed.
 from __future__ import annotations
 
 import math
+from collections import Counter
 from typing import TYPE_CHECKING, Any, Iterable
 
 from ..sequence.engine import FLIP_FRAME_MARGIN_S, HOP_COST_S
@@ -300,22 +301,23 @@ def _block(members: list["Target"], group: "TargetGroup | None", *,
       else ``FOCUS_FRAMES`` when ``autofocus_every`` is set, else
       ``FOCUS_ONCE`` (spec 5.6 step 6: a hop owes no sweep then), with the
       two settings beside it."""
-    first = members[0]
-    steps = list(first.steps)
-    cycle = first.acquisition == "cycle"
+    lane = _lane_member(members)
+    steps = list(lane.steps)
+    cycle = lane.acquisition == "cycle"
     panels = len(members)
-    subs_per_panel = sum(int(s.count) for s in steps)
-    panel_s = sum(float(s.exposure_s) * int(s.count) for s in steps)
-    pass_s = (sum(float(s.exposure_s) * max(1, int(s.per_visit))
-                  for s in steps) if cycle else None)
-    rounds = (max((-(-int(s.count) // max(1, int(s.per_visit)))
-                   for s in steps), default=0) if cycle else None)
-    total_s = panel_s * panels
+    subs_per_panel = _subs(steps)
+    panel_s = _shutter_s(steps)
+    pass_s = _pass_shutter_s(steps) if cycle else None
+    rounds = _rounds(steps) if cycle else None
+    # EVERY PANEL ON ITS OWN STEPS (#186). A panel with an exposure of its own
+    # has steps its neighbours lack, so the block's totals are the sum over
+    # its members; the per-panel figures above are the lane's.
+    total_s = sum(_shutter_s(t.steps) for t in members)
     block: dict[str, Any] = {
         "mode": group.mode if group is not None else "single",
         "panels": panels, "steps": len(steps), "rounds": rounds,
         "subs_per_panel": subs_per_panel,
-        "subs_total": subs_per_panel * panels,
+        "subs_total": sum(_subs(t.steps) for t in members),
         "pass_s": _r(pass_s, 3), "panel_s": _r(panel_s, 3),
         "total_s": _r(total_s, 3),
         "passes": None, "visit_min_s": None, "visit_passes": None,
@@ -331,7 +333,7 @@ def _block(members: list["Target"], group: "TargetGroup | None", *,
         bound = (visit_passes(group.visit_passes, group.visit_min_s, pass_s)
                  if rotating else None)
         per_panel = -(-rounds // bound) if rotating else 1
-        visits = per_panel * panels
+        visits = sum(_visits(t.steps, group, rotating) for t in members)
         block.update({
             "passes": group.visit_passes,
             "visit_min_s": _r(group.visit_min_s, 3),
@@ -339,7 +341,8 @@ def _block(members: list["Target"], group: "TargetGroup | None", *,
             "visits_total": visits, "hop_s": _r(hop_s, 1),
             "hop_measured": hop_measured,
             "preflip_idle_s": (_r(_preflip_idle_s(
-                (t.ra_hours for t in members), steps, lead_s=lead_s,
+                (t.ra_hours for t in members),
+                [s for t in members for s in t.steps], lead_s=lead_s,
                 hop_s=hop_s), 1) if meridian_flip else None),
             "angle_tolerance_deg": _r(group.angle_tolerance_deg, 3),
         })
@@ -353,6 +356,48 @@ def _block(members: list["Target"], group: "TargetGroup | None", *,
                   FOCUS_FRAMES if every > 0 else FOCUS_ONCE),
         "autofocus_every": every, "refocus_delta_c": delta})
     return block
+
+
+def _recipe(target: "Target") -> tuple:
+    return tuple((s.filter, float(s.exposure_s), int(s.count), int(s.per_visit))
+                 for s in target.steps)
+
+
+def _lane_member(members: list["Target"]) -> "Target":
+    """The panel that stands for the lane: the first whose steps are the ones
+    most panels shoot. With no override every panel is that one, and the first
+    is the answer as it always was; with one, a panel without it."""
+    seen = Counter(_recipe(t) for t in members)
+    most = max(seen.values())
+    return next(t for t in members if seen[_recipe(t)] == most)
+
+
+def _subs(steps: list) -> int:
+    return sum(int(s.count) for s in steps)
+
+
+def _shutter_s(steps: list) -> float:
+    return sum(float(s.exposure_s) * int(s.count) for s in steps)
+
+
+def _pass_shutter_s(steps: list) -> float:
+    return sum(float(s.exposure_s) * max(1, int(s.per_visit)) for s in steps)
+
+
+def _rounds(steps: list) -> int:
+    return max((-(-int(s.count) // max(1, int(s.per_visit))) for s in steps),
+               default=0)
+
+
+def _visits(steps: list, group: "TargetGroup", rotating) -> int:
+    """The visits one panel makes (``_block``'s ``visits_per_panel`` for its
+    own steps): a rotating panel's rounds over the passes a visit makes at
+    ITS pass length, 1 when it runs to completion."""
+    if not rotating:
+        return 1
+    bound = visit_passes(group.visit_passes, group.visit_min_s,
+                         _pass_shutter_s(steps))
+    return -(-_rounds(steps) // bound)
 
 
 def _preflip_idle_s(ras: Iterable[float], steps: list, *, lead_s: float,

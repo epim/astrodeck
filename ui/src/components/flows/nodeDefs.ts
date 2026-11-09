@@ -440,6 +440,8 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     params: {
       name: "M31 - Andromeda", ra: "00h 42m 44s", dec: "+41° 16′ 09″", rotation: -1,
       rows: 1, cols: 1, overlap: DEFAULT_OVERLAP * 100, fovX: 0, fovY: 0, fovFrom: "", skip: "",
+      // Per-panel exposure, "1-1:30, 2-3:120x20" (#186): blank is every panel on the lane's steps.
+      panelExposure: "",
       passes: 1, minVisit: 0, order: "Least complete first", centerTol: 1.2,
       centerTries: 3, ifNotCentred: "Auto", counts: "Every sub taken", frameAnchor: "",
       maxTime: 0,
@@ -462,6 +464,7 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
       { key: "fovY", label: "Field height at bin 1", control: "text", unit: "° (0 = not framed)" },
       { key: "fovFrom", label: "Field from", control: "text" },
       { key: "skip", label: "Skip panels", control: "text" },
+      { key: "panelExposure", label: "Panel exposures (1-1:30, 2-3:120x20)", control: "text" },
       { key: "passes", label: "Passes per visit", control: "text" },
       { key: "minVisit", label: "Minimum visit", control: "text", unit: "min" },
       { key: "order", label: "Panel order", control: "select", options: ["Least complete first", "Setting first", "Grid order"] },
