@@ -122,3 +122,13 @@ async def test_a_mosaic_set_aside_whole_marks_every_panel_skipped(
     assert sorted(_skips(night)) == [f"skipped {GROUP_NAME} {lb}: {reason}"
                                      for lb in ("1-1", "1-2", "2-1", "2-2")], (
         _skips(night))
+
+
+# WP 6.2 (owner ruling D-E, #180 part B): a mosaic panel is no longer set
+# aside for its own failures, but a pool's candidates still are, and this
+# file grades what that set-aside feeds (see tests/_w6_2_three_strike.py).
+# Its nights therefore run the group driver with the three-strike set-aside.
+@__import__("pytest").fixture(autouse=True)
+def _the_three_strike_set_aside(monkeypatch):
+    from _w6_2_three_strike import three_strike
+    three_strike(monkeypatch)

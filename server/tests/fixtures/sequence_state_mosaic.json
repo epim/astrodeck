@@ -62,6 +62,7 @@
       "for_now": true
      }
     ],
+    "skipped": [],
     "meridian_wait": false
    },
    "hold": null,
@@ -129,6 +130,7 @@
       "for_now": true
      }
     ],
+    "skipped": [],
     "meridian_wait": true
    },
    "hold": null,
@@ -202,6 +204,7 @@
       "for_now": true
      }
     ],
+    "skipped": [],
     "meridian_wait": true
    },
    "hold": null,
@@ -274,6 +277,7 @@
       "for_now": true
      }
     ],
+    "skipped": [],
     "meridian_wait": false
    },
    "hold": null,
@@ -341,6 +345,7 @@
       "for_now": true
      }
     ],
+    "skipped": [],
     "meridian_wait": false
    },
    "hold": "clouds",
@@ -400,6 +405,7 @@
       "for_now": true
      }
     ],
+    "skipped": [],
     "meridian_wait": false
    },
    "hold": null,

@@ -503,11 +503,18 @@ async def test_a_panel_that_will_not_centre_is_deferred_three_times_then_set_asi
     assert night.done, (len(night.gotos), night.lines[-3:])
     assert _shot(night, "2-2") == [], night.shots()
     assert len(_gotos(night, "2-2")) == 9, _gotos(night, "2-2")
+    # DELIBERATE RE-PIN (WP 6.2, owner ruling D-E, #180 part B): 2-2's first
+    # streak was a centring set-aside "for now", expiring 45 minutes on. A
+    # mosaic panel is now SKIPPED at its third consecutive failure: one
+    # warning that names it, the cause and the last error, no set-aside, and
+    # it is hopped again in the next round. The nine hops are the same.
     first_streak = [(lvl, m) for _t, lvl, m in night.lines
-                    if "2-2" in m and "set aside for now" in m]
-    assert len(first_streak) == 1 and first_streak[0][0] == "warning", first_streak
+                    if "2-2" in m and "skipped for the rest of this round" in m
+                    and lvl == "warning"]
+    assert len(first_streak) == 1, first_streak
     assert ("centring failed on 2-2 on 3 consecutive visits: plate solve "
             "failed" in first_streak[0][1]), first_streak
+    assert not [m for _t, _l, m in night.lines if "set aside for now" in m]
     held_set_aside = [(lvl, m) for _t, lvl, m in night.lines
                       if "set aside for tonight" in m]
     assert len(held_set_aside) == 1 and held_set_aside[0][0] == "warning", (
@@ -519,8 +526,9 @@ async def test_a_panel_that_will_not_centre_is_deferred_three_times_then_set_asi
     for label in ("1-1", "1-2", "2-1"):
         assert _shot(night, label) == ["L", "R"] * 3, label
     assert [(r["target_id"], r.get("kind"), bool(r.get("expired")))
-            for r in night.stored.set_aside] == [
-        ("p11", "centring", True), ("p11", "deferred", False)]
+            for r in night.stored.set_aside] == [("p11", "deferred", False)]
+    assert [(r["target_id"], r["kind"], r["visits"])
+            for r in night.stored.panel_skips] == [("p11", "centring", 3)]
     # DELIBERATE PIN CHANGE (backlog WP-131, #180 part A, wave 17): the
     # second record was kind "group". The held-pass rule's set-aside of the
     # mosaic's LAST LIVE PANEL is the panel's own, kind "deferred" (it does
@@ -721,11 +729,23 @@ async def test_a_panel_that_rejects_alone_is_set_aside_after_three_visits(
     night = await _night(group_hub, monkeypatch, plan,
                          stars=lambda who, f: 0 if who == _name("2-2") else 50)
     assert night.done, night.trace[-3:]
-    assert len(_gotos(night, "2-2")) == 3, _gotos(night, "2-2")
+    # DELIBERATE RE-PIN (WP 6.2, owner ruling D-E, #180 part B): at its third
+    # rejected visit 2-2 used to be set aside for tonight. A mosaic panel is
+    # now SKIPPED there (one warning, a skip record of kind "rejects"), stays
+    # in the rotation and is hopped again; what ends it is the step reject
+    # guard (5 a step), which sets each filter aside at the fifth rejected
+    # frame and then, every owed filter being set aside, the panel: five hops
+    # where there were three.
+    assert len(_gotos(night, "2-2")) == 5, _gotos(night, "2-2")
     said = night.said("2-2 rejected every frame for 3 visits while the other "
-                      "panels were accepted")
+                      "panels were accepted; skipped for the rest of this "
+                      "round")
     assert len(said) == 1, night.lines[-6:]
-    assert [r["target_id"] for r in night.stored.set_aside] == ["p11"]
+    assert [(r["target_id"], r["kind"], r["visits"])
+            for r in night.stored.panel_skips] == [("p11", "rejects", 3)]
+    assert {r["target_id"] for r in night.stored.set_aside} == {"p11"}
+    assert [r["kind"] for r in night.stored.set_aside
+            if r["step_id"] is None] == ["steps"], night.stored.set_aside
     for label in ("1-1", "1-2", "2-1"):
         assert _shot(night, label) == ["L", "R"] * 3
 
@@ -814,13 +834,22 @@ async def test_one_panel_whose_guider_will_not_start_is_deferred_not_shot(
         night.engine.state.get("end_reason"), night.engine.state.get("detail"))
     assert _shot(night, "1-2") == [], night.shots()
     tries = _gotos(night, "1-2")
-    assert len(tries) == 3, tries
+    # DELIBERATE RE-PIN (WP 6.2, owner ruling D-E, #180 part B): 1-2 used to
+    # be set aside at its third failed pass (three hops). A mosaic panel is
+    # now SKIPPED there and retried every round: once the others complete it
+    # is the last live panel, every round is a held pass (it failed and
+    # nothing was banked), and D-03's six held passes are what set it aside:
+    # three hops, then six.
+    assert len(tries) == 9, tries
     others_first = max(_gotos(night, lb)[0] for lb in ("1-1", "2-2", "2-1"))
     assert tries[1] > others_first, (tries, others_first)
     said = night.said("guiding did not start on 1-2 on 3 consecutive visits: "
                       "no guide star found (attempt 3)")
     assert len(said) == 1, night.lines[-6:]
-    assert [r["target_id"] for r in night.stored.set_aside] == ["p01"]
+    assert [(r["target_id"], r["kind"]) for r in night.stored.set_aside] == [
+        ("p01", "deferred")]
+    assert [(r["target_id"], r["kind"]) for r in night.stored.panel_skips] == [
+        ("p01", "guide_start")]
 
 
 async def test_a_panel_that_guides_on_its_third_try_banks_and_starts_afresh(
@@ -956,14 +985,28 @@ async def test_two_panels_failing_beside_two_that_guide_are_the_panels_fault(
     ended = (night.engine.state.get("end_reason"),
              night.engine.state.get("detail"))
     assert ended[0] == "incomplete", ended
+    # DELIBERATE RE-PIN (WP 6.2, owner ruling D-E, #180 part B). What this
+    # case guards is unchanged: in the first three passes two failures beside
+    # two panels that guide are the panels' (the two that guide complete, all
+    # six frames each, which a pass read as the rig's fault would have
+    # prevented). What changed is the end. The two failing panels used to be
+    # set aside at their third failure; now they are skipped and stay live,
+    # and once the others have completed every panel attempted is one already
+    # in the skip rotation, which is NOT the rig's fault (``guiding_action``
+    # is never asked, whatever it says: no abort, no unguided frames). Each
+    # such round is a held pass (D-03), and the group rule, six of them, sets
+    # the mosaic aside: three hops a panel, then six.
     assert not night.said("did not start on any"), night.said("did not start")
-    for label in ("1-2", "2-1"):
-        assert _shot(night, label) == [], night.shots()
-        assert len(_gotos(night, label)) == 3, (label, _gotos(night, label))
     for label in ("1-1", "2-2"):
         assert _shot(night, label) == ["L", "R"] * 3, (ended, label)
-    assert sorted(r["target_id"] for r in night.stored.set_aside) == [
-        "p01", "p10"], night.stored.set_aside
+    for label in ("1-2", "2-1"):
+        assert _shot(night, label) == [], night.shots()
+        assert len(_gotos(night, label)) == 9, (label, _gotos(night, label))
+    assert sorted((r["target_id"], r["kind"])
+                  for r in night.stored.set_aside) == [
+        ("p01", "group"), ("p10", "group")], night.stored.set_aside
+    assert sorted(r["target_id"] for r in night.stored.panel_skips) == [
+        "p01", "p10"]
 
 
 @pytest.mark.parametrize("action", ["warn", "skip", "abort"])

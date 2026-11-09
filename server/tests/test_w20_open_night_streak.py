@@ -331,7 +331,7 @@ class TestTheCampaignWhileTheRunIsLive:
         c = _campaign(graph, None, lambda: _card(compiled, plan, s, 17))
         assert c["starved"] == [{"block": "m", "name": "M16 1-2",
                                  **STARVED_ENTRY}]
-        assert ("Panel M16 1-2 has been set aside on 3 nights running"
+        assert ("Panel M16 1-2 has had no frame on 3 nights running"
                 in c["note"]), c["note"]
         assert "RSN-7731" not in str(c), "the reason never reaches the answer"
 

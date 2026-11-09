@@ -1938,6 +1938,10 @@ class SequenceEngine:
         #: warn: their hops warn and shoot unguided, as a single target does,
         #: until a guider start works again (spec 5.6 step 7).
         self._group_unguided: set[str] = set()
+        #: Panels of a rotating mosaic whose skip this run has said at
+        #: "warning" already (`_note_panel_skipped`): the alert is once per
+        #: panel, the line after it is an info line each round.
+        self._skip_said: set[str] = set()
         #: The last guider start `_setup_target` made succeeded (a hold's
         #: release re-runs the setup, so for a member it is the visit's last
         #: start). The guide-start pass rule counts it as an attempt that
@@ -2683,6 +2687,7 @@ class SequenceEngine:
         self._group_last_visited = {}
         self._last_visit_ts = {}
         self._group_unguided = set()
+        self._skip_said = set()
         self._hop_guide_started = False
         # #849: the engine outlives the run, and a run aborted while paused
         # would hand its pause's stand-down to the next one.
@@ -5574,8 +5579,9 @@ class SequenceEngine:
 
         WORDED BY WHO IS STOPPED (#326). Since #316 the group driver defers a
         member for a plain StopTarget (`_visit_panel`, ``target_stop``), and
-        sets it aside only after ``max_failed_visits`` consecutive failed
-        visits; a single target is still dropped for the run. The gates that
+        skips it to the back of the next round after ``max_failed_visits``
+        consecutive failed visits (a pool candidate is set aside instead);
+        a single target is still dropped for the run. The gates that
         raise it (the cloud hold's floor, the hold's published end, the #72
         bound and the guide start under skip) still said the single target's
         outcome for a panel: "setting it aside for the rest of this run", a
@@ -5587,6 +5593,13 @@ class SequenceEngine:
         if run is None:
             return None
         label = run.members.get(target.id, self._panel_name(target))
+        if run.rotate:
+            # D-E (#180 part B): a mosaic panel is never set aside for its own
+            # failures, so the parenthesis may not say it is.
+            return (f"the visit to {label} stops, and the panel is retried on "
+                    f"the next pass (after {run.max_failed_visits} "
+                    f"consecutive failed visits it goes behind the other "
+                    f"panels and is retried every round)")
         return (f"the visit to {label} stops, and the panel is retried on "
                 f"the next pass (set aside tonight only after "
                 f"{run.max_failed_visits} consecutive failed visits)")
@@ -5642,6 +5655,7 @@ class SequenceEngine:
         elapsed = (round(max(0.0, time.time() - started))
                    if cur is not None and started is not None
                    and self._visit_in_progress == cur.id else 0)
+        skipping = run.skipped()
         return {
             "id": g.id,
             "name": g.name,
@@ -5656,6 +5670,15 @@ class SequenceEngine:
                           "kind": run.set_aside_kind.get(p, "panel"),
                           "for_now": self._awaiting_expiry(run, p)}
                          for p, r in run.set_aside.items()],
+            # THE PANELS A ROTATING RUN IS SKIPPING (D-E, #180 part B): live,
+            # visited every round behind the others, never in ``set_aside``.
+            # Words and a count; always sent, empty for a pool.
+            "skipped": [{"panel": run.members.get(p, p),
+                         "kind": run.skip_kind[p],
+                         "visits": (run.reject_visits[p]
+                                    if run.skip_kind[p] == "rejects"
+                                    else run.failed[p])}
+                        for p in run.members if p in skipping],
             "meridian_wait": gid in self._meridian_wait,
         }
 
@@ -6692,8 +6715,12 @@ class SequenceEngine:
                 self._group_gates[gid] = tuple(dict.fromkeys(waits))
         for gid, mem in members.items():
             g = self._groups[gid]
+            # A MOSAIC PANEL THAT FAILS ROTATES (D-E, #180 part B): never set
+            # aside for its own failures, skipped and retried every round. A
+            # pool's candidates keep the three-strike set-aside.
             run = GroupRun({t.id: self._panel_name(t) for _ti, t in mem},
-                           max_failed_visits=g.max_failed_visits)
+                           max_failed_visits=g.max_failed_visits,
+                           rotate=g.kind == "mosaic")
             for ti, t in mem:
                 # COMPLETE WINS OVER SET ASIDE. The ledger is the truth: a
                 # member that was set aside tonight and then finished (a
@@ -6711,6 +6738,7 @@ class SequenceEngine:
                     run.set_aside_panel(t.id, self._set_aside_targets[t.id],
                                         kind=kind or "panel")
             self._note_starved_panels(run, [t for _ti, t in mem])
+            self._restore_panel_skips(run, [t for _ti, t in mem])
             self._group_runs[gid] = run
             self._restore_group_pier(g, run)
             self._group_last_index[gid] = max(ti for ti, _t in mem)
@@ -6739,6 +6767,31 @@ class SequenceEngine:
             nights = read(t.id, night=night, kinds=HELD_PASS_KINDS)
             if nights >= STARVED_AFTER_NIGHTS:
                 run.note_starved(t.id, nights)
+
+    def _restore_panel_skips(self, run: GroupRun,
+                             targets: list[Target]) -> None:
+        """Put back the panels a rotating run had skipped earlier tonight (D-E,
+        #180 part B), from the session's skip records, so a restart, a
+        crash-resume or an auto-resume the same night finds them still behind
+        the other panels, with their count, instead of at the head of the
+        order with a fresh streak to run. A skipped panel is no set-aside
+        record: the restart revisits it, which is the ruling. A panel that is
+        complete or set aside is left as it is. A session double without the
+        reader reads as having none.
+
+        Only a STANDING skip (`Session.standing_skip`: no frame banked since)
+        of tonight is put back: one a later frame ended has left the
+        rotation, and an earlier night's is history."""
+        standing = getattr(self._session, "standing_skip", None)
+        if standing is None or not run.rotate:
+            return
+        night = night_key(time.time())
+        for t in targets:
+            rec = standing(t.id)
+            if (rec is not None and rec.get("night") == night
+                    and run.is_live(t.id)
+                    and isinstance(rec.get("visits"), int)):
+                run.restore_skip(t.id, rec["visits"], str(rec.get("kind", "")))
 
     def _place_followers(self, group: TargetGroup,
                          remaining: list[Target]) -> None:
@@ -7046,10 +7099,16 @@ class SequenceEngine:
         now = time.time()
         setting = ({t.id: self._time_to_floor_s(t, now) for t in members}
                    if group.order == "setting_first" else {})
+        # THE PANELS A ROTATING RUN HAS SKIPPED go last (D-E, #180 part B): a
+        # panel that failed its bound of visits is still visited every round,
+        # behind the ones that have not.
+        run = self._group_runs.get(group.id)
         return OrderSnapshot(fraction_banked=fraction, last_visit_ts=last,
                              time_to_floor_s=setting,
                              last_visited=last_visited,
-                             pool_score=self._pool_scores(group, members, now))
+                             pool_score=self._pool_scores(group, members, now),
+                             skipped=run.skipped() if run is not None
+                             else frozenset())
 
     def _pool_scores(self, group: TargetGroup, members: list[Target],
                      now: float) -> dict[str, float]:
@@ -7733,8 +7792,9 @@ class SequenceEngine:
         autofocus that failed under skip, a mount that will not track again,
         a flip owed past its hold), it would drop a single target for the
         run; a panel is deferred to the next pass instead, with the stop's
-        own sentence as the last error (`group_rules.TARGET_STOP`), and set
-        aside tonight only after ``max_failed_visits`` consecutive passes.
+        own sentence as the last error (`group_rules.TARGET_STOP`), and, after
+        ``max_failed_visits`` consecutive passes, skipped to the back of the
+        next round (a pool candidate: set aside tonight).
         The frozen window closing (`WindowClosed`) goes on up: every panel
         shares it, and the all-closed path ends them all.
 
@@ -7937,6 +7997,13 @@ class SequenceEngine:
             # Kept in ``remaining`` only when the set-aside may still expire
             # (#534): the panel is then a waiter until it does.
             return self._set_panel_aside(group, target, act.reason)
+        if act.action == "skip":
+            # A ROTATING PANEL AT ITS BOUND IS SKIPPED, NOT SET ASIDE (D-E,
+            # #180 part B): requeued behind the others like any failed visit,
+            # and ordered last in the next round (`_order_snapshot`).
+            self._note_panel_skipped(group, target, act.reason)
+            self._requeue(group, target, remaining)
+            return True
         if deferred is None and self._every_owed_step_set_aside(target):
             # "A panel whose remaining steps are all set aside is set aside"
             # (spec 5.3): its visits would shoot nothing tonight.
@@ -7951,6 +8018,49 @@ class SequenceEngine:
             bus.log("info", f"{mosaic}: {act.reason}", "sequence")
         self._requeue(group, target, remaining)
         return True
+
+    def _note_panel_skipped(self, group: TargetGroup, target: Target,
+                            reason: str) -> None:
+        """A panel of a rotating mosaic reached its failure bound and is
+        SKIPPED (owner ruling D-E of 2026-10-22, #180 part B): recorded in the
+        session (`Session.note_panel_skipped`, one record per panel per night,
+        saved at once as `_persist_set_aside` saves), so a restart tonight
+        finds it behind the others and Part A counts the night; said at
+        "warning" ONCE per panel per run (an alert) and as an info line each
+        later round; and written into the report once, on the first skip,
+        saying it is retried every round, not skipped for the night
+        (`mark_skipped` elsewhere means the night).
+
+        Nothing here sets it aside: it is no `Session.set_aside` record, so no
+        restart drops it, and `GroupRun.is_live` still counts it. The cost of
+        the ruling is stated in the line: it is re-slewed and retried once a
+        round for as long as it fails."""
+        run = self._group_runs[group.id]
+        label = run.members.get(target.id, target.name)
+        mosaic = group.name or group.id
+        kind = run.skip_kind.get(target.id, "deferred")
+        visits = (run.reject_visits.get(target.id, 0) if kind == "rejects"
+                  else run.failed.get(target.id, 0))
+        now = time.time()
+        if self._session is not None:
+            self._session.note_panel_skipped(
+                target.id, night=night_key(now), kind=kind, visits=visits,
+                ts=now)
+            try:
+                session_store.save_run_state(self._session)
+            except Exception as e:      # noqa: BLE001 - bookkeeping never ends a run
+                bus.log("warning", f"session save failed: {e}", "sequence")
+        if target.id in self._skip_said:
+            bus.log("info", f"{mosaic}: {reason}", "sequence")
+            return
+        self._skip_said.add(target.id)
+        bus.log("warning", f"{mosaic}: {reason}; {label} is retried every round "
+                           f"until it banks its frames, and is never set aside "
+                           f"for its own failures", "sequence")
+        if self.reporter:
+            self.reporter.mark_skipped(
+                target, f"{reason}; retried every round, not skipped for "
+                        f"the night")
 
     def _hop_refused_by_a_limit(self, group: TargetGroup, target: Target,
                                 refusal: SlewRefused,
@@ -8069,6 +8179,14 @@ class SequenceEngine:
             # panel waits for the expiry as a waiter (`_expire_or_wait`).
             if not self._set_panel_aside(group, t, reason, say=not quiet):
                 self._drop_from(remaining, t)
+        # A ROTATING PANEL WHOSE HELD FAILURES REACHED THEIR BOUND AT THIS
+        # BOUNDARY is skipped, not set aside (D-E, #180 part B): it keeps its
+        # place in ``remaining`` and goes last in the order the re-sort below
+        # makes.
+        for pid, reason in end.skipped:
+            t = by_id.get(pid)
+            if t is not None:
+                self._note_panel_skipped(group, t, reason)
         if end.boundary == "set_aside_all":
             self._end_pending_expiries(group, remaining, end.reason)
             bus.log("warning", f"{mosaic}: {end.reason}: a restart tonight does "
@@ -9050,7 +9168,8 @@ class SequenceEngine:
         aside (#534).
 
         Each deferral says why in words, with what the call reported, which
-        the set-aside alert repeats after ``max_failed_visits`` of them.
+        the skip's warning (a pool candidate's set-aside alert) repeats it
+        after ``max_failed_visits`` of them.
 
         A SOLVE THAT COULD NOT RUN IS NO CENTRING FAILURE (#532, contract 1 of
         the H4 orchestrator): the centring result carries ``solve_transient``
@@ -11830,8 +11949,9 @@ class SequenceEngine:
             # Each of today's escalations leaves a hole: warn shoots the panel
             # unguided, skip sets it aside at once, abort ends the night over
             # one panel's guide star. So a member raises `PanelDeferred`, is
-            # retried on the next pass, and is set aside after
-            # ``max_failed_visits`` consecutive failed passes. Only a pass in
+            # retried on the next pass, and after ``max_failed_visits``
+            # consecutive failed passes is skipped to the back of the next
+            # round (a pool candidate: set aside). Only a pass in
             # which EVERY attempted panel failed is the guider's fault, and
             # then ``guiding_action`` decides for the group
             # (`_close_group_pass`); after a warn there, the group's hops go
@@ -19763,8 +19883,9 @@ class SequenceEngine:
             # night over one panel's guide star, skip drops the panel, and
             # warn tiles it with frames shot unguided, which #142 lets
             # through the RMS gate. The next hop restarts guiding anyway, so
-            # the panel goes to the back of the rotation and is set aside
-            # only after ``max_failed_visits`` consecutive passes. Asked
+            # the panel goes to the back of the rotation and, after
+            # ``max_failed_visits`` consecutive passes, to the back of the
+            # next round (a pool candidate: set aside). Asked
             # BEFORE the escalation, so none of the three is reached. A group
             # the pass rule already sent on unguided (`_close_group_pass`)
             # keeps the escalation, as its failed starts do.
@@ -19845,7 +19966,7 @@ class SequenceEngine:
         # visits, so a visit whose recovery re-centres and banks frames is
         # not failed and the panel's re-centres were bounded by nothing
         # across the night. A TARGET_STOP here would rename why the group
-        # set the panel aside; the ``guide_lost`` kind keeps the group's
+        # skipped the panel; the ``guide_lost`` kind keeps the group's
         # reason and the night still has a bound. A panel of a group sent on
         # unguided takes the escalation like any target, so it is stopped
         # like one.

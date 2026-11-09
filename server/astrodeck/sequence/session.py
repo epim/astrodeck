@@ -238,6 +238,20 @@ class Session(BaseModel):
     # tonight takes that panel up again and never expires it a second time.
     # All three are additive, with SESSION_SCHEMA still 1.
     set_aside: list[dict] = Field(default_factory=list)
+    # SKIPPED PANELS (#180 part B, owner ruling D-E): a mosaic panel that
+    # failed its bound of consecutive visits is not set aside, it is skipped
+    # and retried every round, so it must NOT be a ``set_aside`` record (a
+    # restart tonight reads those and would drop the panel, which is exactly
+    # what D-E forbids). Each record is ``{target_id, night, kind, visits,
+    # ts}``, ONE per (target, night), upserted by ``note_panel_skipped``:
+    # ``kind`` the streak's word ("centring", "guide_start", "deferred",
+    # "rejects"), ``visits`` the consecutive failed visits so far, ``ts`` the
+    # clock time of the latest. ``set_aside_streak`` reads them with the
+    # set-aside records, so Part A still names a panel that failed every
+    # visit on several nights; ``standing_skip`` reads the one the Tonight
+    # note says. Plain dicts, additive, SESSION_SCHEMA still 1: a build that
+    # predates the field ignores it.
+    panel_skips: list[dict] = Field(default_factory=list)
     # LOCKED ANGLES (Revision 2, ruling 9): ``{target_id: {pa_deg, solved_at,
     # exposed_at, source}}``. An unframed TARGET takes the position angle its
     # first imaging-camera solve measures, and from then on that angle
@@ -431,6 +445,55 @@ class Session(BaseModel):
         self.set_aside.append(record)
         return record
 
+    def note_panel_skipped(self, target_id: str, *, night: str, kind: str,
+                           visits: int, ts: float) -> dict:
+        """Record that ``target_id``, a panel of a rotating mosaic, has failed
+        ``visits`` consecutive visits (its bound or more) on ``night`` and is
+        skipped, with the streak's ``kind`` and the clock time ``ts``. ONE
+        record per (target, night): a later call replaces its kind, count and
+        time, so a panel skipped every round of a night is one record, not
+        one per round. Returns the record.
+
+        Not a set-aside: ``set_aside_on`` never reads it, so a restart tonight
+        takes the panel up (D-E: revisited, never dropped). Words, a count and
+        a clock time; nothing site-derived (6.9)."""
+        if not night:
+            raise ValueError(
+                f"a skip record needs the night it applies to "
+                f"(events.night_key()), got {night!r}")
+        t = float(ts)
+        if not math.isfinite(t):
+            raise ValueError(f"a skip's ts must be a finite clock time, "
+                             f"got {ts!r}")
+        record = {"target_id": target_id, "night": night, "kind": str(kind),
+                  "visits": int(visits), "ts": t}
+        for i, rec in enumerate(self.panel_skips):
+            if rec.get("target_id") == target_id and rec.get("night") == night:
+                self.panel_skips[i] = record
+                return record
+        self.panel_skips.append(record)
+        return record
+
+    def panel_skips_on(self, night: str) -> list[dict]:
+        """The skip records for ``night``, in the order they were made: what a
+        same-night restart reads back so a skipped panel is still behind the
+        others."""
+        return [r for r in self.panel_skips if r.get("night") == night]
+
+    def standing_skip(self, target_id: str) -> dict | None:
+        """``target_id``'s newest skip record, unless the panel has banked an
+        effective frame at or after it (it left the rotation), or None. What
+        the Tonight note reads, on a live or a dormant session alike: it needs
+        no clock, because a frame newer than the skip is the whole question."""
+        mine = [r for r in self.panel_skips if r.get("target_id") == target_id]
+        if not mine:
+            return None
+        newest = max(mine, key=lambda r: r.get("ts", 0.0))
+        if any(f.target_id == target_id and f.effective()
+               and f.ts >= newest.get("ts", 0.0) for f in self.frames):
+            return None
+        return newest
+
     def note_set_aside_expired(self, target_id: str, *,
                                night: str) -> dict | None:
         """Mark ``target_id``'s standing CENTRING set-aside for ``night``
@@ -573,6 +636,12 @@ class Session(BaseModel):
         twice. No clock is needed to tell tonight from a night that closed
         untouched, because both are stepped over.
 
+        A SKIP RECORD COUNTS LIKE A SET-ASIDE ONE (D-E, #180 part B): a
+        rotating mosaic panel is skipped, never set aside, for its own
+        failures (``note_panel_skipped``), and a night it failed its bound of
+        visits with no frame banked is a night it was starved, so the streak
+        reads both lists, and returns the skip's kind when a night holds both.
+
         EXPIRED AND CLEARED RECORDS COUNT. Both stay as history of what the
         night did (a centring set-aside that expired and struck out again, a
         panel the operator brought back); the night is a night the panel was
@@ -591,6 +660,8 @@ class Session(BaseModel):
                   if f.target_id == target_id and f.effective()}
         reached = {r.get("night") for r in self.set_aside
                    if r.get("target_id") == target_id}
+        reached |= {r.get("night") for r in self.panel_skips
+                    if r.get("target_id") == target_id}
         reached |= {report_night(f.night) or f.night for f in self.frames
                     if f.target_id == target_id}
         nights = self.observing_nights()
@@ -605,10 +676,19 @@ class Session(BaseModel):
                        and r.get("step_id") is None
                        and r.get("night") == night
                        and r.get("kind") in kinds]
-            if not records or night in banked:
+            # A SKIPPED PANEL (D-E, #180 part B) is never set aside for its
+            # own failures, so a night it failed every visit leaves a skip
+            # record instead; it counts as a set-aside record does, and its
+            # kind, the panel's own cause, wins over a group word the same
+            # night's held-pass rule may also have written.
+            skips = [r for r in self.panel_skips
+                     if r.get("target_id") == target_id
+                     and r.get("night") == night
+                     and r.get("kind") in kinds]
+            if not (records or skips) or night in banked:
                 break
             if kind is None:
-                kind = records[-1]["kind"]
+                kind = (skips or records)[-1]["kind"]
             streak += 1
         return streak, kind
 

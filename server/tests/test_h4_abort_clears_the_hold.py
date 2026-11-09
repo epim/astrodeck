@@ -178,3 +178,13 @@ async def test_a_hold_ended_by_its_bound_leaves_no_hold_on_the_terminal_state(
     assert served[held[-1] + 1:] and stale == [], (
         f"the run the cloud hold's bound ended still carries the hold: "
         f"{stale or _view(served[-2:])}")
+
+
+# WP 6.2 (owner ruling D-E, #180 part B): a mosaic panel is no longer set
+# aside for its own failures, but a pool's candidates still are, and this
+# file grades what that set-aside feeds (see tests/_w6_2_three_strike.py).
+# Its nights therefore run the group driver with the three-strike set-aside.
+@__import__("pytest").fixture(autouse=True)
+def _the_three_strike_set_aside(monkeypatch):
+    from _w6_2_three_strike import three_strike
+    three_strike(monkeypatch)

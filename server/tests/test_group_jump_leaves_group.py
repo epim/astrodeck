@@ -161,15 +161,22 @@ async def test_a_member_a_jump_consumes_leaves_its_group(
     assert any(named in sa for sa in after), (
         f"no published group named 1-2 set aside after the jump: {after}")
 
+    # DELIBERATE RE-PIN (WP 6.2, owner ruling D-E, #180 part B): 1-1, whose
+    # guider never starts, was set aside at its third failed pass, one wait
+    # in all. A mosaic panel is no longer set aside for its own failures, so
+    # 1-1, the last live panel once 1-2 is consumed, is tried every pass:
+    # each pass of deferrals and no exposure is a HELD pass (every live panel
+    # failed and nothing was banked), five waits of 300 s, and the group
+    # rule, D-03's six held passes, is what sets it aside.
     waits = night.said("waiting 300 s before the next pass")
     assert waits == [
-        "M31: pass 2 took no exposures and deferred 1 visits; waiting "
-        "300 s before the next pass"], waits
+        f"M31: pass {n} took no exposures and deferred 1 visits; waiting "
+        f"300 s before the next pass" for n in range(2, 7)], waits
     alerts = night.said("set aside for tonight")
-    assert alerts == ["M31: guiding did not start on 1-1 on 3 consecutive "
-                      "visits: no guide star found (attempt 3); set aside for "
-                      "tonight: a restart tonight does not retry it, the next "
-                      "night does"], alerts
+    assert alerts == ["M31: 1-1 (the mosaic's last live panel) has been held "
+                      "for 6 passes in a row with no panel struck and no "
+                      "progress made; set aside for tonight: a restart "
+                      "tonight does not retry it, the next night does"], alerts
     # The group ended at that boundary, and the run with it: the terminal
     # publish comes at the same fake instant as the set-aside.
     t_last = next(t for t, _lvl, m in night.lines if m == alerts[0])

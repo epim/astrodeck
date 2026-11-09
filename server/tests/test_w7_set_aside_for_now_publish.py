@@ -141,3 +141,13 @@ async def test_a_floor_set_aside_never_expires_and_names_its_kind(
     record = _first_set_aside(night, "1-2")
     assert (record["kind"], record["for_now"]) == ("floor", False), (
         record["kind"], record["for_now"])
+
+
+# WP 6.2 (owner ruling D-E, #180 part B): a mosaic panel is no longer set
+# aside for its own failures, but a pool's candidates still are, and this
+# file grades what that set-aside feeds (see tests/_w6_2_three_strike.py).
+# Its nights therefore run the group driver with the three-strike set-aside.
+@__import__("pytest").fixture(autouse=True)
+def _the_three_strike_set_aside(monkeypatch):
+    from _w6_2_three_strike import three_strike
+    three_strike(monkeypatch)

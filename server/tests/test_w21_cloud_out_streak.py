@@ -335,7 +335,7 @@ class TestTheCampaignAfterACloudOut:
         assert _named(bare) == STARVED, "and it needs no clock"
         c = _campaign(graph, None, lambda: card(20, 22))
         assert c["starved"] == [{"block": "m", "name": "M16 1-2", **STARVED}]
-        assert ("Panel M16 1-2 has been set aside on 3 nights running"
+        assert ("Panel M16 1-2 has had no frame on 3 nights running"
                 in c["note"]), c["note"]
         assert "RSN-7731" not in str(c), "the reason never reaches the answer"
 

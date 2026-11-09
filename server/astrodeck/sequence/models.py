@@ -331,8 +331,9 @@ class TargetGroup(BaseModel):
     # Auto" means this (spec Appendix B).
     require_centred: bool = True
     # Consecutive failed visits (a deferral, or a visit that accepts nothing
-    # while the others accept) before a panel is set aside for tonight
-    # (spec 5.1, 6.8). Bounded, so a star-poor panel is never a spin.
+    # while the others accept) before a mosaic panel is skipped to the back
+    # of the next round (a pool candidate: set aside for tonight; owner
+    # ruling D-E, spec 5.1, 6.8). A skipped panel is retried every round.
     max_failed_visits: int = Field(3, ge=1, le=20)
     pa_deg: float | None = None              # layout angle, CROTA2 convention (#145)
     # members of a rotating block carry a rotation_deg: the layout ``pa_deg``

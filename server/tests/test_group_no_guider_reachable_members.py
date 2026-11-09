@@ -253,12 +253,23 @@ async def test_control_with_guiding_required_the_reachable_panel_still_defers(
     night = await _night(group_hub, monkeypatch,
                          _held_plan(group_store, "reach"))
     assert night.done, night.trace[-3:]
-    assert night.engine.state.get("end_reason") == "incomplete", (
+    # DELIBERATE RE-PIN (WP 6.2, owner ruling D-E, #180 part B). Both panels
+    # were set aside after three deferrals each and the run ended incomplete.
+    # A mosaic panel is no longer set aside for its own failures: 1-1, the one
+    # panel the pass can visit, defers every pass (six held passes, nothing
+    # banked), and when 1-2 comes free both live panels are tried in one pass
+    # and BOTH fail to start guiding, which is the rig's fault (5.6 step 7):
+    # ``guiding_action`` abort ends the night. It still did not end it at the
+    # first hop, which is what this control guards.
+    assert night.engine.state.get("end_reason") == "unsafe", (
         night.engine.state.get("end_reason"), night.engine.state.get("detail"))
-    assert night.visits() == ([(_name("1-1"), ())] * 3
-                              + [(_name("1-2"), ())] * 3), night.visits()
+    assert night.engine.state.get("detail") == (
+        "guiding required but it did not start on any panel of M31")
+    assert night.visits() == ([(_name("1-1"), ())] * 6
+                              + [(_name("1-2"), ()), (_name("1-1"), ())]), (
+        night.visits())
     assert night.shots() == []
-    assert [r["target_id"] for r in night.stored.set_aside] == ["p00", "p01"]
+    assert night.stored.set_aside == []
     assert not night.said(UNGUIDED), night.said(UNGUIDED)
 
 

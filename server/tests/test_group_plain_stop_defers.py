@@ -140,9 +140,10 @@ def _af_at_the_hop(night, monkeypatch, plan, group_store):
     swept = _scripted_autofocus(night, monkeypatch, _name(FAILING))
 
     def premise():
-        assert swept == [_name(FAILING)] * 3, (
+        hops = len(_gotos(night, FAILING))
+        assert swept == [_name(FAILING)] * hops, (
             f"premise: only 2-2 swept, at each of its hops: {swept}")
-        assert len(night.said("initial autofocus failed: no stars")) == 3
+        assert len(night.said("initial autofocus failed: no stars")) == hops
 
     night.premise = premise
     return AF_ERROR
@@ -159,10 +160,13 @@ def _af_in_the_frame_loop(night, monkeypatch, plan, group_store):
     swept = _scripted_autofocus(night, monkeypatch, _name(FAILING))
 
     def premise():
-        assert swept.count(_name(FAILING)) == 3, swept
+        # Every sweep of 2-2 failed, and each failure ended a visit; the
+        # last visits find no refocus due and shoot (see the case).
+        hops = swept.count(_name(FAILING))
+        assert hops >= 3, swept
         assert {_name(label) for label in OTHERS} <= set(swept), (
             f"premise: the frame loop swept the other panels too: {swept}")
-        assert len(night.said("refocus failed: no stars")) == 3
+        assert len(night.said("refocus failed: no stars")) == hops
         assert not night.said("initial autofocus")
 
     night.premise = premise
@@ -208,8 +212,10 @@ def _tracking_the_recovery_could_not_clear(night, monkeypatch, plan,
     def premise():
         name = _name(FAILING)
         assert len(night.said(f"{name}: the park/unpark recovery failed")) == 1
+        hops = len(_gotos(night, FAILING))
         assert len(night.said(f"{name}: the mount refused tracking again "
-                              f"after a park/unpark recovery already ran")) == 2
+                              f"after a park/unpark recovery already ran")
+                   ) == hops - 1
 
     night.premise = premise
     return TRACKING_ERROR
@@ -240,7 +246,7 @@ def _a_flip_owed_past_its_hold(night, monkeypatch, plan, group_store):
     def premise():
         held = night.said(f"{_name(FAILING)}: a meridian flip is required and the "
                           f"mount is still on the")
-        assert len(held) == 3, held
+        assert len(held) == len(_gotos(night, FAILING)), held
 
     night.premise = premise
     return None     # the sentence names the side the mount reported
@@ -295,18 +301,35 @@ async def test_a_plain_stop_defers_the_panel_and_three_set_it_aside(
                     f"min and the mount is still on the {sides[0]} side; "
                     f"moving on rather than exposing across the pier")
 
+    # DELIBERATE RE-PIN (WP 6.2, owner ruling D-E, #180 part B). This case
+    # pinned "three failures set the panel aside" (three hops, one warning,
+    # a Session.set_aside record of the stop's sentence). A mosaic panel is
+    # now SKIPPED at its third failure and retried every round: the other
+    # three complete, 2-2 is then the last live panel, each round is a held
+    # pass (it failed and nothing was banked), and D-03's six held passes set
+    # the group's last panel aside. The deferrals, their sentences and the
+    # one-hop-a-pass rule while others are live are what it still grades.
+    #
+    # THE FRAME-LOOP SWEEP IS THE ONE STOP THAT MENDS ITSELF: a refocus is due
+    # only while frames have been banked since the last sweep, and the failed
+    # sweeps keep the panel from banking, so after the retries a visit finds
+    # nothing due and shoots. That is what rotation is for: the panel comes
+    # back and banks all its frames, is complete and leaves the rotation,
+    # where it used to be set aside for the night after three visits.
+    mends = stop == "autofocus in the frame loop"
     hops = _gotos(night, FAILING)
-    assert len(hops) == 3, (
-        f"{FAILING} was hopped to {hops}: a deferral is retried once a pass "
-        f"until its third failure")
+    assert len(hops) >= 3 + (0 if mends else 6), (
+        f"{FAILING} was hopped to {hops}: a skipped panel is retried every "
+        f"round, and the last live panel's held passes end the night")
     # By position in the list of hops, not by time: a stop at the hop costs
     # no time on the fake clock, so the next panel's hop can share its
     # instant.
     order = [who for _t, who in night.gotos]
-    at = [i for i, who in enumerate(order) if who == _name(FAILING)]
+    at = [i for i, who in enumerate(order) if who == _name(FAILING)][:3]
     between = [order[a + 1:b] for a, b in zip(at, at[1:])]
     assert all(between), f"{FAILING} was retried within one pass: {order}"
-    assert _shot(night, FAILING) == [], night.shots()
+    assert _shot(night, FAILING) == (["L"] * 3 + ["R"] * 3 if mends else []), (
+        night.shots())
     for label in OTHERS:
         assert _shot(night, label) == ["L", "R"] * 3, (label, night.shots())
 
@@ -316,13 +339,26 @@ async def test_a_plain_stop_defers_the_panel_and_three_set_it_aside(
         assert night.said(retry), (retry, night.lines[-6:])
     reason = (f"the visit stopped on {FAILING} on 3 consecutive visits: "
               f"{expected}")
+    skipped = [(lvl, m) for _t, lvl, m in night.lines
+               if lvl == "warning" and f"{reason}; skipped" in m]
+    assert len(skipped) == 1 and "is retried every round" in skipped[0][1], (
+        skipped)
     alerts = [(lvl, m) for _t, lvl, m in night.lines
               if "set aside for tonight" in m]
-    assert alerts == [("warning", f"M31: {reason}; set aside for tonight: a "
-                                  f"restart tonight does not retry it, the "
-                                  f"next night does")], alerts
-    assert [(r["target_id"], r["reason"]) for r in night.stored.set_aside] == [
-        ("p11", reason)], night.stored.set_aside
+    assert [(r["target_id"], r["kind"]) for r in night.stored.panel_skips] == [
+        ("p11", "deferred")], night.stored.panel_skips
+    if mends:
+        assert alerts == [] and night.stored.set_aside == [], (
+            alerts, night.stored.set_aside)
+        assert night.stored.standing_skip("p11") is None
+        night.premise()
+        return
+    assert len(alerts) == 1 and alerts[0][0] == "warning", alerts
+    assert alerts[0][1].startswith(
+        "M31: 2-2 (the mosaic's last live panel) has been held for 6 passes"), (
+        alerts)
+    assert [(r["target_id"], r["kind"]) for r in night.stored.set_aside] == [
+        ("p11", "deferred")], night.stored.set_aside
     assert not night.said(f"{_name(FAILING)}: skipped —"), (
         "the scheduler dropped the panel for the run")
     last = night.states[-1]

@@ -692,7 +692,8 @@ def _set_aside_tonight(target: Target, remaining: dict[str, int],
 def _group_order(group: TargetGroup, members: list[Target],
                  live: list[Target], done: dict[str, int],
                  last_ts: dict[str, float],
-                 pool_scores: dict[str, float] | None = None) -> list[Target]:
+                 pool_scores: dict[str, float] | None = None,
+                 skipped: frozenset[str] = frozenset()) -> list[Target]:
     """``live``, the group's panels the run can still shoot tonight, in the
     order ``panel_order.order_panels`` gives them from the ledger (spec 5.2,
     5.9). ``members`` is every panel of the group, complete ones included,
@@ -716,6 +717,12 @@ def _group_order(group: TargetGroup, members: list[Target],
     descending, whatever the width. So a narrower count than the layout's,
     when a whole column was skipped, gives the same order, and a stale
     geometry cannot make a panel "outside the grid".
+
+    THE PANELS THE RUN IS SKIPPING GO LAST (D-E, #180 part B): ``skipped`` is
+    the ids of the live panels with a standing skip tonight (the caller reads
+    ``Session.standing_skip``), the same set the run's own snapshot carries
+    after a restart (`SequenceEngine._order_snapshot`), so the mount is not
+    re-centred on a panel the run then orders last.
 
     A POOL (#183) is ordered by its strategy (``panel_order.order_pool``),
     the pick first, as the run selects. ``pool_scores`` is the "best"
@@ -743,7 +750,7 @@ def _group_order(group: TargetGroup, members: list[Target],
               and m.panel_row is not None and m.panel_col is not None]
     last = max(placed, key=lambda m: last_ts[m.id], default=None)
     snapshot = OrderSnapshot(
-        fraction_banked=fraction, last_visit_ts=visited,
+        fraction_banked=fraction, last_visit_ts=visited, skipped=skipped,
         last_visited=None if last is None else (last.panel_row,
                                                 last.panel_col))
     cols = 1 + max((m.panel_col for m in members
@@ -757,6 +764,21 @@ def _group_order(group: TargetGroup, members: list[Target],
                            f"out ({e}), so it re-centres on its panels in "
                            f"plan order", "sequence")
         return list(live)
+
+
+def _skipped_tonight(session: Session, panels: list[Target],
+                     night: str) -> frozenset[str]:
+    """The ids of ``panels`` the run has a standing skip for on ``night``
+    (`Session.standing_skip`: no frame banked since): what the engine puts
+    back at a same-night restart (`SequenceEngine._restore_panel_skips`), so
+    the ladder orders them last as the run does. An earlier night's skip is
+    history, here as there."""
+    out = set()
+    for p in panels:
+        rec = session.standing_skip(p.id)
+        if rec is not None and rec.get("night") == night:
+            out.add(p.id)
+    return frozenset(out)
 
 
 def _pool_scores(group: TargetGroup, candidates: list[Target], site,
@@ -967,7 +989,8 @@ def recentre_candidates(session: Session, night: str,
                 ordered = _group_order(
                     group, members, eligible, done, last_ts,
                     _pool_scores(group, eligible, site if gate else None,
-                                 now))
+                                 now),
+                    _skipped_tonight(session, eligible, night))
                 if gate and flipped_tonight(group):
                     ordered = _past_meridian_first(ordered, site, now)
                 out.extend(ordered)

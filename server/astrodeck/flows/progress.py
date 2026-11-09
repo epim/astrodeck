@@ -121,7 +121,7 @@ from typing import TYPE_CHECKING
 
 from ..events import night_key
 from ..sequence.group_rules import CENTRING
-from ..sequence.session import STARVED_AFTER_NIGHTS
+from ..sequence.session import STARVED_AFTER_NIGHTS, STARVING_KINDS
 from . import identity, tonight
 # ONE READING OF WHICH PANELS A PLAN SKIPS, CONTINUE's own (#335), so the
 # card and the dropped-steps question name one set of frames as lost.
@@ -165,6 +165,7 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
                    panels: [{target_id, name, row, col, banked, owed, total,
                              [locked_angle: {pa_deg, source}],
                              [starved: {nights, kind}],
+                             [rotating: {visits, kind}],
                              steps: [{step_id, filter, frame_type, exposure_s,
                                       count, banked, owed}]}]}],
          orphaned: {frames, steps}}
@@ -224,6 +225,14 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
     then the nights before it, #942) and not counting a night the session
     ran that never reached the panel (#970), and ``kind``,
     "centring", "guide_start" or "deferred". Never the record's reason.
+
+    ``rotating`` is present only on a MOSAIC panel that is being skipped
+    (owner ruling D-E, #180 part B; ``_rotating``, ``Session.standing_skip``):
+    ``{visits, kind}``, its consecutive failed visits and the streak's word
+    ("centring", "guide_start", "deferred" or "rejects"). A rotating panel is
+    never set aside for its own failures, so it carries no ``starved`` unless
+    nights of it have gone by with no frame, and the Tonight note says it is
+    being skipped.
 
     ``now`` (#727) is the clock the ROUTE hands in, as it does for
     ``continue_night``, and with it a DORMANT session's mosaic block adds one
@@ -598,6 +607,35 @@ def _starved(session: "Session | None",
     return {"nights": nights, "kind": kind}
 
 
+#: The kinds a skip record carries: the starving kinds and the reject rule's.
+#: A closed set, so no free text a hand-edited record held can travel.
+_ROTATING_KINDS = (*STARVING_KINDS, "rejects")
+
+
+def _rotating(session: "Session | None",
+              target: "Target | None") -> dict | None:
+    """``{visits, kind}`` for a panel of a rotating mosaic that is being
+    SKIPPED (owner ruling D-E, #180 part B): it failed its bound of
+    consecutive visits, is not set aside, and is tried again every round until
+    it banks a frame. None when it has no standing skip
+    (``Session.standing_skip``: a frame banked since ends it), so every panel
+    and every answer without one is exactly what it was before.
+
+    WORDS AND A COUNT ONLY, as ``_starved`` is: ``kind`` one of the closed
+    ``_ROTATING_KINDS`` and ``visits`` a whole number, never the record's
+    time. A viewer reads this answer."""
+    if session is None or target is None:
+        return None
+    rec = session.standing_skip(target.id)
+    if rec is None:
+        return None
+    kind, visits = rec.get("kind"), rec.get("visits")
+    if (kind not in _ROTATING_KINDS or isinstance(visits, bool)
+            or not isinstance(visits, int) or visits < 1):
+        return None
+    return {"visits": visits, "kind": kind}
+
+
 def _block_lock(panels: list[dict]) -> dict | None:
     """A TARGET block's locked angle: the one every panel the plan holds is
     locked to, or None. A single target is one panel, so this is that
@@ -735,6 +773,9 @@ def _mosaic(plan: "SequencePlan", entry: dict, counts: dict[str, int],
         starved = _starved(session, target)
         if starved is not None:
             panel["starved"] = starved
+        rotating = _rotating(session, target)
+        if rotating is not None:
+            panel["rotating"] = rotating
         block["panels"].append(panel)
         for field in ("banked", "owed", "total"):
             block[field] += panel[field]
