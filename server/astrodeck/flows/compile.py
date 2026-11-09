@@ -34,8 +34,8 @@ import re
 from ..devices.base import DomePolicy
 from .identity import finite_number
 from .models import FlowEdge, FlowGraph, FlowNode
-from .nodes import (NODE_DEFS, dusk_auto_resume, parse_cycle_plan, port_kind,
-                    target_angle)
+from .nodes import (NODE_DEFS, autofocus_when, dusk_auto_resume,
+                    parse_cycle_plan, port_kind, target_angle)
 
 #: Trigger vocabulary, and what the engine can now do with it.
 #:
@@ -1449,6 +1449,15 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
                 # a copy per target: they are independently editable downstream,
                 # and a shared dict would make one target's edit rewrite them all
                 t["steps"].append(dict(step))
+        elif n.type == "autofocus":
+            # WHEN A MOSAIC'S HOP SWEEPS (#185), written only for a choice
+            # other than the default, and `receivers` only asked then: it
+            # notes every target the canvas-order rule would add, which would
+            # change the notes of a flow that never touched the choice.
+            when = autofocus_when(n.params.get("when"))
+            if when != "stale":
+                for t in receivers(n)[0]:
+                    t["autofocus_when"] = when
         elif n.type == "cycle":
             # ONE STEP, NOT ONE PER SLOT. The handoff's compile spec is explicit:
             # a FILTER CYCLE stage becomes a single object carrying its whole

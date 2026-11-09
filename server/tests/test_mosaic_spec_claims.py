@@ -26580,7 +26580,9 @@ def test_5_1_says_the_centring_hold_and_the_scan_as_h4_built_them():
                 "close and no further", "with no stop the scan covers the "
                 "full sidereal day", "An autofocus that fails under skip "
                 "reaches the plain-stop row only after its sparse-field "
-                "retry (5.6 step 6)."), "5.1")
+                "retry (5.6 step 6), unless it is the sweep a mosaic hop "
+                "owed, which never defers a panel (5.6 step 6, #185)."),
+                "5.1")
     verdict = group_rules.centring_pass_verdict
     t0 = 1_700_000_000.0
     behaviour = ((verdict(2, 2), verdict(1, 1), verdict(3, 2)),
@@ -26744,7 +26746,11 @@ def test_5_6_says_the_hop_as_h4_built_it():
                 "`min_probe_stars=SPARSE_FIELD_WARN`",
                 "(`AutofocusResult.gated`)", "A declined probe keeps the debt",
                 "A light frame's star count decides nothing now",
-                "(#558; fixed by backlog WP-102, wave 15)"), "5.6")
+                "(#558; fixed by backlog WP-102, wave 15)",
+                "**As built since WP 5.3, where a mosaic's due sweep runs "
+                "and when** (#185).", "(`_focus_site`)",
+                "(`_refocus_left_to_the_hop`)", "`_hop_policy_owes`"),
+                "5.6")
     hub_src = inspect.getsource(hub_mod.Hub)
     borrowing = sorted(name for name in ("_rotate_to_pa_attempts",
                                          "sync_rotator_to_sky",

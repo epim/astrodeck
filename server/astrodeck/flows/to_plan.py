@@ -1771,8 +1771,9 @@ def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
     convergence, ``corrects_convergence``, #175; the block's angle on every
     panel otherwise), ``acquisition = "cycle"`` when a stage cycles or the
     loop wire rotates the panels, the block's centring,
-    ``autofocus_skip_if_fresh`` (a hop does not move the focuser, spec 5.6)
-    and the dusk schedule.
+    ``autofocus_skip_if_fresh`` (a hop does not move the focuser, spec 5.6),
+    the AUTOFOCUS stage's ``autofocus_when`` when it is not the default
+    (#185) and the dusk schedule.
 
     The group's id is ``identity.group_id`` over the block's key
     (``_block_key``: its anchor), so a panel's id, ``target_id(group, row,
@@ -1847,6 +1848,8 @@ def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
         (s or {}).get("strategy") == "cycle"
         for s in (entry.get("steps") or []))
     centring = _centring(entry)
+    focus_when = ({"autofocus_when": entry["autofocus_when"]}
+                  if entry.get("autofocus_when") else {})
     panels: list[dict] = []
     skipped_ids: list[str] = []
     for p in layout_panels:
@@ -1866,7 +1869,7 @@ def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
                  "steps": _panel_steps(steps, overrides.get((row, col))),
                  "mosaic_group": group_id, "panel_row": row,
                  "panel_col": col, "autofocus_skip_if_fresh": True,
-                 **centring}
+                 **centring, **focus_when}
         if cycles:
             panel["acquisition"] = "cycle"
         if (row, col) in overrides:

@@ -226,6 +226,26 @@ def default_flats_method() -> str:
     return next(m.label for m in DUSK_FLATS_METHODS if m.engine_capable)
 
 
+#: The AUTOFOCUS node's "When" options inside a mosaic lane (#185), the label
+#: the card shows and the ``Target.autofocus_when`` word the compile makes of
+#: it. The first is the missing-key default AND what a node is created with,
+#: so a flow saved before the choice existed runs the hop rule it always has.
+AUTOFOCUS_WHEN: tuple[tuple[str, str], ...] = (
+    ("When stale", "stale"),
+    ("Every panel", "every"),
+    ("First panel only", "first"),
+)
+
+
+def autofocus_when(label: object) -> str:
+    """The ``Target.autofocus_when`` word an AUTOFOCUS ``when`` text names,
+    matched on its own text lower-cased; "stale" for a text that is none of
+    them, which is the rule a missing key reads as."""
+    text = str(label or "").strip().lower()
+    return next((word for shown, word in AUTOFOCUS_WHEN
+                 if shown.lower() == text), "stale")
+
+
 #: The two flow settings the quick sheet's chips write (#820, WP 4.1a): flat
 #: scalars in ``FlowGraph.settings``, outside ``FLOW_SETTINGS`` (they are no
 #: choice the editor offers) and kept by every round trip because unknown
@@ -412,7 +432,8 @@ NODE_DEFS: dict[str, NodeDef] = {
         type="autofocus", label="AUTOFOCUS", cat="RIG",
         ins=(_f("run", "run"),),
         outs=(_f("focused", "focused"), _e("pass", "pass done")),
-        params={"method": "V-curve sweep", "step": 12, "samples": 9}),
+        params={"method": "V-curve sweep", "step": 12, "samples": 9,
+                "when": "When stale"}),
     "guide": NodeDef(
         type="guide", label="GUIDE", cat="RIG",
         ins=(_f("run", "run"),),

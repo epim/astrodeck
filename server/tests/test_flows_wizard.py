@@ -660,8 +660,15 @@ _S3_POOL_KEYS = {"counts"}
 #: every one of the 576 dumped graphs carries it. Checked, not assumed: with
 #: ``panelExposure`` popped from each TARGET (asserting it is "" on every one)
 #: the same dump hashes to the PREVIOUS pin, ``3ada16aad2f9...``, byte for byte.
+#: RE-PINNED AGAIN IN WP 5.3 (#185), on top of WP 5.4, deliberately, for one change and nothing else:
+#: AUTOFOCUS gained its ``when`` param, "When stale" by default
+#: (`flows.nodes`), which ``generate()`` writes onto every autofocus node it
+#: creates, so every one of the 576 dumped graphs that draws one carries it.
+#: Checked, not assumed: with ``when`` popped from each autofocus node
+#: (asserting it is "When stale" on every one) the same dump hashes to the
+#: WP 5.4 pin, ``db11314fb1d6...``, byte for byte.
 THREE_ANSWER_GRAPHS_SHA256 = \
-    "db11314fb1d6f3ffb2eb9f4ce9a72392794dda878edcf84b34638dac38555453"
+    "5e3fa54e6ce23b12a3826797594db1ea50e5b7447aef0289c8bb6c6d84e8b4bb"
 
 #: The pre-S3 generator's PLAN for every three-answer body with target "M31"
 #: (THREE_KINDS x all 64 chip subsets), ids blanked, hashed the same way.
