@@ -41,6 +41,14 @@ made before the call. An order function that could drop a panel could starve
 it, and 5.2's promise that every eligible panel gets one visit per pass rests
 on this one.
 
+A SKIPPED PANEL GOES LAST, UNDER EVERY POLICY (D-E, #180 part B). A panel that
+has failed its bound of consecutive visits (``OrderSnapshot.skipped``) is put
+behind every panel that has not, and among the skipped ones the policy's own
+order decides. Under ``least_complete`` a panel that never banks has the lowest
+fraction and would otherwise lead every round, so the group would pay its
+failing hop first each time. It is still in the list and still visited every
+round: the order is the only thing that moves.
+
 THE SNAKE INDEX is the panel's position in ``framing.compute_mosaic``'s panel
 list: row by row, even rows by ascending column and odd rows by descending
 column, which keeps each hop to a neighbour. It is computed from
@@ -122,6 +130,10 @@ class OrderSnapshot:
     #: A pool candidate's score, higher is better (``order_pool``'s "best").
     #: Missing or None: no score, which sorts last.
     pool_score: Mapping[str, float | None] = field(default_factory=dict)
+    #: Ids of the panels that have failed their bound of consecutive visits
+    #: and banked nothing since (``GroupRun.skipped``): they go last, under
+    #: every policy. Empty: no panel is skipped.
+    skipped: frozenset[str] = frozenset()
 
 
 def snake_index(row: int, col: int, cols: int) -> int:
@@ -200,6 +212,9 @@ def order_panels(
         last = snake_index(snap.last_visited[0], snap.last_visited[1], cols)
 
     def key(p: P) -> tuple:
+        return (p.id in snap.skipped, *policy_key(p))
+
+    def policy_key(p: P) -> tuple:
         snake = snake_index(p.panel_row, p.panel_col, cols)  # type: ignore[arg-type]
         # Every number is checked whichever policy reads it: the snapshot is
         # one object for the pass, and a NaN in it is the caller's bug under

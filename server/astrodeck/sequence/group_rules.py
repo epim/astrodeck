@@ -451,7 +451,7 @@ class VisitBound:
 
 # -------------------------------------------------------------------- GroupRun
 
-VisitActionKind = Literal["remove", "requeue", "set_aside"]
+VisitActionKind = Literal["remove", "requeue", "set_aside", "skip"]
 
 
 @dataclass(frozen=True)
@@ -462,8 +462,11 @@ class VisitAction:
     ``on_target_complete`` rules. ``requeue``: move it behind the group's
     unvisited members. ``set_aside``: skip it tonight, with a WARNING alert
     carrying ``reason``, a ``Session.set_aside`` record and
-    ``reporter.mark_skipped``; it is retried the next night. ``reason`` is the
-    decision in words, for the log or the alert.
+    ``reporter.mark_skipped``; it is retried the next night. ``skip`` (a
+    rotating run, D-E #180 part B): the panel reached its failure bound and
+    stays live; requeue it, record the skip (``GroupRun.skip_kind``), and it
+    goes behind the other panels each round until it banks a frame.
+    ``reason`` is the decision in words, for the log or the alert.
     """
 
     action: VisitActionKind
@@ -518,9 +521,16 @@ class PassEnd:
     count the visit's own line said before centring failures were held
     (#534), said now where it is made.
 
+    ``skipped``: ``(target_id, reason)`` for every panel of a ROTATING run
+    (D-E, #180 part B) whose held failure, counted at this boundary, reached
+    its bound: not set aside, still live, owed a skip record and a line. Empty
+    for a run that does not rotate, where the same failure is in ``set_aside``.
+
     ``held_streak`` (D-03, #563, #576): the group's current count of
     CONSECUTIVE held passes after this one closed -- nonzero only when
-    ``boundary`` is ``"centring_hold"`` or an all-transient ``"defer_wait"``
+    ``boundary`` is ``"centring_hold"`` or a ``"defer_wait"`` every deferral
+    of which was a solve that could not run, or, in a rotating run, one in
+    which every live panel deferred
     (:meth:`GroupRun._apply_held_pass_rule`), zero for every other boundary,
     including the ``"set_aside_all"`` the streak itself can produce once it
     escalates. The caller reads it to warn the operator once, at
@@ -534,6 +544,7 @@ class PassEnd:
     reason: str
     counted: tuple[tuple[str, str], ...] = ()
     held_streak: int = 0
+    skipped: tuple[tuple[str, str], ...] = ()
 
 
 def guide_start_pass_verdict(attempted: int, failed: int) -> Literal["rig", "panel"]:
@@ -654,7 +665,10 @@ def set_aside_expiry(*, now: float, set_at: float,
     of centring failures and nothing else, :meth:`GroupRun.set_aside_kind`);
     a floor, a reject guard, a pier refusal or any other set-aside never
     expires, since waiting does not change what set it aside, or the night
-    already waited for it.
+    already waited for it. Since D-E (#180 part B) a mosaic panel's own
+    centring failures set nothing aside (:class:`GroupRun` ``rotate``), so
+    only a pool candidate's streak, and a record an earlier build left for
+    tonight, ever reach this.
     """
     t = _finite("now", now)
     t0 = _finite("set_at", set_at)
@@ -817,9 +831,25 @@ class GroupRun:
       mosaic's last live panel after ``HELD_PASS_STARVED_SET_ASIDE_AT`` held
       passes instead of ``HELD_PASS_SET_ASIDE_AT``. Empty for every other
       group and night, which behave exactly as before.
+    - ``rotate`` (owner ruling D-E of 2026-10-22, #180 part B): a panel's OWN
+      failures never set it aside. The engine passes True for a mosaic and
+      False for a pool, whose candidates keep the three-strike set-aside, and
+      the default is False so every direct caller is as it was. In a rotating
+      run the bound ``max_failed_visits`` means SKIPPED: the panel stays live,
+      is named in :meth:`skipped` and ``skip_kind``, goes behind the other
+      panels in the next round's order (``panel_order``) and is retried every
+      round, until a visit banks a frame or it completes. Its failure count
+      keeps counting, for the words and for the session's record. Only the
+      GROUP rules below can still end a night for it (D-03's held passes,
+      the rig verdicts, a fixed camera's angle), because they blame the sky or
+      the rig and the group comes back the next night.
+    - ``skip_kind``: target id to the kind word of a skipped panel's streak,
+      the ``set_aside_kind`` words for the same streaks ("centring",
+      "guide_start", "deferred") and "rejects" for the reject rule.
     """
 
-    def __init__(self, members: Mapping[str, str], *, max_failed_visits: int):
+    def __init__(self, members: Mapping[str, str], *, max_failed_visits: int,
+                 rotate: bool = False):
         if not members:
             raise ValueError("a group needs at least one member")
         if (isinstance(max_failed_visits, bool)
@@ -830,6 +860,7 @@ class GroupRun:
                 f"got {max_failed_visits!r}")
         self.members: dict[str, str] = {str(k): str(v) for k, v in members.items()}
         self.max_failed_visits = max_failed_visits
+        self.rotate = bool(rotate)
         self.pass_no = 1
         self.visited: set[str] = set()
         self.exposures_this_pass = 0
@@ -845,7 +876,12 @@ class GroupRun:
         self.defer_why: Literal["deferred", "centring"] = "deferred"
         self.let_through: set[str] = set()
         self.set_aside_kind: dict[str, str] = {}
+        self.skip_kind: dict[str, str] = {}
         self.expired: set[str] = set()
+        # Every panel whose visit ended in a deferral this pass, of any kind
+        # (a transient solve included): what tells a round in which EVERY
+        # live panel failed (`_decide_pass_end`). Cleared by `start_pass`.
+        self._deferred_panels: set[str] = set()
         # The reject rule's window, "since this panel's previous visit", on a
         # visit counter rather than the clock: two visits can share a clock
         # second on a fake clock, and the order of visits is what the rule
@@ -859,6 +895,10 @@ class GroupRun:
         # The guide-start pass rule's ledger for the current pass.
         self.guide_attempts = 0
         self.guide_failures = 0
+        # The panels whose hop reached the guider start this pass, those that
+        # started and those that failed (D-E, #180 part B): what tells a pass
+        # whose attempts were all rotating panels from one that was not.
+        self._guide_attempted: set[str] = set()
         self._held: list[tuple[str, PanelDeferred]] = []
         # The centring pass rule's ledger for the current pass (#534): the
         # panels visited, each once, and those whose hop did not centre. Sets,
@@ -894,6 +934,23 @@ class GroupRun:
     def live(self) -> list[str]:
         """The live members, in the group's order."""
         return [p for p in self.members if self.is_live(p)]
+
+    def skipped(self) -> frozenset[str]:
+        """The LIVE panels of a rotating run that have reached their failure
+        bound and not banked a frame since (D-E): the ones the next round's
+        order puts last. A panel that completed or was set aside by a group
+        rule is not one."""
+        return frozenset(p for p in self.skip_kind if self.is_live(p))
+
+    def restore_skip(self, panel: str, visits: int, kind: str) -> None:
+        """Put back a skip a same-night restart read from the session: the
+        panel's failure count and kind, so it is already behind the other
+        panels and its next failure is a skip, not the first of a fresh
+        streak. D-E says a restart revisits the panel, and it does."""
+        if panel not in self.members:
+            raise ValueError(f"{panel!r} is not a member of this group")
+        self.failed[panel] = _count("visits", visits)
+        self.skip_kind[panel] = str(kind)
 
     def note_let_through(self, panels: Iterable[str]) -> None:
         """Record the members one selection found it may visit now: ready by
@@ -986,6 +1043,7 @@ class GroupRun:
         self.failed[panel] = 0
         self.reject_visits[panel] = 0
         self._streak_kinds[panel] = set()
+        self.skip_kind.pop(panel, None)
         self.visited.discard(panel)
         self.expired.add(panel)
         if alone:
@@ -1048,6 +1106,7 @@ class GroupRun:
         self.failed[panel] = 0
         self.reject_visits[panel] = 0
         self._streak_kinds[panel] = set()
+        self.skip_kind.pop(panel, None)
         self.visited.discard(panel)
         self.held_streak = 0
         self._held_pass_reason = None
@@ -1085,11 +1144,13 @@ class GroupRun:
           that banks a frame has shown it can be shot tonight.
         - exposures taken, none accepted, while another live member accepted
           a frame since this panel's previous visit: requeue and add one to
-          ``reject_visits``; at ``max_failed_visits`` set it aside. When
+          ``reject_visits``; at ``max_failed_visits`` set it aside (a
+          rotating run skips it instead, :meth:`_count_failure`). When
           every member rejects, the sky is to blame and nothing moves: the
           night guard and the cloud hold own that case.
         - ``PanelDeferred``: mark it visited and add one to ``failed`` and to
-          ``deferred_this_pass``; at ``max_failed_visits`` set it aside with a
+          ``deferred_this_pass``; at ``max_failed_visits`` set it aside (a
+          rotating run skips it) with a
           reason naming the panel, the cause and the last error. A failed
           guide start is counted when the pass closes instead, because only
           the whole pass says whether it was the panel's fault or the rig's
@@ -1125,6 +1186,7 @@ class GroupRun:
             # Completion wins over a deferral raised after the last frame: the
             # panel owes nothing, so there is nothing to retry.
             self.completed.add(panel)
+            self.skip_kind.pop(panel, None)
             return VisitAction("remove", f"panel {label} complete")
 
         self.visited.add(panel)
@@ -1132,9 +1194,11 @@ class GroupRun:
             self.failed[panel] = 0
             self.reject_visits[panel] = 0
             self._streak_kinds[panel] = set()
+            self.skip_kind.pop(panel, None)
 
         if deferred is not None:
             self.deferred_this_pass += 1
+            self._deferred_panels.add(panel)
             if guide_failed:
                 self._held.append((panel, deferred))
                 return VisitAction(
@@ -1173,6 +1237,11 @@ class GroupRun:
                 if n >= self.max_failed_visits:
                     reason = (f"{label} rejected every frame for {_visits(n)} "
                               f"while the other panels were accepted")
+                    if self.rotate:
+                        self.skip_kind[panel] = "rejects"
+                        return VisitAction(
+                            "skip", f"{reason}; skipped for the rest of this "
+                                    f"round and tried again in the next")
                     self.set_aside[panel] = reason
                     self.set_aside_kind[panel] = "rejects"
                     return VisitAction("set_aside", reason)
@@ -1271,8 +1340,10 @@ class GroupRun:
         if guide_failed:
             self.guide_attempts += 1
             self.guide_failures += 1
+            self._guide_attempted.add(panel)
         elif guide_started:
             self.guide_attempts += 1
+            self._guide_attempted.add(panel)
         if not transient:
             self.centring_attempted.add(panel)
         if centring_failed:
@@ -1307,6 +1378,18 @@ class GroupRun:
         else:
             reason = (f"{label} was deferred on {_visits(n, 'consecutive ')}, "
                       f"the last because {deferred.reason}{tail}")
+        streak = self._streak_kinds[panel]
+        kind = (CENTRING if streak == {CENTRING}
+                else GUIDE_START if streak == {GUIDE_START} else "deferred")
+        if self.rotate:
+            # D-E (#180 part B): the bound is where the panel is SKIPPED, not
+            # dropped. It stays live and in every pass rule's count, goes
+            # behind the other panels in the next round's order, and is tried
+            # again every round until a visit banks a frame.
+            self.skip_kind[panel] = kind
+            return VisitAction(
+                "skip", f"{reason}; skipped for the rest of this round and "
+                        f"tried again in the next")
         self.set_aside[panel] = reason
         # A STREAK OF CENTRING FAILURES AND NOTHING ELSE is the one set-aside
         # that expires (#534, :func:`set_aside_expiry`): what hid the panel
@@ -1323,10 +1406,7 @@ class GroupRun:
         # word, so this changes no behaviour: it does not expire (only
         # CENTRING does, ``_may_expire``), and the published group state and
         # the session record carry the new word.
-        streak = self._streak_kinds[panel]
-        self.set_aside_kind[panel] = (
-            CENTRING if streak == {CENTRING}
-            else GUIDE_START if streak == {GUIDE_START} else "deferred")
+        self.set_aside_kind[panel] = kind
         return VisitAction("set_aside", reason)
 
     # -- the pass
@@ -1362,8 +1442,10 @@ class GroupRun:
 
         Returns ``(end, is_held, deferrals)`` for :meth:`close_pass`:
         ``is_held`` is D-03's "this pass counts toward the held-pass streak"
-        (true for the centring hold, and for a ``defer_wait`` whose every
-        deferral was SOLVE_TRANSIENT, #576), and ``deferrals`` is whichever
+        (true for the centring hold, for a ``defer_wait`` whose every
+        deferral was SOLVE_TRANSIENT, #576, and, in a rotating run, for one in
+        which every live panel deferred, whatever the kinds), and
+        ``deferrals`` is whichever
         held list backs that verdict, for :func:`_held_pass_reason_code` --
         empty whenever ``is_held`` is false, since nothing then asks it."""
         held, self._held = self._held, []
@@ -1397,6 +1479,7 @@ class GroupRun:
 
         set_aside: list[tuple[str, str]] = []
         counted: list[tuple[str, str]] = []
+        skipped: list[tuple[str, str]] = []
         # A centring miss in a pass where another panel centred is that
         # panel's, and counts as every other deferral does, what the visit's
         # own line counted before centring misses were held (#534). Counted
@@ -1408,11 +1491,26 @@ class GroupRun:
             act = self._count_failure(panel, deferred)
             if act.action == "set_aside":
                 set_aside.append((panel, act.reason))
+            elif act.action == "skip":
+                skipped.append((panel, act.reason))
             else:
                 counted.append((panel, act.reason))
 
         attempts, failures = self.guide_attempts, self.guide_failures
-        if guide_start_pass_verdict(attempts, failures) == "rig":
+        # A PASS OF ROTATING PANELS ONLY IS NOT THE RIG'S FAULT (D-E, #180
+        # part B). Once the panels that guide have completed, the live ones
+        # may all be panels already in the skip rotation, failing for their
+        # own reasons while others shot; "every attempted panel failed" is
+        # then true of them by construction, and read as the guider's fault it
+        # would abort the run (require_guiding, abort) or shoot them unguided
+        # (warn), neither of which happened before rotation. They stay
+        # skipped, and the round is a held pass (D-03). A pass that includes
+        # any panel not in the rotation is judged exactly as before. Read
+        # before this pass's own failures are counted: "already" skipped.
+        rotation_only = (bool(self._guide_attempted)
+                         and self._guide_attempted <= self.skipped())
+        if (guide_start_pass_verdict(attempts, failures) == "rig"
+                and not rotation_only):
             # THE SENTENCE MUST NOT CLAIM WHAT THE SAME PASS JUST DID (#575).
             # A centring miss held above can be counted, or even set a panel
             # aside, before this verdict is reached (a pass can hold both a
@@ -1434,7 +1532,7 @@ class GroupRun:
                 f"guiding did not start on any of the {attempts} panels tried "
                 f"this pass: the guider's fault, not a panel's; {also}, and "
                 f"the plan's guiding_action decides",
-                tuple(counted)), False, []
+                tuple(counted), skipped=tuple(skipped)), False, []
 
         for panel, deferred in held:
             if not self.is_live(panel):
@@ -1442,12 +1540,15 @@ class GroupRun:
             act = self._count_failure(panel, deferred)
             if act.action == "set_aside":
                 set_aside.append((panel, act.reason))
+            elif act.action == "skip":
+                skipped.append((panel, act.reason))
 
         live = self.live()
         if not live:
             return PassEnd("none_live", tuple(set_aside),
                            "no panel is left to shoot tonight: every one is "
-                           "complete or set aside", tuple(counted)), False, []
+                           "complete or set aside", tuple(counted),
+                           skipped=tuple(skipped)), False, []
         boundary = pass_boundary(self.exposures_this_pass, self.deferred_this_pass)
         if boundary == "set_aside_all":
             reason = (f"a full pass over {len(live)} panels took no exposures; "
@@ -1457,26 +1558,40 @@ class GroupRun:
                 self.set_aside_kind[p] = "group"
                 set_aside.append((p, reason))
             return PassEnd(boundary, tuple(set_aside), reason,
-                           tuple(counted)), False, []
+                           tuple(counted), skipped=tuple(skipped)), False, []
         if boundary == "defer_wait":
             # ALL-TRANSIENT (#576): every deferral this pass was a solve
             # that could not run, so nothing about a panel or the sky
             # failed -- the same shape the all-fail centring hold is, on
             # the other path a hop's checks can defer by. D-03 counts it
             # the same way: held, consecutively, toward one streak.
-            is_held = bool(held_transient) and (
+            all_transient = bool(held_transient) and (
                 len(held_transient) == self.deferred_this_pass)
+            # EVERY LIVE PANEL FAILED, NOTHING BANKED (D-E, #180 part B). A
+            # rotating run never sets a panel aside for its own failures, so
+            # a round in which every panel still live deferred is what the
+            # per-panel bound used to end: with rotation nothing else would,
+            # and a lone failing panel would be retried every
+            # ``DEFER_WAIT_S`` all night. It counts toward the same streak
+            # whatever the failure kinds, and hands no reason code on (count
+            # only): a repeated target-stop sentence is not evidence of a
+            # rig-side fault. A live panel the pass never reached (held back
+            # by the meridian rule or a limit) did not fail, so such a pass
+            # stays a plain deferral wait.
+            every_live_failed = self.rotate and set(live) <= self._deferred_panels
+            is_held = all_transient or every_live_failed
             return PassEnd(
                 boundary, tuple(set_aside),
                 f"pass {self.pass_no} took no exposures and deferred "
                 f"{self.deferred_this_pass} visits; waiting "
-                f"{DEFER_WAIT_S:.0f} s before the next pass", tuple(counted)
-            ), is_held, (held_transient if is_held else [])
+                f"{DEFER_WAIT_S:.0f} s before the next pass", tuple(counted),
+                skipped=tuple(skipped)
+            ), is_held, (held_transient if all_transient else [])
         return PassEnd(
             boundary, tuple(set_aside),
             f"pass {self.pass_no} ended with {self.exposures_this_pass} "
             f"exposures and {self.deferred_this_pass} deferrals",
-            tuple(counted)), False, []
+            tuple(counted), skipped=tuple(skipped)), False, []
 
     def _apply_held_pass_rule(
             self, end: PassEnd, is_held: bool,
@@ -1526,7 +1641,7 @@ class GroupRun:
         are done spent an hour of sky every night on the one that never
         centred. The set-aside is the same one, the same "deferred" kind
         (so the panel's streak goes on, and the Campaign goes on naming it),
-        and its reason says how many nights it had been set aside. A panel
+        and its reason says how many nights it had no frame. A panel
         that centres is not held, so the bound never touches it, and one
         that shot a frame tonight, or that the operator brought back, is no
         longer in ``starved_nights``.
@@ -1568,7 +1683,7 @@ class GroupRun:
                 reason = (
                     f"{subject} has been held for {streak} "
                     f"{'pass' if streak == 1 else 'passes'} in a row with no "
-                    f"panel struck and no progress made, and was set aside "
+                    f"panel struck and no progress made, and had no frame "
                     f"on {starved} nights running before tonight; set aside "
                     f"for tonight without waiting for "
                     f"{HELD_PASS_SET_ASIDE_AT} passes")
@@ -1601,9 +1716,9 @@ class GroupRun:
             self._held_pass_reason = None
             return PassEnd("set_aside_all",
                            tuple((p, reason) for p in panels), reason,
-                           end.counted)
+                           end.counted, skipped=end.skipped)
         return PassEnd(end.boundary, end.set_aside, end.reason, end.counted,
-                       held_streak=streak)
+                       held_streak=streak, skipped=end.skipped)
 
     def start_pass(self) -> None:
         """Begin the next pass: clear ``visited``, ``let_through`` and the
@@ -1626,8 +1741,10 @@ class GroupRun:
         self.deferred_this_pass = 0
         self.guide_attempts = 0
         self.guide_failures = 0
+        self._guide_attempted.clear()
         self.centring_attempted.clear()
         self.centring_failed.clear()
+        self._deferred_panels.clear()
 
     # -- the deferral wait (#304)
 

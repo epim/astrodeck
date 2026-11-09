@@ -131,7 +131,7 @@ def test_a_starved_last_panel_is_set_aside_at_its_first_held_pass():
     assert run.held_streak == 0
     assert end.reason == (
         "1-2 (the mosaic's last live panel) has been held for 1 pass in a row "
-        "with no panel struck and no progress made, and was set aside on 4 "
+        "with no panel struck and no progress made, and had no frame on 4 "
         "nights running before tonight; set aside for tonight without "
         "waiting for 6 passes"), end.reason
 
@@ -551,11 +551,18 @@ async def test_the_fourth_night_gives_up_on_a_starved_panel_after_one_pass(
         kinds = [r["kind"] for r in night.stored.set_aside
                  if r["night"] == night_key(night.t0)]
         if k == 0:
-            # Beside 1-2's three visits it strikes out (a centring
-            # set-aside, which expires 45 minutes on), then is the last
-            # live panel for the six held passes.
-            assert len(hops) == 3 + 6 and kinds == ["centring", "deferred"], (
+            # Beside 1-2's three visits it strikes out. DELIBERATE RE-PIN
+            # (WP 6.2, owner ruling D-E, #180 part B): that used to be a
+            # centring set-aside, which expired 45 minutes on. A mosaic
+            # panel is now SKIPPED at its bound (a skip record, not a
+            # set-aside) and stays in the rotation, so the only set-aside
+            # of the night is the held-pass rule's, once it is the last
+            # live panel for the six held passes. The hops are the same.
+            skips = [r["kind"] for r in night.stored.panel_skips
+                     if r["night"] == night_key(night.t0)]
+            assert len(hops) == 3 + 6 and kinds == ["deferred"], (
                 hops, kinds)
+            assert skips == ["centring"], skips
         else:
             assert len(hops) == 6 and kinds == ["deferred"], (k, hops, kinds)
         assert hops[-1] - hops[-2] == CENTRING_HOLD_RETRY_S
@@ -571,7 +578,12 @@ async def test_the_fourth_night_gives_up_on_a_starved_panel_after_one_pass(
                if r["night"] == night_key(fourth.t0)]
     assert [(r["target_id"], r["kind"], r["step_id"]) for r in tonight] == [
         ("p00", "deferred", None)], tonight
-    assert ("was set aside on 3 nights running before tonight"
+    # DELIBERATE WORDING CHANGE (WP 6.2, owner ruling D-E, #180 part B): this
+    # said "was set aside on 3 nights running before tonight", as Part A's
+    # sentence did. A rotating mosaic panel is skipped, never set aside, for
+    # its own failures, so the reason says what is true of both:
+    # "had no frame on 3 nights running before tonight".
+    assert ("had no frame on 3 nights running before tonight"
             in tonight[0]["reason"]), tonight
     assert fourth.said("a restart tonight does not retry it, the next night "
                        "does"), fourth.lines[-4:]

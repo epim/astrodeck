@@ -161,10 +161,16 @@ async def test_control_with_guiding_required_the_last_panel_still_defers(
     assert night.done, night.trace[-3:]
     assert night.engine.state.get("end_reason") == "incomplete", (
         night.engine.state.get("end_reason"), night.engine.state.get("detail"))
-    assert night.visits() == [(_name("1-1"), ())] * 3, night.visits()
+    # DELIBERATE RE-PIN (WP 6.2, owner ruling D-E, #180 part B): the lone panel
+    # was set aside at its third failed pass (three visits). A mosaic panel
+    # is no longer set aside for its own failures: it is skipped at the
+    # third and retried every pass, every pass is a held pass (it failed and
+    # nothing was banked), and D-03's six held passes are what set it
+    # aside: six visits, the five waits between them.
+    assert night.visits() == [(_name("1-1"), ())] * 6, night.visits()
     assert night.shots() == []
     assert [r["target_id"] for r in night.stored.set_aside] == ["p00"]
-    assert len(night.said(WAITING)) == 2, night.said("waiting")
+    assert len(night.said(WAITING)) == 5, night.said("waiting")
 
 
 async def test_control_a_connected_guider_that_fails_on_the_last_panel_still_defers(
@@ -197,7 +203,13 @@ async def test_control_a_connected_guider_that_fails_on_the_last_panel_still_def
     assert night.done, night.trace[-3:]
     assert night.engine.state.get("end_reason") == "incomplete", (
         night.engine.state.get("end_reason"), night.engine.state.get("detail"))
-    assert night.visits() == [(_name("1-1"), ())] * 3, night.visits()
+    # DELIBERATE RE-PIN (WP 6.2, owner ruling D-E, #180 part B): the lone panel
+    # was set aside at its third failed pass (three visits). A mosaic panel
+    # is no longer set aside for its own failures: it is skipped at the
+    # third and retried every pass, every pass is a held pass (it failed and
+    # nothing was banked), and D-03's six held passes are what set it
+    # aside: six visits, the five waits between them.
+    assert night.visits() == [(_name("1-1"), ())] * 6, night.visits()
     assert night.shots() == []
     assert [r["target_id"] for r in night.stored.set_aside] == ["p00"]
     assert not night.said(UNGUIDED) and not night.said("continuing unguided")

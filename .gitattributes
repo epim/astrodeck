@@ -28,3 +28,9 @@ tools/photosphere_sim/fixtures/** -text
 # JSON file means, because JSON keeps no raw CR inside a string (it is
 # escaped as `\r`), so only the whitespace between tokens is touched.
 server/tests/fixtures/**/*.json eol=lf
+
+# The NINA import fixtures' README is graded as ASCII with LF endings beside
+# the NINA files it describes (test_w6_3_nina_fixtures.py), which the line
+# above covers only for the JSON. Without this a fresh Windows clone checks
+# the README out with CRLF and that test fails on a correct tree (#1251).
+server/tests/fixtures/nina/README.md eol=lf

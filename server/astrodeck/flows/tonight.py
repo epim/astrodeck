@@ -2564,6 +2564,32 @@ _STARVED_WHY: dict[str, str | None] = {
     "deferred": None,
 }
 
+#: Why a SKIPPED panel failed, in the same fixed phrases (D-E, #180 part B),
+#: by the kind of its skip record. The four kinds are the ones
+#: `GroupRun.skip_kind` writes: the starved three, whose words are the ones
+#: above, and the reject rule's. Nothing else reaches the sentence.
+_ROTATING_WHY: dict[str, str | None] = {
+    **_STARVED_WHY,
+    "rejects": "its frames were rejected",
+}
+
+
+def _rotating_of(panel: Mapping[str, Any]) -> dict | None:
+    """``{visits, kind}`` from a progress panel's ``rotating`` entry, or None
+    when it has none or the entry is not one the server sends: a ``kind`` that
+    is none of ``_ROTATING_WHY``'s keys, a ``visits`` that is no whole number
+    of at least one. Read defensively, as ``_starved_of`` is: the progress
+    answer is injected, and no other word may reach the sentence."""
+    got = panel.get("rotating")
+    if not isinstance(got, Mapping):
+        return None
+    kind, visits = got.get("kind"), got.get("visits")
+    if (not isinstance(kind, str) or kind not in _ROTATING_WHY
+            or isinstance(visits, bool) or not isinstance(visits, int)
+            or visits < 1):
+        return None
+    return {"visits": visits, "kind": kind}
+
 
 def _starved_of(panel: Mapping[str, Any]) -> dict | None:
     """``{nights, kind}`` from a progress panel's ``starved`` entry, or None
@@ -2598,7 +2624,9 @@ def _panel_rows(mosaics: list, progress: ProgressSource) -> list[dict] | None:
     A row is ``{block, name, row, col, banked, owed, total, done, pct,
     skipped}`` and, for a panel the progress answer says is starved
     (``Session.set_aside_streak``: set aside whole night after night, #180
-    part A), ``starved: {nights, kind}`` too, present only where it is true.
+    part A), ``starved: {nights, kind}`` too, present only where it is true,
+    and, for a panel being skipped (``Session.standing_skip``, D-E, #180 part
+    B), ``rotating: {visits, kind}`` likewise.
     A shot panel's numbers are the progress answer's own subs,
     banked (capped at each step's count), owed and total, counted by the
     session's count mode, so the tab and the card's chip can never disagree;
@@ -2635,6 +2663,9 @@ def _panel_rows(mosaics: list, progress: ProgressSource) -> list[dict] | None:
             starved = _starved_of(p)
             if starved is not None:
                 rows[-1]["starved"] = starved
+            rotating = _rotating_of(p)
+            if rotating is not None:
+                rows[-1]["rotating"] = rotating
         for p in block.get("skipped") or []:
             rows.append({
                 "block": node_id, "name": p.get("name"),
@@ -2681,14 +2712,33 @@ def _panels_clause(rows: list[dict] | None) -> str:
             s = r["starved"]
             why = _STARVED_WHY[s["kind"]]
             if why is None:
-                t += (f" Panel {r['name']} has been set aside on "
+                t += (f" Panel {r['name']} has had no frame on "
                       f"{s['nights']} nights running.")
             else:
-                t += (f" Panel {r['name']} has been set aside on "
+                t += (f" Panel {r['name']} has had no frame on "
                       f"{s['nights']} nights running ({why}), so it will "
                       f"not finish without a change to its framing or this "
                       f"block's setting.")
+        if "rotating" in r:
+            t += _rotating_sentence(r["name"], r["rotating"])
     return t
+
+
+def _rotating_sentence(name: Any, rotating: Mapping[str, Any]) -> str:
+    """The note's sentence for a panel being skipped (D-E, #180 part B): which
+    panel, that it failed its last visits and why in the kind's fixed words
+    (none for a mixed streak, #836), and WHEN IT IS NEXT DUE: in the next
+    round, after the panels that still need frames. No clock time: a round
+    starts when the other panels' visits and any hold have run, and a time
+    here would be a promise nothing keeps."""
+    n = rotating["visits"]
+    why = _ROTATING_WHY[rotating["kind"]]
+    visits = "its last visit" if n == 1 else f"its last {n} visits"
+    cause = "" if why is None else f" ({why})"
+    return (f" Panel {name} is being skipped: {visits} failed{cause}, so "
+            f"each round it goes after the panels that still need frames, "
+            f"and it is tried again in the next round until it has its "
+            f"frames.")
 
 
 def _campaign(graph: FlowGraph | None,

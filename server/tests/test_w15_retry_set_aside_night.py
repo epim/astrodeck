@@ -572,3 +572,13 @@ async def test_a_retried_panel_past_its_window_is_judged_again_and_never_slewed_
             night.engine.reporter.build().safety_events if MISSES in e["reason"]]
     assert [a for a, _r in mine] == ["skip", "retry", "skip"], mine
     assert mine[2][1].endswith("window closed"), mine
+
+
+# WP 6.2 (owner ruling D-E, #180 part B): a mosaic panel is no longer set
+# aside for its own failures, but a pool's candidates still are, and this
+# file grades what that set-aside feeds (see tests/_w6_2_three_strike.py).
+# Its nights therefore run the group driver with the three-strike set-aside.
+@__import__("pytest").fixture(autouse=True)
+def _the_three_strike_set_aside(monkeypatch):
+    from _w6_2_three_strike import three_strike
+    three_strike(monkeypatch)

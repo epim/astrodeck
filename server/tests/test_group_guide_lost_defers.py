@@ -206,15 +206,26 @@ async def test_a_guiding_loss_defers_the_panel_under_every_guiding_action(
         f"1-2 was shot with no guider start of its own after recovery gave "
         f"up: {seq}")
     assert not night.said(STOOD_DOWN), night.said(STOOD_DOWN)
-    assert [(r["target_id"], r["step_id"], r["reason"])
-            for r in night.stored.set_aside] == [("p01", None, SET_ASIDE)], (
+    # DELIBERATE RE-PIN (WP 6.2, owner ruling D-E, #180 part B): the third
+    # consecutive guide_lost deferral used to set 1-2 aside for tonight (the
+    # SET_ASIDE sentence). A mosaic panel is now SKIPPED there and retried
+    # every round; the others have completed, and what ends 1-2 is the step's
+    # own reject guard (20 consecutive rejects, every frame being trailed),
+    # which sets its filter aside and then the panel. The per-VISIT budget
+    # this case grades is unchanged and is asserted below: every frame is
+    # still preceded by a guider start made for it.
+    assert [(r["target_id"], r["step_id"], r.get("kind"))
+            for r in night.stored.set_aside] == [
+        ("p01", "p01-L", "rejects"), ("p01", None, "steps")], (
         night.stored.set_aside)
+    assert [(r["target_id"], r["kind"]) for r in night.stored.panel_skips] == [
+        ("p01", "deferred")]
     deferred = night.said("guiding was lost and did not recover on 1-2: "
                           f"{GAVE_UP}; retried on the next pass")
     assert len(deferred) == 2, night.said("1-2")
     # Three visits, each the hop's start and two recoveries, each with its
     # frame: the recovery's budget is the visit's own.
-    assert seq == "SC" * 9, (
+    assert seq.startswith("SC" * 9) and "CC" not in seq, (
         f"1-2's visits did not each make the hop's start and two recovery "
         f"attempts: {seq}")
 
@@ -252,13 +263,22 @@ async def test_a_panel_past_tonights_recentres_defers_without_one(
         shot = [f for t, f in night.shots() if t == f"{GROUP_NAME} {label}"]
         assert shot == ["L"] * 4, (label, shot)
     seq = _starts_and_frames(night, LOST)
-    # Three hop starts, four recovery restarts, one frame after each.
-    assert seq == "SC" * 7, f"1-2 was re-centred past tonight's budget: {seq}"
-    assert [(r["target_id"], r["step_id"], r["reason"])
-            for r in night.stored.set_aside] == [(
-                "p01", None, f"guiding was lost and did not recover on 1-2 "
-                             f"on 3 consecutive visits: "
-                             f"{RECOVERY_RECENTRES_SPENT}")], (
+    # Three hop starts, four recovery restarts, one frame after each: the
+    # nightly budget of re-centres. DELIBERATE RE-PIN (WP 6.2, owner ruling
+    # D-E, #180 part B): the panel was then set aside at its third deferral
+    # and shot nothing more. It is now skipped and retried every round, so
+    # every later visit is a hop start and ONE frame (the first loss defers
+    # it, with the budget spent, and no re-centre follows), until the step's
+    # reject guard (20 consecutive rejects) ends it: the budget is not
+    # exceeded by a single re-centre, only the hop starts go on.
+    assert seq.startswith("SC" * 7), (
+        f"1-2 was re-centred past tonight's budget: {seq}")
+    assert seq.count("S") == 20, seq
+    assert RECOVERY_RECENTRES_SPENT in " ".join(
+        m for _t, _l, m in night.lines)
+    assert [(r["target_id"], r["step_id"], r.get("kind"))
+            for r in night.stored.set_aside] == [
+        ("p01", "p01-L", "rejects"), ("p01", None, "steps")], (
         night.stored.set_aside)
 
 

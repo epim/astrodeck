@@ -183,3 +183,13 @@ async def test_without_the_key_the_same_misses_are_counted(
          "rotate": "the rotator did not turn the camera to the mosaic's "
                    "angle on 1-2 on 3 consecutive visits"}[case]), first
     assert first["kind"] == {"centring": CENTRING, "rotate": "deferred"}[case]
+
+
+# WP 6.2 (owner ruling D-E, #180 part B): a mosaic panel is no longer set
+# aside for its own failures, but a pool's candidates still are, and this
+# file grades what that set-aside feeds (see tests/_w6_2_three_strike.py).
+# Its nights therefore run the group driver with the three-strike set-aside.
+@__import__("pytest").fixture(autouse=True)
+def _the_three_strike_set_aside(monkeypatch):
+    from _w6_2_three_strike import three_strike
+    three_strike(monkeypatch)

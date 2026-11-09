@@ -57,8 +57,13 @@ from astrodeck.sequence.models import SequencePlan
 from astrodeck.sequence.session import session_store
 
 #: What a group member's gate now says happens next (`_deferred_words`).
+#: DELIBERATE RE-PIN (WP 6.2, owner ruling D-E, #180 part B): the parenthesis
+#: said "set aside tonight only after 3 consecutive failed visits". A mosaic
+#: panel is no longer set aside for its own failures, so it says what happens
+#: at the third.
 RETRIED = ("the visit to {label} stops, and the panel is retried on the next "
-           "pass (set aside tonight only after 3 consecutive failed visits)")
+           "pass (after 3 consecutive failed visits it goes behind the other "
+           "panels and is retried every round)")
 #: What the #72 bound says when it gives up (`_maybe_recover_guiding`).
 GAVE_UP = ("guiding could not be kept after 2 recovery attempts without a "
            "frame")

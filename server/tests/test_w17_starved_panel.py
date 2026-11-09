@@ -540,7 +540,12 @@ def _with_pool() -> FlowGraph:
     return g
 
 
-SENTENCE = ("Panel M16 1-2 has been set aside on 4 nights running (no star "
+# DELIBERATE WORDING CHANGE (WP 6.2, owner ruling D-E, #180 part B): the
+# sentence said "has been set aside on N nights running". A mosaic panel is
+# now skipped and retried every round, never set aside for its own failures,
+# so that wording was a claim nothing keeps for it. "has had no frame on N
+# nights running" is true of a set-aside night and of a skipped one alike.
+SENTENCE = ("Panel M16 1-2 has had no frame on 4 nights running (no star "
             "to solve on), so it will not finish without a change to its "
             "framing or this block's setting.")
 
@@ -552,7 +557,7 @@ class TestTheCampaignNamesIt:
         AssertionError: 0 of 2 mosaic panels done, 0 of 8 subs captured.
           Nights to finish are not forecast - clear-sky prediction that far
           out is not somet...
-        assert "Panel M16 1-2 has been set aside on 4 nights running (no
+        assert "Panel M16 1-2 has had no frame on 4 nights running (no
           star to solve on), so it will not finish without a change to its
           framing or this b...
 
@@ -561,7 +566,7 @@ class TestTheCampaignNamesIt:
         AssertionError: 0 of 2 mosaic panels done, 0 of 8 subs captured.
           Nights to finish are not forecast - clear-sky prediction that far
           out is not somet...
-        assert "Panel M16 1-2 has been set aside on 4 nights running (no
+        assert "Panel M16 1-2 has had no frame on 4 nights running (no
           star to solve on), so it will not finish without a change to its
           framing or this b...
         """
@@ -583,7 +588,7 @@ class TestTheCampaignNamesIt:
         keep their sentence; the mixed kind has its own case below."""
         prog = _rows_progress(("M16 1-2", {"nights": 3, "kind": kind}))
         note = _campaign(_mosaic_only(), None, lambda: prog)["note"]
-        assert (f"Panel M16 1-2 has been set aside on 3 nights running "
+        assert (f"Panel M16 1-2 has had no frame on 3 nights running "
                 f"({phrase}), so it will not finish") in note, note
 
     def test_a_mixed_streak_names_the_streak_and_no_cause_and_no_advice(self):
@@ -606,7 +611,7 @@ class TestTheCampaignNamesIt:
           M16 1-2 has been set aside on 3 nights running (failed to centre or
           guide), so it will not finish without a change to its framing or
           this block's setting. Nights to finish are not forecast ...
-        assert 'Panel M16 1-2 has been set aside on 3 nights running.' in
+        assert 'Panel M16 1-2 has had no frame on 3 nights running.' in
           '0 of 1 mosaic panels done, ...'
 
         Mutant "deferred keeps the advice" (``_panels_clause``'s ``if why is
@@ -616,13 +621,13 @@ class TestTheCampaignNamesIt:
           M16 1-2 has been set aside on 3 nights running (None), so it will
           not finish without a change to its framing or this block's setting.
           ...
-        assert 'Panel M16 1-2 has been set aside on 3 nights running.' in
+        assert 'Panel M16 1-2 has had no frame on 3 nights running.' in
           '0 of 1 mosaic panels done, ...'
         """
         prog = _rows_progress(("M16 1-2", {"nights": 3, "kind": "deferred"}))
         c = _campaign(_mosaic_only(), None, lambda: prog)
         note = c["note"]
-        assert "Panel M16 1-2 has been set aside on 3 nights running." in note, note
+        assert "Panel M16 1-2 has had no frame on 3 nights running." in note, note
         for gone in ("failed to centre or guide", "so it will not finish",
                      "framing", "(None)", "nights running ("):
             assert gone not in note, (
@@ -644,8 +649,8 @@ class TestTheCampaignNamesIt:
             ("M16 1-2", None),
             ("M16 2-2", {"nights": 3, "kind": "centring"}))
         c = _campaign(_mosaic_only(), None, lambda: prog)
-        first = c["note"].index("Panel M16 1-1 has been set aside on 5")
-        second = c["note"].index("Panel M16 2-2 has been set aside on 3")
+        first = c["note"].index("Panel M16 1-1 has had no frame on 5")
+        second = c["note"].index("Panel M16 2-2 has had no frame on 3")
         assert first < second and "M16 1-2 has been set aside" not in c["note"]
         assert [s["name"] for s in c["starved"]] == ["M16 1-1", "M16 2-2"]
 
@@ -775,8 +780,14 @@ async def test_a_panel_that_fails_its_solve_three_nights_is_named(
         notes.append(_campaign(_graph(), None,
                                lambda: _sim_progress(plan, session)))
     assert len(session.observing_nights()) == 3, session.nights
+    # DELIBERATE RE-PIN (WP 6.2, owner ruling D-E, #180 part B): night one's
+    # first record was a "centring" set-aside, 2-2's own three strikes. A
+    # mosaic panel is now skipped at its bound, not set aside, so night one
+    # leaves a skip record (kind centring) and only the held-pass rule's
+    # set-aside, as on nights two and three.
     assert [r["kind"] for r in session.set_aside] == [
-        "centring", "deferred", "deferred", "deferred"], session.set_aside
+        "deferred", "deferred", "deferred"], session.set_aside
+    assert [r["kind"] for r in session.panel_skips] == ["centring"]
     assert session.set_aside_streak("p11") == (3, "deferred")
     assert "starved" not in notes[0] and "starved" not in notes[1]
     assert notes[2]["starved"] == [{"block": "m", "name": "M31 2-2",
@@ -784,7 +795,7 @@ async def test_a_panel_that_fails_its_solve_three_nights_is_named(
     # DELIBERATE PIN CHANGE (#836): this asserted "... running (failed to
     # centre or guide)" for the held-pass kind. "deferred" names no cause, so
     # the Campaign names the streak and nothing else.
-    assert ("Panel M31 2-2 has been set aside on 3 nights running."
+    assert ("Panel M31 2-2 has had no frame on 3 nights running."
             in notes[2]["note"]), notes[2]["note"]
     assert "failed to centre or guide" not in notes[2]["note"], notes[2]["note"]
     assert all(session.set_aside_streak(t) == (0, None)

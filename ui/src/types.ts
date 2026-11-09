@@ -987,6 +987,14 @@ export interface SequenceGroupState {
    *  also the mosaic's last live panel held by the D-03 held-pass rule. It
    *  names no single cause, so a reader must not either (#836). */
   set_aside: { panel: string; reason: string; kind: string; for_now: boolean }[];
+  /** The panels of a mosaic that are being SKIPPED (owner ruling D-E, #180
+   *  part B): each failed its bound of consecutive visits and is neither set
+   *  aside nor dropped. It is visited every round, behind the panels that have
+   *  not failed, until a visit banks a frame. `kind` is the streak's word
+   *  ("centring" | "guide_start" | "deferred" | "rejects", `GroupRun
+   *  .skip_kind`) and `visits` the consecutive failed visits so far. Always
+   *  sent, empty when no panel is skipped and for a pool. */
+  skipped: { panel: string; kind: string; visits: number }[];
   /** True while the group waits for a panel's meridian crossing. */
   meridian_wait: boolean;
 }
@@ -1272,7 +1280,8 @@ export interface TargetGroup {
   order: "least_complete" | "setting_first" | "grid";
   /** A panel that does not centre is deferred, never shot off its tile. */
   require_centred: boolean;
-  /** Consecutive failed visits, 1 to 20, before a panel is set aside tonight. */
+  /** Consecutive failed visits, 1 to 20, before a mosaic panel is skipped to
+   *  the back of the next round (a pool candidate: set aside tonight). */
   max_failed_visits: number;
   /** Layout angle in the CROTA2 convention (#145); null when none is set. */
   pa_deg: number | null;
