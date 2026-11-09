@@ -514,6 +514,25 @@ await testAsync("the schedule param opens the per-target editor as a whole sheet
   assert(tid("plan-schedule-on-missed") != null, "the missed-window choice never rendered");
 });
 
+// WP 5.5 (#1207): MAXIMUM RUN says what the cap does when it is reached, the
+// same claims as the classic editor's note (see w5_5MaxRunCopy.test.tsx).
+await testAsync("MAXIMUM RUN says what happens when the cap is reached", async () => {
+  WIDE = true;
+  seed(CAPS_ADMIN, { state: "idle" });
+  await mount({ schedule: "t1" });
+  const field = tid("plan-schedule-max-run-field");
+  assert(field != null, "premise: the maximum-run field never rendered");
+  const said: string = field!.textContent ?? "";
+  assert(said.includes("first attempt, so setup counts"),
+    `MAXIMUM RUN does not say where the count starts: ${said}`);
+  assert(said.includes("skipped for the rest of the run"),
+    `MAXIMUM RUN does not say the target is skipped for the rest of the run: ${said}`);
+  assert(said.includes("goes on to the next target"),
+    `MAXIMUM RUN does not say the run goes on: ${said}`);
+  assert(!/dawn/i.test(said),
+    `MAXIMUM RUN teaches the dawn-cutoff end label, which is #1239's defect: ${said}`);
+});
+
 act(() => { root.unmount(); });
 resetRouterCacheForTests();
 

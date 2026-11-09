@@ -1077,6 +1077,22 @@ await test("NIGHT opens on DUSK WINDOW's defaults, asks a clock only beside its 
   assert(!locked(btn("wizard-next")), "an abandoned clock held NEXT");
 });
 
+await test("NIGHT says what MAX MINUTES ON TARGET does when the time is up (#1207)", async () => {
+  // Each clause is the engine's (`_enforce_time_bound`): counted from the
+  // target's first attempt, setup included; the target is done for tonight
+  // with its frames owed to a later night; the run moves on.
+  setup();
+  mount(fxPrefill({ rows: 1, cols: 1, skip: "", angleMode: null, paDeg: null }));
+  walkToNight();
+  assert(q("wizard-ask-max-time"), "premise: a single target is asked its time bound");
+  const said: string = q("wizard-max-time-note")?.textContent ?? "";
+  assert(said !== "", "MAX MINUTES ON TARGET says nothing about what the limit does");
+  assert(said.includes("first attempt, so setup counts"), `no start of the count: ${said}`);
+  assert(said.includes("done for tonight"), `not said to be done for tonight: ${said}`);
+  assert(said.includes("wait for a later night"), `owed frames not said to wait: ${said}`);
+  assert(said.includes("the run moves on to the next target"), `not said that the run moves on: ${said}`);
+});
+
 await test("RESUME asks the owner's question in the owner's words, with the DUSK field's help text through the one InfoDot", async () => {
   setup();
   mount(fxPrefill());

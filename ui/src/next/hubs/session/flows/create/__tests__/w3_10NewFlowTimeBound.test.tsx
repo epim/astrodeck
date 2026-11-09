@@ -188,6 +188,19 @@ await testAsync("an unreadable bound is not posted", async () => {
   eq(wizardPosts().length, 0, "an unreadable bound was posted");
 });
 
+await testAsync("the bound says what happens when the target's time is up (#1207)", async () => {
+  // Each clause is the engine's (`_enforce_time_bound`): counted from the
+  // target's first attempt, setup included; the target is done for tonight
+  // with its frames owed to a later night; the run moves on.
+  await freshSheet();
+  const said: string = tid("flow-wizard-max-time-field")?.textContent ?? "";
+  assert(said !== "", "the bound says nothing about what the limit does");
+  assert(said.includes("first attempt, so setup counts"), `no start of the count: ${said}`);
+  assert(said.includes("done for tonight"), `not said to be done for tonight: ${said}`);
+  assert(said.includes("wait for a later night"), `owed frames not said to wait: ${said}`);
+  assert(said.includes("the run moves on to the next target"), `not said that the run moves on: ${said}`);
+});
+
 await testAsync("Best of several is not asked a bound", async () => {
   await freshSheet();
   click(option("flow-wizard-kind", "Best of several"));

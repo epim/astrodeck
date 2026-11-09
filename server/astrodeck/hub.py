@@ -10910,8 +10910,11 @@ class Hub:
                         "error_arcmin": self._pointing_error_arcmin,
                     },
                 }
-                # What a viewer is served while a flip's hold is open (#1037).
-                note_flip_hold_value("slewing", out["mount"].get("slewing"))
+                # What a viewer is served while a flip's hold is open (#1037,
+                # #1237): noted here, so a viewer whose first poll falls inside
+                # the hold still has the pre-hold pointing to read.
+                for _held in ("slewing", "ra_hours", "dec_deg", "tracking"):
+                    note_flip_hold_value(_held, out["mount"].get(_held))
             except Exception as exc:
                 lost("mount block", exc)
             # Server-computed meridian (Monitor): NINA returns a real number; for

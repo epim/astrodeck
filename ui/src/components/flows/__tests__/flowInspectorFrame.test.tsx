@@ -202,8 +202,9 @@ await test("the plain field rows all stay beside the row", async () => {
   await render({ variant: "column" });
   assert(frameRow(), "precondition: no row");
   // Every label a FlowFieldRow prints, in order: the `.label` span that is
-  // its <label>'s first child.
-  const labels = Array.from(container.querySelectorAll("label > span.label") as any[])
+  // its <label>'s first child, or, for a field that carries `help` (TARGET's
+  // maxTime, #1207), the <label class="label"> beside its info icon.
+  const labels = Array.from(container.querySelectorAll("label > span.label, label.label") as any[])
     .map((s: any) => s.textContent);
   eq(labels, NODE_DEFS.target.fields.map((f) => f.label), "the TARGET's field labels under the row");
   // And the row is no FieldDef: it is a button of the per-type slot, so the

@@ -233,6 +233,24 @@ await test("an unreadable bound is not posted and the press says why", async () 
     `the press did not say why: ${JSON.stringify(toasts.map((t) => t.title))}`);
 });
 
+await test("the mounted NEW FLOW sheet says what happens when the target's time is up (#1207)", async () => {
+  // Each clause is the engine's (`_enforce_time_bound`): counted from the
+  // target's first attempt, setup included; the target is done for tonight
+  // with its frames owed to a later night; the run moves on.
+  setUp();
+  mount();
+  const said: string = (document.querySelector('[data-testid="flows-wiz-max-time-note"]') as any)
+    ?.textContent ?? "";
+  assert.ok(said !== "", "the bound says nothing about what the limit does");
+  assert.ok(said.includes("first attempt, so setup counts"), `no start of the count: ${said}`);
+  assert.ok(said.includes("done for tonight"), `not said to be done for tonight: ${said}`);
+  assert.ok(said.includes("wait for a later night"), `owed frames not said to wait: ${said}`);
+  assert.ok(said.includes("the run moves on to the next target"), `not said that the run moves on: ${said}`);
+  await act(async () => { kindButton("Best of several").click(); });
+  assert.ok(document.querySelector('[data-testid="flows-wiz-max-time-note"]') === null,
+    "a pool is not asked, so it carries no note about the limit");
+});
+
 await test("choosing Best of several takes the bound field away", async () => {
   setUp();
   mount();

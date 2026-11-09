@@ -252,6 +252,17 @@ STEP_NEXT_NIGHT = _PERSISTED + "test_step_set_aside_retried_next_night"
 #: A floor advance: one test restarts the session later tonight and again
 #: the next night.
 FLOOR_BOTH_NIGHTS = _PERSISTED + "test_floor_set_aside_persisted_for_tonight"
+#: A target that reached its maximum time (`Target.max_time_min`, #1094, WP
+#: 5.5): a restart tonight does not retry it, the next night takes up the
+#: frames it still owes. The record is the one the bound writes
+#: (`_enforce_time_bound`, kind ``time_bound``), asserted by the third test.
+_TIME_BOUND = "tests/test_w5_5_time_bound_next_night.py::"
+TIME_BOUND_SAME_NIGHT = _TIME_BOUND + (
+    "test_a_time_bounded_target_is_not_retried_by_a_restart_tonight")
+TIME_BOUND_NEXT_NIGHT = _TIME_BOUND + (
+    "test_a_time_bounded_target_is_taken_up_again_the_next_night")
+TIME_BOUND_RECORD = ("tests/test_w3_target_time_bound.py::"
+                     "test_a_bounded_target_is_set_aside_for_tonight_so_no_tick_restarts_it")
 #: The engine's own lines, whose phrases the prose copy borrows.
 STEP_LINES = ("tests/test_set_aside_copy.py::"
               "test_the_step_lines_say_tonight_and_the_nights_bear_them_out")
@@ -304,6 +315,15 @@ PROMISES: tuple[Promise, ...] = (
             1, FLOOR_BOTH_NIGHTS, FLOOR_BOTH_NIGHTS, (POOL_DIAL,)),
     Promise(NODE_DEFS, "Advance now; retry it next night",
             2, FLOOR_BOTH_NIGHTS, FLOOR_BOTH_NIGHTS, (POOL_DIAL,)),
+    # TARGET's maximum time (#1207): the owed frames wait for a later night.
+    # Said by the field's help, and by the comment above it that cites the
+    # engine rows behind each clause.
+    Promise(NODE_DEFS, "the frames it still owes wait for a later night",
+            1, TIME_BOUND_SAME_NIGHT, TIME_BOUND_NEXT_NIGHT,
+            (TIME_BOUND_RECORD,)),
+    Promise(NODE_DEFS, "its owed frames wait for a later night",
+            1, TIME_BOUND_SAME_NIGHT, TIME_BOUND_NEXT_NIGHT,
+            (TIME_BOUND_RECORD,)),
     # The POOL node's rail description.
     Promise(NODE_DEFS,
             "sets that target aside for tonight (NOT done - a restart "

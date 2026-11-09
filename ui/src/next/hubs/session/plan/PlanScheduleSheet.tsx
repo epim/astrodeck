@@ -31,6 +31,14 @@ import {
   Card, Field, Label, LockNote, Segmented, Sheet, Stepper2, TextInput,
 } from "../../../ui";
 
+/** What the maximum-run cap does when it is reached (#1207): the classic
+ *  editor's `MAX_RUN_NOTE`, word for word, which cites the engine rows behind
+ *  each clause. Written out here because nothing under `next/` may import from
+ *  `components/` (`r7Parity.test.ts`). */
+export const MAX_RUN_HINT =
+  "Counted from the target's first attempt, so setup counts. When it is reached, the target is "
+  + "skipped for the rest of the run and the run goes on to the next target.";
+
 /** 24-hour "HH:MM", optional leading zero on the hour. */
 const HHMM = /^([01]?\d|2[0-3]):([0-5]\d)$/;
 
@@ -245,7 +253,7 @@ export function PlanScheduleSheet({ name, schedule, lockedReason, onChange, onBa
               />
             )}
 
-            <Field label="MAXIMUM RUN" hint="How long this target may hold the rig before the run moves on.">
+            <Field label="MAXIMUM RUN" hint={MAX_RUN_HINT} data-testid="plan-schedule-max-run-field">
               <Stepper2
                 label="Maximum run in minutes"
                 value={s.max_run_min}
