@@ -157,6 +157,8 @@ def placements_for(plan: SequencePlan,
     best: list[Placement] = []
     best_hits = -1
     for group in plan.groups:
+        if group.kind != "mosaic":
+            continue
         field = coverage.group_field(group)
         members = [t for t in plan.targets
                    if t.mosaic_group == group.id and not t.calibration]

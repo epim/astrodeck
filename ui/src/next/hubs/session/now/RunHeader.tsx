@@ -72,6 +72,7 @@ export function runWhere(seq: RunLineState): string {
 /** The TARGET LINE, from the sequence state and the session plan's target
  *  count (`sessionTargets`, null while no session is in hand). A mosaic's
  *  current panel is "one of N panels"; across a wait the mosaic is "N panels";
+ *  a pool's is the same with "candidates";
  *  a run of several targets outside a group is "k of N"; anything else is its
  *  name alone. */
 export function runTargetLine(seq: RunLineState, sessionTargets: number | null): string {
@@ -80,7 +81,8 @@ export function runTargetLine(seq: RunLineState, sessionTargets: number | null):
   if (g) {
     const n = finite(g.panels_total) && g.panels_total > 1 ? g.panels_total : null;
     if (n == null) return where;
-    return panelNamed(g) ? `${where} · one of ${n} panels` : `${where} · ${n} panels`;
+    const noun = g.kind === "pool" ? "candidates" : "panels";
+    return panelNamed(g) ? `${where} · one of ${n} ${noun}` : `${where} · ${n} ${noun}`;
   }
   // No place in the plan while a calibration set the plan does not hold is
   // exposing (`target_index` null, #941): the line is the set's name alone.
@@ -96,7 +98,7 @@ export function runTargetLine(seq: RunLineState, sessionTargets: number | null):
  *  terminal state and drops `group` with `_group_active`). */
 export function runKind(group: SequenceGroupState | null | undefined,
                         sessionTargets: number | null): string | null {
-  if (group && typeof group === "object") return "mosaic";
+  if (group && typeof group === "object") return group.kind === "pool" ? "target pool" : "mosaic";
   if (sessionTargets == null) return null;
   return sessionTargets > 1 ? "night plan" : "quick session";
 }

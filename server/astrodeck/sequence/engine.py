@@ -3430,6 +3430,8 @@ class SequenceEngine:
         # `_group_active`, so its payloads never gain the key.
         group = self._group_state(getattr(self, "_group_active", None))
         if group is not None:
+            if group["kind"] == "pool":
+                del group["pass"]
             kw.setdefault("group", group)
         elif "group" not in kw:
             self.state.pop("group", None)
@@ -4738,7 +4740,8 @@ class SequenceEngine:
                 group = self._groups[gid]
                 names = ", ".join(self._panel_name(t) for t in targets)
                 bus.log("info",
-                        f"{group.name or group.id}: set-aside panels retried "
+                        f"{group.name or group.id}: set-aside "
+                        f"{self._member_word(group)}s retried "
                         f"by the operator: {names}; the run had no scheduler "
                         f"left to take them up, so the next start tonight "
                         f"does", "sequence")
@@ -5504,6 +5507,14 @@ class SequenceEngine:
             return None
         return getattr(self, "_groups", {}).get(gid)
 
+    def _mosaic_of(self, target) -> TargetGroup | None:
+        """The MOSAIC ``target`` is a panel of, or None. A POOL's member is
+        in a group (`_group_of`) but is a target the operator drew, not a
+        panel: it has no grid place, no mosaic label and no mosaic event
+        (WP 5.1c)."""
+        group = self._group_of(target)
+        return group if group is not None and group.kind == "mosaic" else None
+
     def _live_panels(self, group: TargetGroup,
                      asking: Target | None = None) -> int:
         """How many of ``group``'s members THIS PASS CAN VISIT, for the rule
@@ -5571,6 +5582,12 @@ class SequenceEngine:
             return target.name
         return naming.panel_label(row, col)
 
+    @staticmethod
+    def _member_word(group: TargetGroup) -> str:
+        """What the operator's words call a member of ``group``: a POOL's
+        member is a candidate, a mosaic's a panel."""
+        return "candidate" if group.kind == "pool" else "panel"
+
     def _group_state(self, gid: str | None) -> dict | None:
         """``state.group`` (spec 5.10), or None when no group is active.
 
@@ -5589,7 +5606,14 @@ class SequenceEngine:
         false for one set aside for the rest of the night (every other kind
         never expires, and a centring one that already struck out again does
         not either). BOTH KEYS ARE ALWAYS SENT, so a client reading no key
-        never misreads a for-now panel as one that is done for the night."""
+        never misreads a for-now panel as one that is done for the night.
+
+        ``kind`` NAMES WHAT THE GROUP IS ("mosaic" or "pool"): for a pool,
+        ``panel`` is the candidate running, ``panels_done`` and
+        ``panels_total`` count candidates (keys kept, so no reader breaks),
+        and ``pass`` is taken out where the state is published (`_set_state`),
+        since a pool has no pass over its members, only a pick at each
+        boundary (WP 5.1c)."""
         if gid is None:
             return None
         g, run = self._groups.get(gid), self._group_runs.get(gid)
@@ -5603,6 +5627,7 @@ class SequenceEngine:
         return {
             "id": g.id,
             "name": g.name,
+            "kind": g.kind,
             "mode": g.mode,
             "pass": run.pass_no,
             "panel": run.members.get(cur.id) if cur is not None else None,
@@ -7392,7 +7417,8 @@ class SequenceEngine:
         A panel set aside for the night stayed out of it until tomorrow even
         once its cause was fixed: dew, a loose rotator, a solver setting. A
         restart does not bring it back (``start`` reads the record back) and
-        neither does CONTINUE. This does, for panels of a mosaic, of ANY
+        neither does CONTINUE. This does, for panels of a mosaic and for the
+        candidates of a pool alike, of ANY
         kind of set-aside, those set aside for now (a centring one waiting on
         its expiry) included, which come back at once instead of at 45
         minutes.
@@ -7533,7 +7559,8 @@ class SequenceEngine:
             self._resort_group(group, remaining)
             self._place_followers(group, remaining)
             labels = ", ".join(run.members.get(t.id, t.name) for t in targets)
-            bus.log("info", f"{group.name or group.id}: set-aside panels "
+            bus.log("info", f"{group.name or group.id}: set-aside "
+                            f"{self._member_word(group)}s "
                             f"retried by the operator: {labels}", "sequence")
 
     def _queued_for_the_scheduler(self) -> bool:
@@ -7648,7 +7675,7 @@ class SequenceEngine:
         """PRO-3: the ``on_target_complete`` rules, for a target that IS
         complete (#157). Guarded: a no-op when there are no instructions.
 
-        A MEMBER OF A `TargetGroup` IS NOT A TARGET THE OPERATOR DREW (#184).
+        A PANEL OF A MOSAIC IS NOT A TARGET THE OPERATOR DREW (#184).
         Its completion runs no ``on_target_complete`` rule: a REPORT 'target
         done' drawn after a 2x2 mosaic sent four notifications, and one
         drawn after a single target beside a 3x2 mosaic fired seven times.
@@ -7657,7 +7684,9 @@ class SequenceEngine:
         the same for a panel: the scheduler's JumpTarget arm reads
         ``_completion_fired`` for it as for any target. A ``mosaic_group``
         with no group entry (a classic Plan mosaic) is no group and keeps
-        its per-target firing.
+        its per-target firing, and so does a member of a POOL: it is a
+        target the operator drew, one of the candidates, and its completion
+        runs its own rules once (WP 5.1c).
 
         THE SKY READINGS BELONG HERE TOO, and leaving them off was not a
         neutral omission. A context built without them says `cloudy=None` —
@@ -7677,7 +7706,7 @@ class SequenceEngine:
         # knows a jump one of them fires came from here and owes nothing
         # (``_completion_owed``, ``_completion_fired``).
         self._completion_fired.add(target.id)
-        group = self._group_of(target)
+        group = self._mosaic_of(target)
         if group is not None:
             await self._fire_mosaic_complete(group, target)
             return
@@ -12890,15 +12919,15 @@ class SequenceEngine:
         return (step.filter or None)
 
     def _panel_labels(self, target: Target | None, step) -> dict:
-        """``{"mosaic": ..., "panel": ...}`` for a GROUP MEMBER'S LIGHT frame
+        """``{"mosaic": ..., "panel": ...}`` for a MOSAIC PANEL'S LIGHT frame
         (#189 U-08, #188), else ``{}``: the one rule behind the FITS cards
         `_capture` writes (``MOSAIC``, ``PANEL``) and the labels the session
         report's frame record carries (`_reporter_record`), so the file and
-        the report cannot name different panels. A non-member's frame and a
-        dark a hold shoots on a panel carry neither. ``naming.panel_label``
-        raises for a member with no grid position, which a caller keeps
-        inside its own try."""
-        group = self._group_of(target) if target is not None else None
+        the report cannot name different panels. A non-member's frame, a pool
+        candidate's, and a dark a hold shoots on a panel carry neither.
+        ``naming.panel_label`` raises for a panel with no grid position,
+        which a caller keeps inside its own try."""
+        group = self._mosaic_of(target) if target is not None else None
         if group is None or str(step.frame_type).lower() != "light":
             return {}
         return {"mosaic": naming.mosaic_label(group.name, group.id),
@@ -12912,7 +12941,7 @@ class SequenceEngine:
         group's compiled id and the panel target's own, which the report's
         rows and the bundle's stacks are keyed on. A dark carries them so it
         joins its own panel's row and not a namesake's."""
-        group = self._group_of(target) if target is not None else None
+        group = self._mosaic_of(target) if target is not None else None
         if group is None:
             return {}
         return {"mosaic_id": group.id, "panel_id": target.id}

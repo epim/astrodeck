@@ -47,6 +47,7 @@
    "group": {
     "id": "m31-mosaic",
     "name": "M31",
+    "kind": "mosaic",
     "mode": "rotate",
     "pass": 4,
     "panel": "1-1",
@@ -113,6 +114,7 @@
    "group": {
     "id": "m31-mosaic",
     "name": "M31",
+    "kind": "mosaic",
     "mode": "rotate",
     "pass": 17,
     "panel": "2-1",
@@ -187,6 +189,7 @@
    "group": {
     "id": "m31-mosaic",
     "name": "M31",
+    "kind": "mosaic",
     "mode": "rotate",
     "visit_elapsed_s": 0,
     "panels_done": 0,
@@ -256,6 +259,7 @@
    "group": {
     "id": "m31-mosaic",
     "name": "M31",
+    "kind": "mosaic",
     "mode": "rotate",
     "pass": 4,
     "panel": "1-1",
@@ -322,6 +326,7 @@
    "group": {
     "id": "m31-mosaic",
     "name": "M31",
+    "kind": "mosaic",
     "mode": "rotate",
     "pass": 5,
     "panel": "1-1",
@@ -380,6 +385,7 @@
    "group": {
     "id": "m31-mosaic",
     "name": "M31",
+    "kind": "mosaic",
     "mode": "rotate",
     "pass": 5,
     "panel": "1-1",

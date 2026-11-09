@@ -648,6 +648,8 @@ def coverage_report(session: Session) -> dict:
         by_target.setdefault(frame.target_id, []).append(frame)
     groups = []
     for group in plan.groups:
+        if group.kind != "mosaic":
+            continue                # a pool's candidates tile nothing
         members = [t for t in plan.targets
                    if t.mosaic_group == group.id and not t.calibration]
         field = group_field(group)
@@ -672,11 +674,13 @@ def stamping_note(plan: SequencePlan,
     check has nothing to read; the sentence says so instead of letting an
     empty report read as a covered one. This module never turns stamping on
     (it costs an ASTAP run per frame, and on the Pi that is the operator's
-    call). A plan with no mosaic has nothing to check and no note."""
+    call). A plan with no mosaic has nothing to check and no note, a pool of
+    candidates included: it is no grid of tiles."""
     if solve_saved_lights:
         return None
     for group in plan.groups:
-        if any(t.mosaic_group == group.id and not t.calibration
-               for t in plan.targets):
+        if group.kind == "mosaic" and any(
+                t.mosaic_group == group.id and not t.calibration
+                for t in plan.targets):
             return STAMPING_OFF_NOTE
     return None

@@ -951,6 +951,11 @@ export interface SequenceState {
 export interface SequenceGroupState {
   id: string;
   name: string;
+  /** What the group is: a mosaic of panels or a POOL of candidates (#183).
+   *  For a pool `panel` is the candidate running, `panels_done` and
+   *  `panels_total` count candidates, and `pass` is absent. Optional: a server
+   *  older than WP 5.1c sends none, and reads as a mosaic. */
+  kind?: "mosaic" | "pool";
   mode: "rotate" | "sequential";
   /** The pass over the panels, counted from 1. */
   pass?: number;
