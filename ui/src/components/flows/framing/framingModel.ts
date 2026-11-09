@@ -33,7 +33,8 @@ import { MEASURE_ANGLE, NODE_DEFS, TARGET_ANGLES, targetAngle } from "../nodeDef
 import { DEFAULT_OVERLAP, mosaicTotalFov, wrapRaHours } from "../../../lib/framing";
 import { panelStateOf, type PanelRunSource, type PanelRunState } from "../flowRunState";
 import type { PanelState } from "../../atlas/PanelLayer";
-import type { CatalogEntry, MeasuredAngleRecord, SequenceGroupState, SkyAngleRecord } from "../../../types";
+import type { CatalogEntry, SequenceGroupState, SkyAngleRecord } from "../../../types";
+import type { FlowProgressBlock } from "../../../lib/flowsApi";
 import { ellipseExtents, objectShape } from "../../../lib/objectShape";
 
 // ------------------------------------------------------------------ types
@@ -164,6 +165,11 @@ export interface PanelAnswer {
 /** The two things the reframe question reads from a progress route block
  *  (lib/flowsApi `FlowProgressBlock`): what the shot panels banked, and what
  *  the skipped ones still hold. */
+/** The relay's record as the progress route answers it (`FlowProgressBlock.
+ *  measured_angle`, #187), derived from the route's own type so there is one
+ *  copy of it. */
+export type MeasuredAngleRecord = NonNullable<FlowProgressBlock["measured_angle"]>;
+
 export interface ProgressBlockLike {
   banked: number;
   skipped?: ReadonlyArray<{ banked: number }>;

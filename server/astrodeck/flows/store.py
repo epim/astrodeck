@@ -890,17 +890,6 @@ class FlowStore:
     def save_and_report(self, record: FlowRecord, *,
                         measured: Mapping[str, float] | None = None
                         ) -> tuple[FlowRecord, list[str], list[dict]]:
-        """``_save_and_report`` under the store's save lock: one save at a
-        time, so a route and the run's relay (or two routes) cannot each read
-        the file and then overwrite the other's change. NOT HELD ACROSS
-        ``get`` AND A SAVE, which are two calls: a caller that reads and then
-        saves re-checks ``updated_ts`` itself (``to_plan.relay_layout``)."""
-        with self._save_lock:
-            return self._save_and_report(record, measured=measured)
-
-    def _save_and_report(self, record: FlowRecord, *,
-                         measured: Mapping[str, float] | None = None
-                         ) -> tuple[FlowRecord, list[str], list[dict]]:
         """Store ``record``: ``(record_as_stored, migrated, reanchored)``.
 
         The save rules run here, in the one writer (``save_rules``, rulings 2
@@ -924,47 +913,55 @@ class FlowStore:
 
         ``measured`` is the run's one way to write a block's rotation in
         "Measure at the first solve" (``save_rules.prepare_save``, #187): a
-        node id and the angle the night's first solve measured for it."""
-        if record.readonly or any(e.id == record.id for e in examples()):
-            raise ReadOnlyFlow("the shipped examples are read-only — "
-                               "duplicate one into My flows to edit it")
-        # A FILE A NEWER BUILD WROTE IS NEVER OVERWRITTEN (#153). It is listed
-        # but cannot be opened here, so any save aimed at its id comes from
-        # somewhere else -- a stale tab, a duplicated id -- and writing it
-        # would silently downgrade whatever the newer build meant.
-        newer = self._newer_schema_on_disk(record.id)
-        if newer is not None:
-            raise NewerSchemaFlow(_newer_sentence(newer))
-        # THE QUOTA FROM THE FILE NAMES (#433), as PlanLibrary answers its
-        # own: is the file at this id there, and how many files does the
-        # directory list. It was ``{r.id for r in self._on_disk()}``, a walk
-        # that parsed, migrated and validated every stored flow on every
-        # save to count them (#433 measured 0.08 s a save over the first 48
-        # into an empty library, 0.75 s a save averaged over 768). The only
-        # file a save reads is now the one it writes, above and in
-        # ``_stored``. Files, not readable records: an unreadable file takes
-        # the disk and the listing's time like any other, and a save over
-        # one at its own id is the upsert it is, so a full library can still
-        # have a damaged flow repaired.
-        if (not self._path(record.id).exists()
-                and len(list_json(self.dir)) >= MAX_FLOWS):
-            raise FlowLibraryFull(f"the flow library is full ({MAX_FLOWS})")
-        errors = record.graph.validation_errors()
-        if errors:
-            raise ValueError("; ".join(errors))
-        # ONE READ OF THE FILE THIS SAVE REPLACES, for the anchors and the
-        # bookkeeping alike (#350, #364): it refuses, or it answers both.
-        prior = self._stored(record.id)
-        record, migrated, reanchored = prepare_save(
-            record, prior, resolve=self.resolve, measured=measured)
-        ensure_dir(self.dir)
-        now = time.time()
-        # `migrated` is cleared on the RETURNED record too, so the response to a
-        # save never echoes a note, the client's or a stale read's.
-        record = record.model_copy(update={"updated_ts": now, "migrated": [],
-                                           **_bookkeeping(prior, now)})
-        self._write(record)
-        return record, migrated, reanchored
+        node id and the angle the night's first solve measured for it.
+
+        ONE SAVE AT A TIME (``_save_lock``): a route and the run's relay (or
+        two routes) each read the file they replace, apply the save rules and
+        write, and without the lock the later write carried the earlier one's
+        stale copy. The lock is NOT held across ``get`` and a save, which are
+        two calls: a caller that reads and then saves re-checks ``updated_ts``
+        itself (``to_plan.relay_layout``)."""
+        with self._save_lock:
+            if record.readonly or any(e.id == record.id for e in examples()):
+                raise ReadOnlyFlow("the shipped examples are read-only — "
+                                   "duplicate one into My flows to edit it")
+            # A FILE A NEWER BUILD WROTE IS NEVER OVERWRITTEN (#153). It is listed
+            # but cannot be opened here, so any save aimed at its id comes from
+            # somewhere else -- a stale tab, a duplicated id -- and writing it
+            # would silently downgrade whatever the newer build meant.
+            newer = self._newer_schema_on_disk(record.id)
+            if newer is not None:
+                raise NewerSchemaFlow(_newer_sentence(newer))
+            # THE QUOTA FROM THE FILE NAMES (#433), as PlanLibrary answers its
+            # own: is the file at this id there, and how many files does the
+            # directory list. It was ``{r.id for r in self._on_disk()}``, a walk
+            # that parsed, migrated and validated every stored flow on every
+            # save to count them (#433 measured 0.08 s a save over the first 48
+            # into an empty library, 0.75 s a save averaged over 768). The only
+            # file a save reads is now the one it writes, above and in
+            # ``_stored``. Files, not readable records: an unreadable file takes
+            # the disk and the listing's time like any other, and a save over
+            # one at its own id is the upsert it is, so a full library can still
+            # have a damaged flow repaired.
+            if (not self._path(record.id).exists()
+                    and len(list_json(self.dir)) >= MAX_FLOWS):
+                raise FlowLibraryFull(f"the flow library is full ({MAX_FLOWS})")
+            errors = record.graph.validation_errors()
+            if errors:
+                raise ValueError("; ".join(errors))
+            # ONE READ OF THE FILE THIS SAVE REPLACES, for the anchors and the
+            # bookkeeping alike (#350, #364): it refuses, or it answers both.
+            prior = self._stored(record.id)
+            record, migrated, reanchored = prepare_save(
+                record, prior, resolve=self.resolve, measured=measured)
+            ensure_dir(self.dir)
+            now = time.time()
+            # `migrated` is cleared on the RETURNED record too, so the response to a
+            # save never echoes a note, the client's or a stale read's.
+            record = record.model_copy(update={"updated_ts": now, "migrated": [],
+                                               **_bookkeeping(prior, now)})
+            self._write(record)
+            return record, migrated, reanchored
 
     def delete(self, flow_id: str) -> bool:
         """Remove the file at ``flow_id``. False when there is none.

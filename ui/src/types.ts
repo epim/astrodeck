@@ -1295,21 +1295,6 @@ export interface TargetGroup {
   measured?: Record<string, unknown> | null;
 }
 
-/** What the relay of a block at "Measure at the first solve" did, as the
- *  progress route answers it on the block (`measured_angle`, server
- *  `progress._measured_angle`, #187): the angle the grid was last laid out
- *  at, the night, and whether ruling 3 carried the counts there, with the
- *  move against what the grid allows when it did not. */
-export interface MeasuredAngleRecord {
-  pa_deg: number;
-  from_pa_deg?: number | null;
-  night: string;
-  carried: boolean;
-  max_move_deg: number | null;
-  threshold_deg: number | null;
-  orphaned_frames: number;
-}
-
 /** The flats a flow's DUSK FLATS block asks for, as the engine runs them (#603
  *  job B, wave 17 WP-134; mirrors `sequence/models.py::DuskFlatsPlan`). ABSENT
  *  from a plan's dump while there is no block, so a stored session and every
