@@ -267,6 +267,36 @@ class DecisionTests(unittest.TestCase):
         verdicts = decide(recorded(runs_answer(run(5)), jobs_answer(legs)), jobs=["container-security"])
         self.assertFalse(verdicts["container-security"].green)
 
+    def server_run(self, **conclusions):
+        """A run whose `server` job ran as the shards ci.yml declares, `server (1)` to `server (N)`.
+
+        `conclusions` maps a shard's number to what it concluded; the rest succeeded.
+        """
+        server = load_ci()["jobs"]["server"]
+        legs = [server["name"].replace("${{ matrix.shard }}", str(k))
+                for k in server["strategy"]["matrix"]["shard"]]
+        jobs = [j for j in passing_jobs() if j["name"] != "server"]
+        jobs += [job(name, conclusion=conclusions.get("shard%d" % (i + 1), "success"))
+                 for i, name in enumerate(legs)]
+        return recorded(runs_answer(run(5)), jobs_answer(jobs))
+
+    def test_the_server_job_is_green_when_every_shard_passed(self):
+        verdicts = decide(self.server_run())
+        self.assertEqual(greens(verdicts), GATED)
+
+    def test_the_server_job_is_not_green_when_one_shard_failed(self):
+        # server (1) is green, server (2) failed: the job as a whole is not.
+        verdicts = decide(self.server_run(shard2="failure"))
+        self.assertFalse(verdicts["server"].green)
+        self.assertIn("server (2)", verdicts["server"].reason)
+        self.assertEqual(greens(verdicts), [g for g in GATED if g != "server"])
+
+    def test_the_server_job_is_not_green_when_a_shard_was_cancelled_or_skipped(self):
+        for conclusion in ("cancelled", "skipped"):
+            verdicts = decide(self.server_run(shard3=conclusion))
+            self.assertFalse(verdicts["server"].green, conclusion)
+            self.assertIn("server (3)", verdicts["server"].reason)
+
     def test_a_job_name_that_only_shares_a_prefix_is_not_a_leg(self):
         jobs = [job("server-extra"), job("server (x)", conclusion="failure")]
         verdicts = decide(recorded(runs_answer(run(5)), jobs_answer(jobs)), jobs=["server"])

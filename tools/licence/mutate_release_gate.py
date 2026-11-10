@@ -13,6 +13,8 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 GATE = "tools/licence/audit_release.py"
 PROOF = "tools/licence/release_provenance.py"
+EVIDENCE = "tools/licence/release_evidence.py"
+BUMP = "tools/licence/version_bump_evidence.py"
 PREFIX = "tools.licence.test_release_gate."
 MUTANTS = [
     ("frozen-private-metadata-bypass", GATE, 'if re.fullmatch(r"(?:astrodeck|astrodeck[_-]native)-[^/]+\\.dist-info/direct_url\\.json", name):', 'if False:', "AdditionalBoundaryTests.test_frozen_app_and_native_direct_url_block_even_with_verified_record"),
@@ -39,6 +41,11 @@ MUTANTS = [
     ("runtime-exception-applies-to-every-module", GATE, 'all(r.get("record_verified") and r.get("source", "").startswith(rule[1]) for r in retained)', 'all(r.get("record_verified") for r in retained)', "AdditionalBoundaryTests.test_runtime_exception_does_not_cover_arbitrary_pyinstaller_modules"),
     ("python-cargo-credit-collision", GATE, 'if group is None or container.get("id") == group or moved:', 'if True:', "AdditionalBoundaryTests.test_python_and_cargo_names_do_not_overwrite_each_other"),
     ("inject-auditor-future-flags", PROOF, 'optimize=n, dont_inherit=True', 'optimize=n, dont_inherit=False', "ArchiveAndPolicyTests.test_code_proof_compiles_but_never_executes"),
+    ("stale-ledger-digest-accepted", EVIDENCE, '    return row["sha256"] == digest(data)', '    return True', "LedgerTests.test_a_stale_ledger_digest_is_not_approval"),
+    ("sync-approves-changed-files", EVIDENCE, '            kept.append(row)', '            kept.append(dict(row, sha256=digest((Path(root) / row["path"]).read_bytes())))', "LedgerCommandTests.test_sync_never_writes_a_digest"),
+    ("approve-without-a-named-path", EVIDENCE, '    if not paths:\n        raise SystemExit("approve needs at least one --path")', '    if False:\n        raise SystemExit("approve needs at least one --path")', "LedgerCommandTests.test_approve_refuses_without_naming_what_it_approves"),
+    ("stale-row-falls-back-to-base", GATE, '    if verdict is not None:\n        return verdict', '    if verdict:\n        return verdict', "LedgerTests.test_a_stale_row_poisons_a_path_equal_to_the_base"),
+    ("carry-unapproved-head-copy", BUMP, '        if not evidence.approved(root, ledger, path, shown.stdout):', '        if False:', "VersionCarryTests.test_carry_refuses_when_heads_copy_was_not_approved"),
     ("ignore-python-exception-table", PROOF, 'getattr(code, "co_exceptiontable", b"").hex()', '""', "ArchiveAndPolicyTests.test_exception_handlers_are_part_of_python_proof"),
 ]
 

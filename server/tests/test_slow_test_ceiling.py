@@ -50,6 +50,7 @@ SLOW_ALLOWLIST: dict[str, str] = {
     "tests/test_native_guider_recovery.py::test_flip_calibration_mid_session_keeps_guiding_bounded": "a real-time calibration in mid session, then guiding to bounded residuals, on the same wall-clock sim (30 s alone on a dev PC; the native job, #1255)",
     "tests/test_cloud_hold_follows_the_mount.py::test_a_cloudy_wait_opens_no_hold_and_the_night_goes_on": "a whole simulated night on the fake clock, all CPU: 24 to 60 s on CI depending on the runner (four runs on 2026-11-10); until the night harness is made cheaper",
     "tests/test_cloud_hold_watch.py::test_a_mount_that_stops_tracking_mid_hold_is_restored_not_judged": "the same simulated night harness: 19 to 47 s on CI depending on the runner (four runs on 2026-11-10); until the night harness is made cheaper",
+    "tests/test_cloud_hold_follows_the_mount.py::test_control_a_flips_off_mount_that_stops_at_its_limit_is_resumed": "the same simulated night harness: 20 to 40 s in one server job and over 60 s in a shard (run 42901741615); until the night harness is made cheaper (#1292)",
 }
 
 
