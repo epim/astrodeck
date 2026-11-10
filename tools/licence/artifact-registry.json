@@ -671,7 +671,7 @@
   "reviewed_sources": [
     {
       "path": "server/astrodeck/__init__.py",
-      "sha256": "44c7b54ef96c68a3fa3426a289c618cc8360a46f72c9d4eba22b8ccfaf73d1f4",
+      "sha256": "c73f8c600b3e4f093f49e7dda0eedfe8227fe8e6e6c5f1ab5234d431efcc5dfe",
       "component": "AstroDeck application source"
     },
     {
@@ -924,6 +924,11 @@
     {
       "path": "server/astrodeck/catalog/hips_local.py",
       "sha256": "aa91e59f3c70989b9481488ef0fe214810fc939310db0a6bfc726ddcee74952d",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/moon_factor.py",
+      "sha256": "fb3e7d65af75a81b515447c911686cc2e94ead9bf80de069ba95e700236291f3",
       "component": "AstroDeck application source"
     },
     {
@@ -1953,7 +1958,7 @@
     },
     {
       "path": "server/pyproject.toml",
-      "sha256": "2b76b2c4f65d12fd2ee98c691e88028c3298a70860d51249fdb8d7de2a572e86",
+      "sha256": "fb524e9c667f7086e629d5651bd2fd81c55428de89aec4946c27c49c3f1e7ca8",
       "component": "AstroDeck application source"
     }
   ],
