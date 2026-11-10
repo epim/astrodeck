@@ -21,6 +21,10 @@
 // The harness is today's `createHarness` (SHEETS/__sim__/harness.ts), read only. Its canvas context is a stub that draws
 // nothing and answers `getImageData` from the current frame at the size last drawn, so every pixel assertion here is an
 // assertion about the SIZE and ORDER of the draws; the canvases are wrapped to log them.
+//
+// disk-reads: ui/src/next/hubs/sky/sheets/__sim__/harness.ts, ui/src/next/hubs/sky/sheets/pano/cameraSource.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/pano/support.ts, ui/src/next/hubs/sky/sheets/photosphereGeometry.ts
+// disk-reads: ui/src/testing/rafPolyfill.ts
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createHarness, resample, type FrameMetadata, type ReplayHarness } from '../../__sim__/harness';

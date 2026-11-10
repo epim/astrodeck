@@ -56,6 +56,9 @@
 // statuses ?? NO_STATUSES, next)` made `sameStatuses(s.flows.statuses, next)`).
 // Observed, 7/8 passing:
 //   x a write of a flows state that holds no statuses throws nothing and invents none: Cannot convert undefined or null to object
+//
+// disk-reads: server/tests/fixtures/stage_status_stream.json, ui/src/api.ts, ui/src/api/, ui/src/components/
+// disk-reads: ui/src/help.ts, ui/src/lib/, ui/src/next/, ui/src/store.ts, ui/src/ws.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

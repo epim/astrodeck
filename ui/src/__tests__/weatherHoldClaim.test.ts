@@ -39,6 +39,10 @@
 // text. Same dependency-free node access as src/__tests__/cssClasses.test.ts.
 //
 //   Run directly:  npx tsx src/__tests__/weatherHoldClaim.test.ts
+//
+// disk-reads: server/astrodeck/config.py, server/astrodeck/dusk_arm.py, server/astrodeck/sequence/resume_arm.py
+// disk-reads: server/astrodeck/weather.py, ui/src/App.tsx, ui/src/components/weather/SkyConditionsPanel.tsx
+// disk-reads: ui/src/next/NextApp.tsx
 
 interface NodeFsLike { readFileSync(path: string, encoding: string): string }
 const nodeImport = (s: string): Promise<unknown> =>

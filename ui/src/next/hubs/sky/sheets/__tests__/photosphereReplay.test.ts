@@ -9,6 +9,13 @@
 // commits - a regression and a reshuffled Map iteration would look the same.
 // So the same case directory, replayed twice in one process, has to produce
 // byte-identical files.
+//
+// disk-reads: tools/photosphere_sim/, ui/src/lib/horizon.ts, ui/src/next/hubs/sky/sheets/__sim__/
+// disk-reads: ui/src/next/hubs/sky/sheets/horizonBins.ts, ui/src/next/hubs/sky/sheets/pano/
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphere.ts, ui/src/next/hubs/sky/sheets/photosphereGeometry.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/photospherePose.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereRegistration.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereStability.ts, ui/src/next/lib/horizonModel.ts
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';

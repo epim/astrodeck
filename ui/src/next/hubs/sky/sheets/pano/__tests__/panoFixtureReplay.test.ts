@@ -29,6 +29,10 @@
 //     edit that reads the fixture's own `result/` as well.
 // The manifest-hash check that catches a changed frame byte is `tools/photosphere_sim/tests/test_manifest_hashes.py`,
 // which reads every directory under `fixtures/`, this one included.
+//
+// disk-reads: tools/photosphere_sim/fixtures/treeline-panshort-41/, ui/src/lib/horizon.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/__sim__/, ui/src/next/hubs/sky/sheets/pano/
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereGeometry.ts, ui/src/next/lib/horizonModel.ts
 import assert from 'node:assert/strict';
 import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

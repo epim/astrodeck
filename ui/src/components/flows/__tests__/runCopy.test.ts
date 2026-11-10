@@ -60,6 +60,12 @@
 // The S7 ones (sections 4 and 5, and the re-runs marked S7) were run the
 // same way in scratchpad S7-URUN-mut, and the H4 ones (marked H4) in
 // scratchpad H4-ROUTES-B-mut.
+//
+// disk-reads: server/tests/fixtures/flow_progress_continue.json
+// disk-reads: server/tests/fixtures/sequence_state_mosaic.json, ui/src/components/flows/flowRunState.ts
+// disk-reads: ui/src/components/flows/nodeDefs.ts, ui/src/components/flows/runCopy.ts, ui/src/lib/flowsApi.ts
+// disk-reads: ui/src/lib/frameView.ts, ui/src/lib/framing.ts, ui/src/lib/lastSessionFrame.ts
+// disk-reads: ui/src/lib/optics.ts
 
 // @ts-ignore  no @types/node guaranteed; tsx supplies fs at runtime
 import { readFileSync } from "node:fs";

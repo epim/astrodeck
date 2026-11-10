@@ -18,6 +18,9 @@
 // Mutants the other tests were checked against: the altitude cap ignored, the azimuth not wrapped in `ribbonPoint`,
 // the over-the-pole guard removed, `b` and `c` swapped in `affineFromTriangle`, `srcW` and `srcH` ignored, and the
 // vertical limit 1.0 instead of 0.9.
+//
+// disk-reads: ui/src/next/hubs/sky/sheets/pano/liveFrame.ts, ui/src/next/hubs/sky/sheets/pano/rotation.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereGeometry.ts
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { lookBasis, rotateBasis, skyAngles, type CameraBasis, type V3 } from '../../photosphereGeometry';

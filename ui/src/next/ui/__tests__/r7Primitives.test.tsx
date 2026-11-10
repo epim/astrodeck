@@ -29,6 +29,8 @@
 //
 // Convention: jsdom by hand, createRoot + act, native events, printed tally
 // plus the `{ passed, failed, total }` export (shell-and-tests.md section 4).
+//
+// disk-reads: ui/src/next/next.css, ui/src/next/ui/
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

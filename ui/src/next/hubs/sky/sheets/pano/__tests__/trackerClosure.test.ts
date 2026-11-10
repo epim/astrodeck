@@ -28,6 +28,9 @@
 // cumulative angle ('the linear distribution removes a residual the focal leaves alone': the stalled ring's worst error 0.39, not
 // under 0.3). Under the same names in trackerClosureFallback.test.ts: `closeLoop` called on an unlocked focal, a RangeError
 // rethrown, the retry limit raised; in trackerClosureRepeat.test.ts: the repeat test removed.
+//
+// disk-reads: ui/src/next/hubs/sky/sheets/__sim__/, ui/src/next/hubs/sky/sheets/pano/
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereGeometry.ts
 import assert from 'node:assert/strict';
 import { FocalEstimator, PRIOR_SD_PCT } from '../focal';
 import { DEG } from '../../photosphereGeometry';

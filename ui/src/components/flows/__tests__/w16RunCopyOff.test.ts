@@ -56,6 +56,11 @@
 //     in nodeDefs.ts. RED, observed: 9/10, x DUSK WINDOW declares no `repeat`
 //     here, in nodes.py, or as a rowless param: `repeat` is still a param in
 //     nodeDefs.ts
+//
+// disk-reads: server/astrodeck/flows/nodes.py, server/tests/fixtures/flow_progress_continue.json
+// disk-reads: ui/src/components/flows/flowRunState.ts, ui/src/components/flows/nodeDefs.ts
+// disk-reads: ui/src/components/flows/runCopy.ts, ui/src/lib/frameView.ts, ui/src/lib/framing.ts
+// disk-reads: ui/src/lib/lastSessionFrame.ts, ui/src/lib/optics.ts
 
 // @ts-ignore  no @types/node guaranteed; tsx supplies fs at runtime
 import { readFileSync } from "node:fs";

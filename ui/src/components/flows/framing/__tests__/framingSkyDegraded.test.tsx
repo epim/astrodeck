@@ -59,6 +59,8 @@
 // S5-SKY-mut for S5's, S7-USKY-mut for S7's, H4-UFRAME-mut for H4's), never
 // in the shared tree (#254), and the failure it produced is quoted verbatim.
 // S5's quotes carry the copy as it read then.
+//
+// disk-reads: server/tests/fixtures/mosaic_panels_3x2.json, ui/src/components/flows/framing/framing.css
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

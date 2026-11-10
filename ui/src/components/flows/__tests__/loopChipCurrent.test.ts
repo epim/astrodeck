@@ -45,6 +45,8 @@
 // Every mutant below was run in the private scratch copy
 // S7-UCANVAS-mut of ui/ under the session scratchpad, never in the shared
 // tree (#254), and the failure it produced is quoted verbatim.
+//
+// disk-reads: ui/src/
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

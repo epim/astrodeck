@@ -18,6 +18,8 @@
 // third copy to drift.
 //
 // Run alone:  npx tsx src/__tests__/planPolicyDefaults.test.ts
+//
+// disk-reads: server/astrodeck/sequence/policy.py, ui/src/store.ts
 import { readFileSync } from "node:fs";
 
 let passed = 0;

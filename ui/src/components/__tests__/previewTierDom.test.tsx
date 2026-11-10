@@ -24,6 +24,8 @@
 // was actually wrong — which URL is asked for FIRST, and that the fallback is
 // still reachable. The rendered behaviour is covered by the Playwright run
 // against the relay, where there IS a decoder.
+//
+// disk-reads: ui/src/components/monitor.tsx, ui/src/components/preview/FrameFilmstrip.tsx
 
 interface NodeFsLike { readFileSync(path: string, encoding: string): string }
 const nodeImport = (s: string): Promise<unknown> =>

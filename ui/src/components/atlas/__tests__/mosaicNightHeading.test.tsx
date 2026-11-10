@@ -27,6 +27,9 @@
 // Every mutant below was run in a private scratch copy of ui/ (scratchpad
 // S5-SKY-mut), never in the shared tree (#254), and the failure it produced is
 // quoted verbatim.
+//
+// disk-reads: ui/src/api.ts, ui/src/api/, ui/src/components/, ui/src/index.css, ui/src/lib/, ui/src/next/
+// disk-reads: ui/src/store.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

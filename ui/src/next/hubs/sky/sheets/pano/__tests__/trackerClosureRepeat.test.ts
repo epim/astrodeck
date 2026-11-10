@@ -20,6 +20,9 @@
 // Mutants this file must catch: the repeat test removed from `matchClosure` (the 8, 10 and 12-degree rings then close by image on
 // the wrong tooth: the refusal case fails); the repeat test refusing every view (the 14-degree ring, which closes on the truth,
 // fails).
+//
+// disk-reads: ui/src/next/hubs/sky/sheets/__sim__/, ui/src/next/hubs/sky/sheets/pano/
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereGeometry.ts
 import assert from 'node:assert/strict';
 import { PRIOR_SD_PCT } from '../focal';
 import { angleBetweenDeg, qinv, qmul } from '../rotation';

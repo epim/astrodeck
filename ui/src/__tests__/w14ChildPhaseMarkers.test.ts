@@ -88,6 +88,8 @@
 // "w14ChildPhaseMarkers.test: 7/8 passed":
 //   x every post-tally freeze is retryable, from the result runOne itself
 //   returned: import-resolved froze after a clean tally and must be retried
+//
+// disk-reads: ui/run-tests.mjs, ui/tools/selectTests.mjs
 
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

@@ -58,6 +58,9 @@
 // below are that run's. Their tallies ("N/16") were counted before this
 // task's verifier added section 2's read-only Example case, which makes 17;
 // that case's own quote is 17-based.
+//
+// disk-reads: server/tests/fixtures/flow_progress_continue.json
+// disk-reads: server/tests/fixtures/sequence_state_mosaic.json, ui/src/next/hubs/session/flows/framing/
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

@@ -25,6 +25,8 @@
 //
 // The cases below pin both: the phrase is a line of its own, and the number of
 // children follows the cores the process may use.
+//
+// disk-reads: ui/run-tests.mjs, ui/tools/selectTests.mjs
 
 import assert from "node:assert/strict";
 import { availableParallelism } from "node:os";

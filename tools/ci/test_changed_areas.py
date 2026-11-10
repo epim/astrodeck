@@ -11,6 +11,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -237,15 +238,21 @@ class RealAreasTests(unittest.TestCase):
         for path in (".github/workflows/ci.yml", "tools/ci/areas.json", "tools/ci/changed_areas.py"):
             self.assertEqual(pick([path], config=self.config), every, path)
 
-    def test_a_server_change_runs_the_server_job_and_the_ui_job_that_reads_server_files(self):
-        # UI tests read server sources and server test fixtures from disk (26
-        # test files name server/astrodeck, 48 name server/tests), and some
-        # read tools/, docs/ and native/. Until those reads are declared per
-        # test, a change there runs the ui job.
-        got = pick(["server/astrodeck/hub.py"], config=self.config)
-        self.assertIn("server", got)
-        self.assertIn("ui", got)
-        self.assertNotIn("relay", got)
+    def test_a_server_change_no_ui_test_reads_does_not_run_the_ui_job(self):
+        # The ui area is ui/** plus what UI tests declare reading (#1268); see
+        # UiAreaTests below for the ratchet that ties the two together.
+        for path in ("server/astrodeck/guide/native.py", "server/tests/test_api_fence.py",
+                     "tools/ci/changed_areas_notes.txt", "native/Cargo.toml"):
+            got = pick([path], config=self.config)
+            self.assertNotIn("ui", got, path)
+        self.assertIn("server", pick(["server/astrodeck/guide/native.py"], config=self.config))
+
+    def test_a_server_file_a_ui_test_reads_runs_the_ui_job_and_the_server_job(self):
+        for path in ("server/astrodeck/hub.py", "server/tests/fixtures/flow_progress_continue.json"):
+            got = pick([path], config=self.config)
+            self.assertIn("server", got, path)
+            self.assertIn("ui", got, path)
+            self.assertNotIn("relay", got, path)
 
     def test_a_relay_change_does_not_run_the_ui_job(self):
         self.assertNotIn("ui", pick(["relay/app.py"], config=self.config))
@@ -327,6 +334,69 @@ class RealAreasTests(unittest.TestCase):
         for pattern in self.config["inert"]:
             sample = pattern.replace("**", "x")
             self.assertEqual(changed_areas.owners(sample, self.config), [], pattern)
+
+
+UI_SRC = REPO / "ui" / "src"
+DISK_READS = re.compile(r"^[ \t]*//[ \t]*disk-reads:[ \t]*(.+?)[ \t]*\r?$", re.M)
+
+
+def declared_outside_ui():
+    """Each path outside ui/ that a UI test file declares reading, with the files that do.
+
+    The declaration is a `// disk-reads: a, b/` comment line (repo-root-relative
+    paths, a trailing slash meaning a directory), read by ui/tools/selectTests.mjs.
+    """
+    found = {}
+    for path in sorted(UI_SRC.rglob("*.test.ts*")):
+        if path.suffix not in (".ts", ".tsx"):
+            continue
+        for match in DISK_READS.finditer(path.read_text(encoding="utf-8")):
+            for declared in match.group(1).split(","):
+                declared = declared.strip()
+                if declared and not declared.startswith("ui/"):
+                    found.setdefault(declared, []).append(path.relative_to(REPO).as_posix())
+    return found
+
+
+def glob_for(declared):
+    return declared + "**" if declared.endswith("/") else declared
+
+
+class UiAreaTests(unittest.TestCase):
+    """The ui area is ui/** and the paths outside ui/ that UI tests declare reading (#1268).
+
+    A UI test that reads a file outside ui/ must make the ui job run when that
+    file changes, and a path in the area that no test declares is a path that
+    runs the ui job for nothing. Both directions are checked, from the
+    declarations themselves.
+    """
+
+    def setUp(self):
+        self.config = changed_areas.load_config(HERE / "areas.json")
+        self.declared = declared_outside_ui()
+
+    def test_the_declarations_were_found(self):
+        self.assertGreater(len(self.declared), 20, "no UI test declares what it reads outside ui/")
+
+    def test_every_path_a_ui_test_declares_outside_ui_selects_the_ui_job(self):
+        for declared, tests in sorted(self.declared.items()):
+            sample = declared + "probe.txt" if declared.endswith("/") else declared
+            where = "%s (declared by %s)" % (declared, tests[0])
+            self.assertEqual(changed_areas.placement(sample, self.config), "owned", where)
+            self.assertIn("ui", changed_areas.owners(sample, self.config), where)
+
+    def test_every_path_a_ui_test_declares_outside_ui_exists(self):
+        # selectTestsRatchet.test.ts checks the paths under ui/; it cannot stat
+        # these without reading them, which would run it for every server change.
+        for declared, tests in sorted(self.declared.items()):
+            where = "%s (declared by %s)" % (declared, tests[0])
+            target = REPO / declared
+            self.assertTrue(target.is_dir() if declared.endswith("/") else target.is_file(), where)
+
+    def test_the_ui_area_names_only_paths_a_ui_test_declares(self):
+        outside = sorted(g for g in self.config["areas"]["ui"] if not g.startswith("ui/"))
+        self.assertEqual(outside, sorted(glob_for(d) for d in self.declared))
+        self.assertIn("ui/**", self.config["areas"]["ui"])
 
 
 class WorkflowRatchetTests(unittest.TestCase):

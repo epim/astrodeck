@@ -7,6 +7,11 @@
 //
 // Mutants found by review that the near-degenerate tests must also catch: EULER_EPS = 1e-3 in
 // `deviceOrientationFromQuat`, and the m33 test made absolute (|m33| > EULER_EPS) instead of relative to |cos beta|.
+//
+// disk-reads: ui/src/next/hubs/sky/sheets/pano/rotation.ts, ui/src/next/hubs/sky/sheets/pano/types.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereGeometry.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/photospherePose.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereStability.ts
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { lookBasis, orientationBasis, type CameraBasis, type V3 } from '../../photosphereGeometry';

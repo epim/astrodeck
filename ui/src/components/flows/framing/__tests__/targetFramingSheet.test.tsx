@@ -49,6 +49,9 @@
 // #382 mutants, and each was red with the failure quoted. S5 ran the three
 // #382 mutants again on the committed tree (HEAD 029914bb) in s5-modal-mut
 // (2026-09-28), each red with its quoted line, and then on its own tree.
+//
+// disk-reads: server/tests/fixtures/flow_readouts_m31.json, server/tests/fixtures/mosaic_panels_3x2.json
+// disk-reads: server/tests/fixtures/panel_lane_cases.json
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

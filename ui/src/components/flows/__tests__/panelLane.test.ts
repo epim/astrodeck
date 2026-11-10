@@ -37,6 +37,11 @@
 //
 // Every mutant below was run in a private scratch copy of ui/, never in the
 // shared tree (#254), and the failure it produced is quoted verbatim.
+//
+// disk-reads: server/tests/fixtures/panel_lane_cases.json, ui/src/api.ts, ui/src/components/flows/
+// disk-reads: ui/src/lib/apiError.ts, ui/src/lib/base.ts, ui/src/lib/flowsApi.ts, ui/src/lib/frameView.ts
+// disk-reads: ui/src/lib/framing.ts, ui/src/lib/humanize.ts, ui/src/lib/lastSessionFrame.ts
+// disk-reads: ui/src/lib/optics.ts, ui/src/lib/retryLoad.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

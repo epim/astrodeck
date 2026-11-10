@@ -33,6 +33,12 @@
 //     is accepted at the wrong period by the keyframe window in up to 7 of 8 runs, with ZNCC near 0.97 (so ZNCC does NOT
 //     reject a one-period lock on a fence that dominates the view); stripes filling the view are refused by the keyframe
 //     window at periods of 6 and more (PSR) and accepted at the wrong period by the closure window at every period.
+//
+// disk-reads: ui/src/next/hubs/sky/sheets/__sim__/png.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/pano/__tests__/synth/synth.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/pano/align.ts, ui/src/next/hubs/sky/sheets/pano/horizon/noise.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/pano/phaseCorrelate.ts, ui/src/next/hubs/sky/sheets/pano/pyramid.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/pano/rotation.ts, ui/src/next/hubs/sky/sheets/photosphereGeometry.ts
 import assert from 'node:assert/strict';
 import { cameraLens, lookBasis, pixelLuminance, skyAngles, unit, type CameraBasis, type V3 } from '../../photosphereGeometry';
 import { ACCEPT, alignPair, TEXTURE_FLOOR, type RgbStrip } from '../align';

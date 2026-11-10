@@ -1,5 +1,13 @@
 // Copyright (c) 2026 James Penick
 // SPDX-License-Identifier: Apache-2.0
+//
+// disk-reads: ui/src/lib/horizon.ts, ui/src/next/hubs/sky/sheets/horizonBins.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/horizonStrip.ts, ui/src/next/hubs/sky/sheets/pano/focal.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/pano/rotation.ts, ui/src/next/hubs/sky/sheets/photosphere.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereGeometry.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/photospherePose.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereRegistration.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereStability.ts, ui/src/next/lib/horizonModel.ts
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { bandForAltitude, cameraElevation, cameraPose, projectSweepColumns, robustSpread, traceSkyCoverage, AZ_DEPARTURE, EXPOSURE_TOLERANCE, RE_EXPOSURE_BAND_PCT, RE_EXPOSURE_PCT, OVERHEAD_BAND, type SkyColumn, type SweepFrame } from "../photosphere";

@@ -46,6 +46,8 @@
 // (A mutant that offers it with nothing set aside is EQUIVALENT: PANELS draws
 // the button only while a row is set aside, so the sheet carries no test of
 // its own for it and the CONTROL case below grades PANELS' one.)
+//
+// disk-reads: server/tests/fixtures/flow_progress_continue.json
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

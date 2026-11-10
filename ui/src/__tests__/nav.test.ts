@@ -37,6 +37,9 @@
 // Reading the source rather than importing App.tsx is deliberate: App pulls in
 // the store, the websocket and every chrome component, and none of that is
 // needed to check a table of strings.
+//
+// disk-reads: ui/src/App.tsx, ui/src/components/BottomNav.tsx, ui/src/components/NavMoreSheet.tsx
+// disk-reads: ui/src/components/icons.tsx, ui/src/lib/lazyViews.ts, ui/src/types.ts
 
 // Same dependency-free node:fs access idiom as cssClasses.test.ts — the project
 // installs no @types/node and `tsc -b` type-checks everything under src/.

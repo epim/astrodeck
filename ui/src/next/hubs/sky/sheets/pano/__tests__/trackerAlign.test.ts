@@ -34,6 +34,9 @@
 // corrected frame ('a chain commit aligns against the previous keyframe'); the per-step gain clamp removed ('a large exposure
 // jump is clamped per step'); the steady span's strict `<` made `<=` ('the steady-pair test is strict'); the S32 drop leaving the
 // dropped keyframe's capture record behind ('a first keyframe taken from an absolute-only sample').
+//
+// disk-reads: ui/src/lib/horizon.ts, ui/src/next/hubs/sky/sheets/__sim__/, ui/src/next/hubs/sky/sheets/pano/
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereGeometry.ts, ui/src/next/lib/horizonModel.ts
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

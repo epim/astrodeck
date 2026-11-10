@@ -23,6 +23,12 @@
 // the failing line of the test it sits on; a mutant that failed other tests
 // too is quoted where it was aimed. S5's mutants (#408, #411, #413) were run
 // in the scratch copy s5-modal-mut (2026-09-28).
+//
+// disk-reads: server/tests/fixtures/flow_readouts_m31.json, server/tests/fixtures/sequence_state_mosaic.json
+// disk-reads: server/tests/fixtures/skip_cases.json, ui/src/api.ts, ui/src/components/flows/
+// disk-reads: ui/src/lib/apiError.ts, ui/src/lib/base.ts, ui/src/lib/flowsApi.ts, ui/src/lib/frameView.ts
+// disk-reads: ui/src/lib/framing.ts, ui/src/lib/humanize.ts, ui/src/lib/lastSessionFrame.ts
+// disk-reads: ui/src/lib/objectShape.ts, ui/src/lib/optics.ts, ui/src/lib/retryLoad.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

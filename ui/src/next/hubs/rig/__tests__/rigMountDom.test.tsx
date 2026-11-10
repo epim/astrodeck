@@ -27,6 +27,8 @@
 //   5. A run owning the mount locks the pad but NOT park. Park is the abort;
 //      gating it on the thing it exists to end is the bug the inventory records
 //      three separate times.
+//
+// disk-reads: ui/src/api.ts, ui/src/api/, ui/src/components/, ui/src/lib/, ui/src/next/, ui/src/store.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

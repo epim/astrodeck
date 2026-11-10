@@ -30,6 +30,9 @@
 //   M8  "tonight line kept"           the row keeps its tonight line
 //   M9  "verb kept"                   the row keeps its RUN button
 //   M11 "reason dropped" (Now)        the sub-line says unreadable and not why
+//
+// disk-reads: server/tests/fixtures/plan_list_unreadable.json, ui/src/api.ts, ui/src/api/, ui/src/components/
+// disk-reads: ui/src/lib/, ui/src/next/, ui/src/store.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

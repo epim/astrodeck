@@ -17,6 +17,9 @@
 // consequences — one frame is downloadable and the other does not exist. So the
 // three failure states are asserted as three different tiles, and the presence
 // or absence of the download affordance is asserted with them.
+//
+// disk-reads: ui/src/components/gallery/FrameTile.tsx, ui/src/components/icons.tsx, ui/src/lib/base.ts
+// disk-reads: ui/src/lib/gallery.ts, ui/src/lib/thumbQueue.ts
 
 // ------------------------------------------------------------ browser stubs
 // FrameTile imports lib/base, which reads window.location.pathname AT MODULE

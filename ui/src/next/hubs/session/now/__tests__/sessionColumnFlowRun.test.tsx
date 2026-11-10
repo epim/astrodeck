@@ -110,6 +110,10 @@
 //   FW "fall through to the window sentence"  scheduleStatus.ts waitingText
 //                                        words every reason that is not an
 //                                        altitude gate as the window
+//
+// disk-reads: server/tests/fixtures/flow_progress_continue.json
+// disk-reads: server/tests/fixtures/sequence_state_mosaic.json, ui/src/api.ts, ui/src/api/, ui/src/components/
+// disk-reads: ui/src/lib/, ui/src/next/, ui/src/store.ts, ui/src/ws.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

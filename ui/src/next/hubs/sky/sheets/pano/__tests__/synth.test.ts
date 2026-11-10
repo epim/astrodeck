@@ -23,6 +23,13 @@
 //     different-patterns cases fail (S37);
 //   * the pan not passing its `noise` option on to renderView, or renderView reading the default and not the option:
 //     the pan's noise 6 and noise 0 cases, and the exact-pixel renderView cases that ask for noise 0, fail (S37).
+//
+// disk-reads: ui/src/lib/horizon.ts, ui/src/next/hubs/sky/sheets/__sim__/
+// disk-reads: ui/src/next/hubs/sky/sheets/horizonBins.ts, ui/src/next/hubs/sky/sheets/pano/
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphere.ts, ui/src/next/hubs/sky/sheets/photosphereGeometry.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/photospherePose.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereRegistration.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereStability.ts, ui/src/next/lib/horizonModel.ts
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

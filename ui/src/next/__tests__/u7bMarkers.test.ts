@@ -42,6 +42,8 @@
 // string, because no source file anywhere defines a `port-lockout-` prefix or
 // the literal string. Remove the line to restore green. Verified by hand
 // while writing this file, then reverted before committing.
+//
+// disk-reads: ui/src/next/
 
 const { readFileSync, readdirSync, statSync } = await import("node:fs");
 const { fileURLToPath } = await import("node:url");

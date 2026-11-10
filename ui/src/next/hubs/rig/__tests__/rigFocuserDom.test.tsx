@@ -38,6 +38,8 @@
 //      the WHOLE `focus` block (a partial one blanks
 //      `approach_overshoot_steps`, the EAF backlash correction no screen sets).
 //      An engine with no `temp_comp` on the bus renders no block at all.
+//
+// disk-reads: ui/src/api.ts, ui/src/api/, ui/src/components/, ui/src/lib/, ui/src/next/, ui/src/store.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

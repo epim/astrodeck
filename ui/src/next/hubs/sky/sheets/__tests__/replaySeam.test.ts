@@ -36,6 +36,15 @@
 // T32 removes the legacy scanner, `legacyAdapter.ts` and both chartyard-shortpan
 // fixtures. Section 1 (legacy byte identity) and every case that relies on
 // `legacy` being the default go with them, so T32 has to edit this file.
+//
+// disk-reads: tools/photosphere_sim/fixtures/chartyard-shortpan-60/input/
+// disk-reads: tools/photosphere_sim/fixtures/chartyard-shortpan-70/input/, ui/src/lib/horizon.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/__sim__/, ui/src/next/hubs/sky/sheets/horizonBins.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/pano/, ui/src/next/hubs/sky/sheets/photosphere.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereGeometry.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/photospherePose.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereRegistration.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereStability.ts, ui/src/next/lib/horizonModel.ts
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';

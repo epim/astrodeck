@@ -22,6 +22,8 @@
 // NAMED MUTANT "a second constant comes back" (`flowsSlice.ts`: add
 // `export const AUTOSAVE_RUN_BRIDGE_MS = 20_000;` and read it in `runLive`).
 // Observed red: "the bridge window is defined once, in flowRunState.ts".
+//
+// disk-reads: ui/src/
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";

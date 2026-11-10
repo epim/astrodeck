@@ -31,6 +31,9 @@
 //
 // Convention: shell-and-tests.md section 4 - jsdom by hand, createRoot + act,
 // native events, printed tally plus the `{ passed, failed, total }` export.
+//
+// disk-reads: server/tests/fixtures/flow_progress_continue.json, ui/src/api.ts, ui/src/api/, ui/src/components/
+// disk-reads: ui/src/help.ts, ui/src/lib/, ui/src/next/, ui/src/store.ts, ui/src/ws.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

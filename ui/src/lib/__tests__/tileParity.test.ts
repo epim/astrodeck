@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // tileParity.test.ts — pins pixUV2ang against 3 Python-generated M31 samples
 // tagged "parity" in healpix.vectors.json (tile-engine spec §7 cross-check).
+//
+// disk-reads: ui/src/lib/__tests__/healpix.vectors.json, ui/src/lib/healpix.ts
 import { pixUV2ang } from "../healpix";
 // @ts-ignore  no @types/node; tsx supplies fs at runtime
 import { readFileSync } from "node:fs";

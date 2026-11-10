@@ -41,6 +41,8 @@
 // hand-written g.fetch recording into `asked`/`posts`, store seeding via
 // useStore.setState, printed tally + the `{ passed, failed, total }` export
 // (shell-and-tests.md section 4).
+//
+// disk-reads: ui/src/api.ts, ui/src/api/, ui/src/components/, ui/src/lib/, ui/src/next/, ui/src/store.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

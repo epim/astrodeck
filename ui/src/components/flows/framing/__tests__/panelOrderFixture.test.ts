@@ -29,6 +29,8 @@
 // Every mutant below was run in a private scratch copy of ui/ (scratchpad
 // S5-TONIGHT-mut), never in the shared tree (#254), and the failure it
 // produced is quoted verbatim.
+//
+// disk-reads: server/tests/fixtures/panel_order_cases.json, ui/src/components/, ui/src/lib/
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

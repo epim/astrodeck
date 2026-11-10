@@ -30,6 +30,8 @@
 // Every mutant below was run in a private scratch copy of ui/ (scratchpad
 // s4-usky-mut), never in the shared tree (#254), and the failure it produced
 // is quoted verbatim.
+//
+// disk-reads: server/tests/fixtures/mosaic_panels_3x2.json
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

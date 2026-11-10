@@ -43,6 +43,9 @@
 // Every mutant below was run in a private scratch copy of ui/
 // (scratchpad/S6-WIZ-UI-mut), never in the shared tree (#254), and the
 // failure it produced is quoted verbatim.
+//
+// disk-reads: server/tests/fixtures/wizard_mosaic_answer.json
+// disk-reads: ui/src/components/flows/wizard/SendToWizardSheet.tsx
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

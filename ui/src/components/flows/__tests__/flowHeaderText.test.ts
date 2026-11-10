@@ -28,6 +28,9 @@
 //   * the ETA's source comment — FlowHeader.tsx says where the header's ETA
 //                      comes from; it must cite the U-07 plan, which is what
 //                      S5 built, and not a §G-1 ruling nobody made (#510, B17).
+//
+// disk-reads: server/tests/fixtures/flow_progress_continue.json, ui/src/api.ts, ui/src/api/, ui/src/components/
+// disk-reads: ui/src/lib/, ui/src/store.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 // @ts-ignore  no @types/node guaranteed; tsx supplies fs at runtime

@@ -6,6 +6,8 @@
 // inline-assert harness as eta.test.ts — no jsdom/vitest wired into this UI.
 // Run directly with a TS-aware runner:
 //   npx tsx src/lib/__tests__/troubleshoot.test.ts
+//
+// disk-reads: ui/src/help.ts, ui/src/lib/troubleshoot.ts
 
 import {
   diagnoseFailure, isUserAbort, runFailureLog, TROUBLESHOOTING, getTroubleshootEntry,

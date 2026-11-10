@@ -56,6 +56,9 @@
 //   * break a sheet module so its chunk cannot load at all -> "every
 //     registered sheet loads and hands back a component" goes red, which is
 //     the vacuity guard the id comparison rests on.
+//
+// disk-reads: ui/src/api.ts, ui/src/api/, ui/src/components/, ui/src/guided/, ui/src/help.ts, ui/src/lib/
+// disk-reads: ui/src/next/, ui/src/store.ts, ui/src/views/, ui/src/ws.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

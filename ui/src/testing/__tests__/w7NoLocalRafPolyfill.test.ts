@@ -42,6 +42,8 @@
 //   testing/rafPolyfill.ts:
 //   expected []
 //   got      ["components/flows/__tests__/flowLibraryDom.test.tsx:50"]
+//
+// disk-reads: ui/src/
 
 const { readFileSync, readdirSync, statSync } = await import("node:fs");
 const toPath = (u: URL): string => decodeURIComponent(u.pathname).replace(/^\/([A-Za-z]:)/, "$1");

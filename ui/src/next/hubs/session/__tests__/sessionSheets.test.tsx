@@ -26,6 +26,9 @@
 //
 // The other half is the names. A registry that resolves to an object is not
 // evidence it holds the right screens.
+//
+// disk-reads: ui/src/api.ts, ui/src/api/, ui/src/components/, ui/src/help.ts, ui/src/lib/, ui/src/next/
+// disk-reads: ui/src/store.ts, ui/src/ws.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

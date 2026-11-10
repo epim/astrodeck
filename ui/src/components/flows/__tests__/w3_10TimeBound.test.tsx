@@ -17,6 +17,9 @@
 //   3. THE CLASSIC NEW FLOW SHEET, MOUNTED: typing the minutes puts them in
 //      the POST; choosing Best of several takes the field away.
 //   4. THE EDITOR'S TARGET HAS THE PARAM, and the ceiling mirrors wizard.py.
+//
+// disk-reads: server/astrodeck/flows/wizard.py, ui/src/api.ts, ui/src/api/, ui/src/components/, ui/src/lib/
+// disk-reads: ui/src/next/, ui/src/store.ts, ui/src/testing/
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

@@ -37,6 +37,11 @@
 // Every mutant below was run in a private scratch copy of ui/
 // (scratchpad/S6-WIZ-UI-mut), never in the shared tree (#254), and the
 // failure it produced is quoted verbatim.
+//
+// disk-reads: server/astrodeck/flows/wizard.py, server/tests/fixtures/wizard_mosaic_answer.json, ui/src/api.ts
+// disk-reads: ui/src/components/flows/, ui/src/lib/apiError.ts, ui/src/lib/base.ts, ui/src/lib/flowsApi.ts
+// disk-reads: ui/src/lib/frameView.ts, ui/src/lib/framing.ts, ui/src/lib/humanize.ts
+// disk-reads: ui/src/lib/lastSessionFrame.ts, ui/src/lib/objectShape.ts, ui/src/lib/optics.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

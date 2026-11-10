@@ -55,6 +55,8 @@
 //
 // Convention: inline test()/eq() helpers, printed tally plus the
 // { passed, failed, total } export (shell-and-tests.md section 4).
+//
+// disk-reads: ui/src/
 
 import ts from "typescript";
 import { readFileSync, readdirSync, statSync } from "node:fs";

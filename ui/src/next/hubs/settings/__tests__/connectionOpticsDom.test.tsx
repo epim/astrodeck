@@ -29,6 +29,8 @@
 // Convention: jsdom by hand, createRoot + act, native events, a hand-written
 // fetch recording into `asked`, printed tally plus the `{passed, failed, total}`
 // export (shell-and-tests.md section 4).
+//
+// disk-reads: ui/src/api.ts, ui/src/api/, ui/src/components/, ui/src/lib/, ui/src/next/, ui/src/store.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

@@ -17,6 +17,9 @@
 // `next/lib/incidents.ts` emits three of them anyway. They must not reach a
 // card: a button that does nothing teaches an operator that pressing things at
 // 3am is how the night gets fixed.
+//
+// disk-reads: server/astrodeck/api/app.py, ui/src/api.ts, ui/src/api/, ui/src/components/, ui/src/lib/
+// disk-reads: ui/src/next/, ui/src/store.ts, ui/src/ws.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

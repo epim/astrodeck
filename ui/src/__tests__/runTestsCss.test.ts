@@ -37,6 +37,8 @@
 // forced-async run below goes red with ERR_UNKNOWN_FILE_EXTENSION; the
 // default (registerHooks) run stays green, since that branch is untouched.
 // Both confirmed by hand - see task-7-report.md, "Fix round 1".
+//
+// disk-reads: ui/run-tests.mjs, ui/tools/selectTests.mjs
 
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

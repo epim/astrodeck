@@ -203,6 +203,8 @@
 //   x main gives runFileWithRetry only the file and prints the grace note: main
 //   must print `gracedLine` whenever it is not null: a grace-killed pass is
 //   otherwise silent
+//
+// disk-reads: ui/run-tests.mjs, ui/tools/selectTests.mjs
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

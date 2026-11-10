@@ -152,6 +152,8 @@
 //   ITS kind in the note, got: 2 file(s) printed a clean tally, called
 //   process.exit() and were killed 1.5s later because the child never
 //   finished -- counted as passed (#664): <neverExits.test.mjs>, ...
+//
+// disk-reads: ui/run-tests.mjs, ui/tools/selectTests.mjs
 
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

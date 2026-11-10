@@ -23,6 +23,8 @@
 //      commit message for why recognised alone is not enough).
 //
 // Run directly:  npx tsx src/lib/__tests__/w5NamingCaptureTokens.test.ts
+//
+// disk-reads: server/astrodeck/naming.py, ui/src/lib/naming.ts
 import { readFileSync } from "node:fs";
 import {
   CAPTURE_EXT, NAMING_TOKENS, PREVIEW_SAMPLE, renderTemplatePreview, sanitizeComponent,

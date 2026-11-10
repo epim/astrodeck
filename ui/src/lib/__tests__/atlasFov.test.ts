@@ -10,6 +10,9 @@
 //
 // Same tiny inline-assert harness as framing.test.ts (no vitest in this UI):
 //   npx tsx src/lib/__tests__/atlasFov.test.ts
+//
+// disk-reads: ui/src/components/atlas/SkyCanvas.tsx, ui/src/lib/atlasFov.ts, ui/src/lib/framing.ts
+// disk-reads: ui/src/lib/optics.ts, ui/src/lib/rotation.ts, ui/src/views/AtlasView.tsx
 
 import {
   skyToView,

@@ -21,6 +21,8 @@
 // value the lock error exceeds 3 x sdPct on about 13 % of pans. Run against focal.ts one at a time, see the FB4 report:
 // the floor removed; the floor value changed; the floor applied as a ceiling; sqrt(n) fixed at 5 (the n = 8 lock);
 // the 3 % boundary made strict (ratios 97, 97, 100, 103, 103).
+//
+// disk-reads: ui/src/next/hubs/sky/sheets/pano/focal.ts
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {

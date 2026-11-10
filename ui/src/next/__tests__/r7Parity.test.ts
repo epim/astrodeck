@@ -45,6 +45,8 @@
 // `import FlowsView from "../../../../components/flows/FlowsView"` to
 // `session/flows/FlowsCanvasHost.tsx` and "no legacy presentation component is
 // mounted" goes red naming the file, the module and the binding.
+//
+// disk-reads: ui/src/next/
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

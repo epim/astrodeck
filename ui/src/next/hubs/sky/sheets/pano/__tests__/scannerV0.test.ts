@@ -18,6 +18,9 @@
 //   * motion events dropped from the recording: 'the recording holds every frame and event in order' finds the lines
 //     it expects missing.
 // Rows 9 and 10 of `cueFor` are cueFor.test.ts's.
+//
+// disk-reads: ui/src/lib/horizon.ts, ui/src/next/hubs/sky/sheets/__sim__/, ui/src/next/hubs/sky/sheets/pano/
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereGeometry.ts, ui/src/next/lib/horizonModel.ts
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

@@ -38,6 +38,9 @@
 // Every mutant below was run in a private scratch copy of ui/ (scratchpad
 // S7-URUN-mut, #254), from a byte backup of the mutated file restored and
 // SHA-256 compared after each run, and the failure it produced is quoted.
+//
+// disk-reads: server/tests/fixtures/flow_progress_continue.json, ui/src/api.ts, ui/src/api/, ui/src/components/
+// disk-reads: ui/src/help.ts, ui/src/lib/, ui/src/next/, ui/src/store.ts, ui/src/ws.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
