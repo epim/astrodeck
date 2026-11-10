@@ -225,3 +225,70 @@ def test_a_superseded_pages_publish_is_cancelled():
     concurrency = _workflow("pages.yml")["concurrency"]
     assert concurrency["cancel-in-progress"] is True
     assert "pages-" in concurrency["group"]
+
+
+# --------------------------------------------------------------- #1157
+# A hung index connection never errors, so no transcript ever says "outage".
+# Each attempt is bounded; the stubs below stand in for pip-audit, so no
+# network is touched.
+
+def _hanging_stub(tmp_path: Path, hang_seconds: float, then: str = "") -> list[str]:
+    """A command that sleeps `hang_seconds`, unless `then` names a transcript
+    file that the second and later calls print instead (the first call hangs)."""
+    script = tmp_path / "hang.py"
+    script.write_text(
+        "import pathlib, sys, time\n"
+        "marker = pathlib.Path(sys.argv[1])\n"
+        "if marker.exists():\n"
+        "    sys.stdout.write(open(sys.argv[2], encoding='utf-8').read())\n"
+        "    sys.exit(int(sys.argv[3]))\n"
+        "marker.write_text('seen')\n"
+        "time.sleep(float(sys.argv[4]))\n",
+        encoding="utf-8")
+    after = tmp_path / "after.txt"
+    after.write_text(then, encoding="utf-8")
+    return [sys.executable, str(script), str(tmp_path / "seen"), str(after),
+            "1" if "Found" in then else "0", str(hang_seconds)]
+
+
+def test_a_hung_attempt_ends_at_the_timeout_and_the_outage_passes(tmp_path, capsys):
+    """MUTATION: drop `timeout=` from the subprocess call. Observed: the one
+    attempt sleeps its full 10 s and the elapsed-time bound below fails."""
+    import time
+    module = _load()
+    command = [sys.executable, "-c", "import time; time.sleep(10)"]
+    started = time.monotonic()
+    code = module.run(command, attempts=1, delay=0, attempt_timeout=1)
+    elapsed = time.monotonic() - started
+    out = capsys.readouterr().out
+    assert elapsed < 8, f"the hung attempt was not stopped (took {elapsed:.1f} s)"
+    assert code == 0
+    assert "WARNING" in out and "not audited" in out
+    assert "stopped" in out
+
+
+def test_a_hung_attempt_is_retried_and_a_clean_retry_passes(tmp_path, capsys):
+    module = _load()
+    command = _hanging_stub(tmp_path, hang_seconds=10, then=CLEAN)
+    code = module.run(command, attempts=2, delay=0, attempt_timeout=1)
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "WARNING" not in out
+    assert "No known vulnerabilities found" in out
+
+
+def test_a_hung_attempt_then_a_finding_still_fails(tmp_path, capsys):
+    module = _load()
+    command = _hanging_stub(tmp_path, hang_seconds=10, then=FINDING)
+    code = module.run(command, attempts=2, delay=0, attempt_timeout=1)
+    assert code == 1
+    assert "known vulnerability was found" in capsys.readouterr().out
+
+
+def test_the_command_line_bounds_each_attempt(tmp_path):
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--attempts", "1", "--timeout", "1",
+         "--", sys.executable, "-c", "import time; time.sleep(10)"],
+        capture_output=True, text=True, check=False, timeout=9)
+    assert result.returncode == 0
+    assert "WARNING" in result.stdout
