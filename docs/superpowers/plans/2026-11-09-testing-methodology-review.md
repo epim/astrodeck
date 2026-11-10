@@ -149,7 +149,7 @@ testmon in detail, because it is the tool usually proposed for this:
 - It was safe on that replay: the full run failed 134 tests because of the change, and all 134 were in the selection.
 - The selected run ended with an internal error in the plugin under xdist.
 
-PR #1242's full-run comparison and a third replay were still running when this was written; their numbers will be added below.
+PR #1242's selected run and a third replay were not completed: the machine session that ran them ended during PR #1242's selected run. Only the selection figures above exist for PR #1242; it has no timing comparison and no miss count. The verdict rests on the PR #1252 replay and on the two coarser measurements, which agree with it. The replays were not rerun, because no outcome of them would change the plan: the database build alone costs three plain runs.
 
 What would change this verdict: hub-booting tests becoming cheap (a shared, session-scoped hub fixture, or tests that exercise a module without a hub). That is a redesign of the test suite, not a selection tool, and it is not in this plan.
 
