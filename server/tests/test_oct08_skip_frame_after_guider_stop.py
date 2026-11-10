@@ -34,6 +34,7 @@ restore + sha256; observed results in REPORT-P1.md):
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
@@ -105,9 +106,16 @@ def _rig(sim_hub, monkeypatch, *, recover=True, stops_on_dither=(1,),
     monkeypatch.setattr(g, "start_guiding", start_guiding)
     monkeypatch.setattr(g, "stop_guiding", stop_guiding)
     monkeypatch.setattr(g, "dither", dither)
-    monkeypatch.setattr(g, "stats", lambda: GuideStats(
-        guiding=state["active"],
-        phase="guiding" if state["active"] else "idle"))
+    def stats():
+        # A guiding guider sends samples (#1146): one that is guiding and has
+        # sent none in the last 30 s is silent, and the engine holds for it.
+        now = time.time()
+        return GuideStats(
+            guiding=state["active"], phase="guiding" if state["active"] else "idle",
+            is_arcsec=True,
+            recent=[{"t": now - k, "ra": 0.1, "dec": 0.0} for k in range(4)])
+
+    monkeypatch.setattr(g, "stats", stats)
 
     e = SequenceEngine(sim_hub)
     e.plan = SequencePlan(guide=True, recover_guiding=recover, dither_every=1,

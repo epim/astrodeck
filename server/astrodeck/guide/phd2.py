@@ -20,7 +20,7 @@ from typing import Any
 
 from ..aio import reap
 from ..events import bus
-from .base import Guider, GuideStats
+from .base import GUIDE_TRACE_S, Guider, GuideStats
 
 SETTLE = {"pixels": 1.5, "time": 8, "timeout": 60}
 
@@ -85,7 +85,9 @@ class PHD2Guider(Guider):
         self._settle_done: asyncio.Event = asyncio.Event()
         self._settle_error: str | None = None
         self._app_state = "Stopped"
-        self._samples: deque[dict] = deque(maxlen=300)
+        #: Every GuideStep of the last GUIDE_TRACE_S (``guide_samples``,
+        #: #1146); ``stats()`` publishes only its tail.
+        self._samples: deque[dict] = deque()
         self._snr = 0.0
         # Set True by disconnect() so a deliberate close does NOT trigger the
         # auto-reconnect loop (only an unexpected EOF/error does).
@@ -272,6 +274,9 @@ class PHD2Guider(Guider):
             self._snr = float(ev.get("SNR", 0))
             sample = {"t": time.time(), "ra": ra, "dec": dec}
             self._samples.append(sample)
+            horizon = sample["t"] - GUIDE_TRACE_S
+            while self._samples[0]["t"] < horizon:
+                self._samples.popleft()
             bus.publish("guide", **self.stats().__dict__)
         elif kind in ("StartGuiding", "GuidingDithered"):
             # Explicit guiding-start / dither-resume state changes PHD2 sends
@@ -387,8 +392,11 @@ class PHD2Guider(Guider):
         if self._settle_error:
             raise RuntimeError(f"dither settle failed: {self._settle_error}")
 
+    def guide_samples(self, lo: float, hi: float) -> list[dict] | None:
+        return [s for s in tuple(self._samples) if lo <= s["t"] <= hi]
+
     def stats(self) -> GuideStats:
-        recent = list(self._samples)
+        recent = list(itertools.islice(reversed(self._samples), 120))[::-1]
         if recent:
             ras = [s["ra"] for s in recent[-100:]]
             decs = [s["dec"] for s in recent[-100:]]

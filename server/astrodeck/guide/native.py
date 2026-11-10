@@ -57,7 +57,7 @@ from ..devices.base import Camera, DeviceError, Telescope
 from .. import tracking_probe
 from ..events import bus
 from ..providers import NATIVE_AVAILABLE
-from .base import Guider, GuideStats
+from .base import GUIDE_TRACE_S, Guider, GuideStats
 from .flight_recorder import FlightRecorder
 
 # Guarded handle to the Rust wheel. ``NATIVE_AVAILABLE`` (the single source of
@@ -1014,6 +1014,11 @@ class NativeGuider(Guider):
         # Single-flight for the idle preview exposure (see _idle_preview_frame).
         self._preview_task: asyncio.Task | None = None
         self._last_stats = GuideStats()
+        # The accepted measurements of the last GUIDE_TRACE_S, as (t, ra, dec)
+        # in the unit ``stats().recent`` uses: what ``guide_samples`` answers
+        # from. The engine's own ring is 100 frames and the published list 120,
+        # so an exposure of five minutes outruns both (#1146).
+        self._trace: deque[tuple[float, float, float]] = deque()
 
         cfg = self.config
         self._exposure_s = float(cfg.get("exposure_s", _DEFAULT_EXPOSURE_S))
@@ -1368,6 +1373,7 @@ class NativeGuider(Guider):
                 # and this is the thread, before one more engine is made.
                 drop_parked_engines()
                 self._engine = _native.GuideEngine(self._build_engine_config(rates))
+                self._trace.clear()
                 self._engine_thread = threading.get_ident()
                 self._engine_loop = asyncio.get_running_loop()
 
@@ -1486,6 +1492,7 @@ class NativeGuider(Guider):
                             # a fresh calibration.
                             await self._apply_scope_pointing()
                             self._engine.begin_guiding()
+                            self._trace.clear()
                             reused = True
                             # #848 (2026-10-08 ruling): a REUSED calibration is
                             # not trusted on the strength of the file either.
@@ -1713,6 +1720,7 @@ class NativeGuider(Guider):
                     "native guider: no guide star found — cannot calibrate")
             x0, y0 = float(stars[0]["x"]), float(stars[0]["y"])
             self._engine.begin_calibration(x0, y0)
+            self._trace.clear()
             self._fr.begin_walk()
             # NOV-7: one "calibrating" tick right after the engine enters its
             # calibration state machine.
@@ -2280,9 +2288,16 @@ class NativeGuider(Guider):
                 mark = self._measurement_mark()
                 action = self._engine.process(
                     frame.data, frame.timestamp, self._exposure_s)
-                measured = self._measurement_mark() not in (mark, None)
+                marked = self._measurement_mark()
+                measured = marked not in (mark, None)
+                if mark is not None and marked is not None \
+                        and marked[0] < mark[0]:
+                    # The engine cleared its ring inside this frame (a reset
+                    # boundary of its own): the trace goes with it.
+                    self._trace.clear()
                 if measured:
                     self._gp_fed_at = time.time()
+                    self._note_sample()
                 rec = self._record_cycle(action, measured)
                 # #849/#848: THE GUIDER JUDGES ITS OWN CORRECTIONS, on its own
                 # cadence, before this frame's pulse goes out: the runaway
@@ -4020,6 +4035,27 @@ class NativeGuider(Guider):
         return ok
 
     # ------------------------------------------------------------------ stats
+
+    def _note_sample(self) -> None:
+        """Append the engine's newest accepted measurement to the trace, in
+        the unit ``stats().recent`` carries, and drop what is older than
+        ``GUIDE_TRACE_S``. Called on a frame the engine measured, so the
+        newest entry of its ring is this frame's. Total: it runs on every
+        guide frame and must never stop the loop."""
+        try:
+            t, ra, dec = self._engine.stats()["recent"][-1]
+        except Exception:  # pragma: no cover - defensive; nothing to note
+            return
+        scale = self._image_scale if self._image_scale > 0 else 1.0
+        self._trace.append((round(float(t), 3), round(float(ra) * scale, 3),
+                            round(float(dec) * scale, 3)))
+        horizon = self._trace[-1][0] - GUIDE_TRACE_S
+        while self._trace[0][0] < horizon:
+            self._trace.popleft()
+
+    def guide_samples(self, lo: float, hi: float) -> list[dict] | None:
+        return [{"t": t, "ra": ra, "dec": dec}
+                for t, ra, dec in tuple(self._trace) if lo <= t <= hi]
 
     def stats(self) -> GuideStats:
         """Map the engine's stats dict onto the shared ``GuideStats`` bus shape.
