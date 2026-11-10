@@ -30,7 +30,7 @@ import math
 import threading
 import time
 from collections import OrderedDict
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -672,6 +672,276 @@ def transit_alt_for(
     night = compute_night(ra_hours, dec_deg, date=date, step_min=20,
                            alt_limit=DEFAULT_ALT_LIMIT, site=site)
     return night["transit_alt"]
+
+
+# ----------------------------------------------------------------- whole catalogue
+#
+# ``compute_night`` for every row of the catalogue, in one pass (#1257). The
+# route that ranks the catalogue used to call ``compute_night`` 13,370 times,
+# and the two astropy calls the scaffold cannot share (the position's AltAz
+# transform and its separation from the Moon) cost 6.5 ms each time: 87 s. astropy
+# broadcasts, so one SkyCoord of shape (rows, 1) against the scaffold's grid of
+# n times answers every row at once, through the same code and to the same
+# bits. What is left per row is cheap array work and one loop over the RUNS of
+# samples that clear the altitude limit (about one per row), not over rows
+# times samples.
+#
+# ``compute_night`` stays the single-target form and the reference: its dict,
+# minus ``samples`` (the route reads none), is what ``NightColumns.row`` returns.
+
+_ROW_CHUNK = 2048     # rows per astropy call: bounds the transient to ~15 MB
+_NIGHTS_MAX = 8       # one site x a couple of nights x a few altitude limits
+_nights_cache: "OrderedDict[_NightsKey, NightColumns]" = OrderedDict()
+_nights_lock = threading.Lock()
+
+
+class _NightsKey(tuple):
+    """A cache key that cannot print itself: its fields ARE the site. A repr, a
+    ``str`` or the ``KeyError`` a bare ``cache[key]`` raises would otherwise
+    carry the coordinates into a traceback and from there into a log."""
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "<nights key>"
+
+    __str__ = __repr__
+
+
+class _NightSetup(NamedTuple):
+    site: dict
+    loc: EarthLocation
+    lon: float
+    anchor: float
+    date: str | None
+    step_min: int
+    alt_limit: float
+
+
+def _night_setup(date: str | None, step_min: int, alt_limit: float,
+                 site: dict | None) -> _NightSetup:
+    """The arguments ``compute_night`` resolves before it computes anything."""
+    site = site or hub.site
+    latlon = site_lat_lon(site)
+    if latlon is None:
+        raise NoSite(_NO_SITE_MSG)
+    step_min = max(1, int(step_min or DEFAULT_STEP_MIN))
+    alt_limit = float(alt_limit if alt_limit is not None else DEFAULT_ALT_LIMIT)
+    return _NightSetup(site, _site_location(site), latlon[1],
+                       _night_anchor_unix(date, latlon[1]), date,
+                       step_min, alt_limit)
+
+
+class NightColumns:
+    """``compute_night`` for N targets, as columns. Read-only once built, so one
+    instance is shared by every reader of the cache; ``row(i)`` is a pure read."""
+
+    def __init__(self, *, scaffold: dict, date: str, alt_limit: float,
+                 ra_hours: np.ndarray, dec_deg: np.ndarray,
+                 transit_i: np.ndarray, transit_alt: np.ndarray,
+                 moon_sep: np.ndarray, in_daylight: np.ndarray,
+                 never_rises: np.ndarray, win_start: np.ndarray,
+                 win_end: np.ndarray, win_mean_alt: np.ndarray) -> None:
+        self.scaffold = scaffold
+        self.date = date
+        self.alt_limit = alt_limit
+        self.ra_hours, self.dec_deg = ra_hours, dec_deg
+        self.transit_i, self.transit_alt = transit_i, transit_alt
+        self.moon_sep, self.in_daylight = moon_sep, in_daylight
+        self.never_rises, self.win_start = never_rises, win_start
+        self.win_end, self.win_mean_alt = win_end, win_mean_alt
+        for column in (ra_hours, dec_deg, transit_i, transit_alt, moon_sep,
+                       in_daylight, never_rises, win_start, win_end,
+                       win_mean_alt):
+            column.setflags(write=False)
+
+    def __len__(self) -> int:
+        return len(self.transit_i)
+
+    def __repr__(self) -> str:
+        return f"<NightColumns rows={len(self)}>"
+
+    def row(self, i: int) -> dict:
+        """The ``compute_night`` answer for target ``i``, without ``samples``."""
+        sc = self.scaffold
+        unix = sc["unix"]
+        ti = int(self.transit_i[i])
+        a = int(self.win_start[i])
+        best = None if a < 0 else {
+            "start_unix": float(unix[a]),
+            "end_unix": float(unix[int(self.win_end[i])]),
+            "mean_alt": float(self.win_mean_alt[i]),
+        }
+        return {
+            "date": self.date,
+            "transit_unix": float(unix[ti]),
+            "transit_alt": round(float(self.transit_alt[i]), 1),
+            "transit_in_daylight": bool(self.in_daylight[i]),
+            "dark_start_unix": sc["dark_start"],
+            "dark_end_unix": sc["dark_end"],
+            "darkness_kind": sc["darkness_kind"],
+            "moon": _moon_info_at(sc, ti, float(self.moon_sep[i])),
+            "best_window": best,
+            "alt_limit_deg": self.alt_limit,
+            "never_rises_above_limit": bool(self.never_rises[i]),
+        }
+
+
+def _best_runs(
+    alt_r: np.ndarray, sep_r: np.ndarray, in_dark: np.ndarray,
+    moon_up_cum: np.ndarray, illum: np.ndarray, alt_limit: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``_best_window`` for every row of ``alt_r`` (rows, n): ``(first, last,
+    mean_alt)`` sample indices of each row's best run, ``first`` -1 for none.
+
+    ``alt_r`` and ``sep_r`` are the two-decimal values a sample dict holds,
+    ``moon_up_cum`` is the prefix count of rounded Moon altitudes above 0 (so
+    "Moon up somewhere in samples a..b" is ``cum[b+1] - cum[a] > 0``) and
+    ``illum`` the illumination ``_best_window`` is handed for each row. The
+    rule below is ``_best_window``'s, line for line, over runs found by array
+    operations; ``tests/test_tonight_vectorised_matches.py`` holds the two
+    together.
+    """
+    rows = alt_r.shape[0]
+    first = np.full(rows, -1, dtype=np.int64)
+    last = np.full(rows, -1, dtype=np.int64)
+    mean = np.zeros(rows)
+    ok = in_dark[None, :] & (alt_r >= alt_limit)
+    pad = np.zeros((rows, 1), dtype=np.int8)
+    edges = np.diff(np.concatenate([pad, ok.astype(np.int8), pad], axis=1),
+                    axis=1)
+    run_rows, run_first = np.nonzero(edges == 1)
+    _, run_past = np.nonzero(edges == -1)
+    cur_row = -1
+    best_score = -1.0
+    best_len = -1
+    for r, a, past in zip(run_rows.tolist(), run_first.tolist(),
+                          run_past.tolist()):
+        if r != cur_row:
+            cur_row, best_score, best_len = r, -1.0, -1
+        b = past - 1
+        # A sequential Python sum, as _best_window's: np.sum is pairwise and
+        # differs in the last bit, which moves an exact xx.x5 mean across the
+        # one-decimal rounding below.
+        seg = alt_r[r, a:b + 1].tolist()
+        mean_alt = sum(seg) / len(seg)
+        moon_up = bool(moon_up_cum[b + 1] - moon_up_cum[a] > 0)
+        score = mean_alt * _moon_factor(
+            float(sep_r[r, (a + b) // 2]), float(illum[r]), moon_up)
+        length = b - a
+        if score > best_score or (
+                abs(score - best_score) < 1e-6 and best_len >= 0
+                and length > best_len):
+            best_score, best_len = score, length
+            first[r], last[r], mean[r] = a, b, round(mean_alt, 1)
+    return first, last, mean
+
+
+def _nights_at(ra_hours: np.ndarray, dec_deg: np.ndarray,
+               setup: _NightSetup) -> NightColumns:
+    sc = _night_scaffold(setup.site, setup.loc, setup.anchor, setup.lon,
+                         setup.step_min)
+    unix = sc["unix"]
+    in_dark = (unix >= sc["dark_start"]) & (unix <= sc["dark_end"])
+    any_dark = bool(in_dark.any())
+    moon_up_cum = np.concatenate(
+        ([0], np.cumsum([round(float(x), 2) > 0.0 for x in sc["moon_alt"]])))
+    illum_r = np.array([round(float(x), 3) for x in sc["illum"]])
+    ra_deg = ra_hours * 15.0     # the explicit *15 of compute_night, as there
+    n_rows = len(ra_hours)
+    transit_i = np.empty(n_rows, dtype=np.int64)
+    transit_alt = np.empty(n_rows)
+    moon_sep = np.empty(n_rows)
+    in_daylight = np.empty(n_rows, dtype=bool)
+    never_rises = np.empty(n_rows, dtype=bool)
+    win_start = np.empty(n_rows, dtype=np.int64)
+    win_end = np.empty(n_rows, dtype=np.int64)
+    win_mean_alt = np.empty(n_rows)
+    for lo in range(0, n_rows, _ROW_CHUNK):
+        hi = min(lo + _ROW_CHUNK, n_rows)
+        target = SkyCoord(ra=ra_deg[lo:hi, None] * u.deg,
+                          dec=dec_deg[lo:hi, None] * u.deg, frame="icrs")
+        alt = np.asarray(target.transform_to(sc["frame"]).alt.to_value(u.deg))
+        sep = np.asarray(sc["moon_icrs"].separation(target).to_value(u.deg))
+        at = np.arange(hi - lo)
+        # Transit: the sampled peak inside the dark window; the geometric peak
+        # when that is itself in the dark (compute_night's rule).
+        geo_i = alt.argmax(axis=1)
+        geo_in_dark = in_dark[geo_i]
+        if any_dark:
+            dark_i = np.where(in_dark[None, :], alt, -999.0).argmax(axis=1)
+            t_i = np.where(geo_in_dark, geo_i, dark_i)
+        else:
+            t_i = geo_i
+        alt_r = np.round(alt, 2)
+        peak = (np.where(in_dark[None, :], alt_r, -np.inf).max(axis=1)
+                if any_dark else alt.max(axis=1))
+        transit_i[lo:hi] = t_i
+        transit_alt[lo:hi] = alt[at, t_i]
+        moon_sep[lo:hi] = sep[at, t_i]
+        in_daylight[lo:hi] = ~geo_in_dark
+        never_rises[lo:hi] = peak < setup.alt_limit
+        win_start[lo:hi], win_end[lo:hi], win_mean_alt[lo:hi] = _best_runs(
+            alt_r, np.round(sep, 2), in_dark, moon_up_cum, illum_r[t_i],
+            setup.alt_limit)
+    out_date = setup.date or _dt.datetime.fromtimestamp(
+        setup.anchor, _dt.timezone.utc).date().isoformat()
+    return NightColumns(
+        scaffold=sc, date=out_date, alt_limit=setup.alt_limit,
+        ra_hours=ra_hours.copy(), dec_deg=dec_deg.copy(),
+        transit_i=transit_i, transit_alt=transit_alt, moon_sep=moon_sep,
+        in_daylight=in_daylight, never_rises=never_rises,
+        win_start=win_start, win_end=win_end, win_mean_alt=win_mean_alt)
+
+
+def compute_nights(
+    ra_hours: np.ndarray, dec_deg: np.ndarray, *,
+    date: str | None = None, step_min: int = DEFAULT_STEP_MIN,
+    alt_limit: float = DEFAULT_ALT_LIMIT, site: dict | None = None,
+) -> NightColumns:
+    """``compute_night`` for every (ra_hours, dec_deg) pair, uncached. Raises
+    ``NoSite`` exactly as ``compute_night`` does."""
+    return _nights_at(
+        np.asarray(ra_hours, dtype=float), np.asarray(dec_deg, dtype=float),
+        _night_setup(date, step_min, alt_limit, site))
+
+
+def nights_for_catalogue(
+    rows, *, date: str | None = None, step_min: int = DEFAULT_STEP_MIN,
+    alt_limit: float = DEFAULT_ALT_LIMIT, site: dict | None = None,
+) -> NightColumns:
+    """``compute_nights`` over ``rows`` (anything with ``ra_hours`` and
+    ``dec_deg``), cached in process memory only.
+
+    Keyed on every input the answer has: the site's latitude, longitude and
+    elevation, the night's anchor (a new night is a new key; nothing here reads
+    the clock), the date argument (it is echoed), the step, the altitude limit,
+    and the rows, by count and then by exact coordinates on a hit. A site edit
+    or a new night simply misses and rebuilds. The lock is held across the build
+    so concurrent viewers share one build; the entries are read-only.
+
+    The value is a function of the site. It is never written anywhere, nothing
+    here logs, and the key prints as ``<nights key>``.
+    """
+    setup = _night_setup(date, step_min, alt_limit, site)
+    ra = np.array([o.ra_hours for o in rows], dtype=float)
+    dec = np.array([o.dec_deg for o in rows], dtype=float)
+    key = _NightsKey((
+        round(float(setup.loc.lat.to_value(u.deg)), 9), round(setup.lon, 9),
+        round(float(setup.site.get("elevation_m", 0.0)), 6),
+        round(setup.anchor, 3), setup.date, setup.step_min,
+        setup.alt_limit, len(rows)))
+    with _nights_lock:
+        hit = _nights_cache.get(key)
+        if (hit is not None and np.array_equal(hit.ra_hours, ra)
+                and np.array_equal(hit.dec_deg, dec)):
+            _nights_cache.move_to_end(key)
+            return hit
+        built = _nights_at(ra, dec, setup)
+        _nights_cache[key] = built
+        _nights_cache.move_to_end(key)
+        while len(_nights_cache) > _NIGHTS_MAX:
+            _nights_cache.popitem(last=False)
+        return built
 
 
 # ----------------------------------------------------------------- routes

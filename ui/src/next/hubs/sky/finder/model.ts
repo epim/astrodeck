@@ -980,9 +980,14 @@ export function useSkyModel(boxPx: number, options: { initialMode?: SkyMode } = 
    * none of those off this response.
    *
    * So anchoring solely on the RANKED list made the night window a hostage of
-   * a ranking that can fail to arrive. On a rig still on the default site,
-   * `GET /api/catalog/tonight?alt_limit=15` takes 90 SECONDS and the hub's own
-   * request times out at 15, so `tonight.rows` stays empty - and with it
+   * a ranking that can fail to arrive. `GET /api/catalog/tonight?alt_limit=15`
+   * used to take 90 SECONDS (one `compute_night` per catalogue row); since
+   * #1257 it takes about 1 second cold and 0.4 second from the server's cache on
+   * a development PC (not measured on the rig or the Orange Pi, which are
+   * slower). The request keeps the api client's default 15 second budget
+   * (`timeoutFor` in api.ts): that is the figure for any call that does not
+   * start a long job, not one chosen for this route, and it can still lapse on a
+   * slow link or a loaded rig. Then `tonight.rows` stays empty - and with it
    * `hoursToDawn` is 0, every `walkTrack` returns nothing, and the skydome, the
    * finder's arc and every reach window are all silently blank with nothing on
    * screen to say why. That is exactly what "I'm not seeing the target tracks
