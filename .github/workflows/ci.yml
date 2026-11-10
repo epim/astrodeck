@@ -37,9 +37,19 @@ jobs:
   # belong to which job; a path it does not know, or a change to this file, to
   # the map or to the tool, turns every job on. The unit tests of the tool and
   # the ratchet that keeps this file and the map in step run here too.
+  #
+  # On a push to main it also decides, per job, `already-green-<job>` (#1260):
+  # true when the push is a merge whose tree equals its pull request head's
+  # tree and the pull request's run passed that job in full. A job is skipped
+  # only when its area is on AND it is not already green. The repository's
+  # default token is read-only for contents; listing runs and jobs needs
+  # `actions: read`, so this job, and no other, asks for it.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     outputs:
       server: ${{ steps.areas.outputs.server }}
       windows-private-state: ${{ steps.areas.outputs.windows-private-state }}
@@ -48,6 +58,14 @@ jobs:
       container-security: ${{ steps.areas.outputs.container-security }}
       ui: ${{ steps.areas.outputs.ui }}
       native: ${{ steps.areas.outputs.native }}
+      already-green-server: ${{ steps.green.outputs.already-green-server }}
+      already-green-windows-private-state: ${{ steps.green.outputs.already-green-windows-private-state }}
+      already-green-orangepi-security: ${{ steps.green.outputs.already-green-orangepi-security }}
+      already-green-relay: ${{ steps.green.outputs.already-green-relay }}
+      already-green-container-security: ${{ steps.green.outputs.already-green-container-security }}
+      already-green-ui: ${{ steps.green.outputs.already-green-ui }}
+      already-green-native: ${{ steps.green.outputs.already-green-native }}
+      already-green-jobs: ${{ steps.green.outputs.already-green-jobs }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -70,10 +88,27 @@ jobs:
           fi
           python -B tools/ci/changed_areas.py --base "$BASE" --head "$HEAD" \
             --event "$EVENT" --ref "$REF" >> "$GITHUB_OUTPUT"
+      # The checkout is one commit deep, which hides a merge's parents. Depth 2
+      # of the pushed sha brings both of them, and their trees. When it cannot
+      # be fetched the head looks like a plain commit and every job runs.
+      - name: Fetch the merge's two parents
+        if: github.event_name == 'push'
+        run: git fetch --no-tags --depth=2 origin "$GITHUB_SHA" || echo "parents of $GITHUB_SHA not fetchable"
+      # Fail open everywhere: any doubt prints every flag false and the jobs run.
+      - id: green
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AREAS: ${{ toJSON(steps.areas.outputs) }}
+          HEAD: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          python -B tools/ci/already_green.py --event "$EVENT" --ref "$REF" \
+            --head "$HEAD" --areas-on-json "$AREAS" >> "$GITHUB_OUTPUT"
 
   server:
     needs: changes
-    if: needs.changes.outputs.server == 'true'
+    if: needs.changes.outputs.server == 'true' && needs.changes.outputs.already-green-server != 'true'
     runs-on: ubuntu-latest
     # 45, not 30: on unchanged code this job took 18 to 28 minutes across
     # hosted runners, and one run was cancelled at 99% with nothing failing
@@ -119,7 +154,7 @@ jobs:
   # skip when the hosted identity lacks Create symbolic links privilege.
   windows-private-state:
     needs: changes
-    if: needs.changes.outputs.windows-private-state == 'true'
+    if: needs.changes.outputs.windows-private-state == 'true' && needs.changes.outputs.already-green-windows-private-state != 'true'
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -147,7 +182,7 @@ jobs:
   # every ordinary CI run.
   orangepi-security:
     needs: changes
-    if: needs.changes.outputs.orangepi-security == 'true'
+    if: needs.changes.outputs.orangepi-security == 'true' && needs.changes.outputs.already-green-orangepi-security != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -165,7 +200,7 @@ jobs:
 
   relay:
     needs: changes
-    if: needs.changes.outputs.relay == 'true'
+    if: needs.changes.outputs.relay == 'true' && needs.changes.outputs.already-green-relay != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -203,7 +238,7 @@ jobs:
   # replacement container.
   container-security:
     needs: changes
-    if: needs.changes.outputs.container-security == 'true'
+    if: needs.changes.outputs.container-security == 'true' && needs.changes.outputs.already-green-container-security != 'true'
     name: container-security (${{ matrix.arch }})
     strategy:
       fail-fast: false
@@ -236,7 +271,7 @@ jobs:
 
   ui:
     needs: changes
-    if: needs.changes.outputs.ui == 'true'
+    if: needs.changes.outputs.ui == 'true' && needs.changes.outputs.already-green-ui != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -278,7 +313,7 @@ jobs:
   # e2e convergence gate — actually run against the real engine.
   native:
     needs: changes
-    if: needs.changes.outputs.native == 'true'
+    if: needs.changes.outputs.native == 'true' && needs.changes.outputs.already-green-native != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -477,6 +512,8 @@ jobs:
         env:
           FAILED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
           RESULTS: ${{ toJSON(needs.*.result) }}
+          SKIPPED_GREEN: ${{ needs.changes.outputs.already-green-jobs }}
         run: |
           echo "job results: $RESULTS"
+          echo "skipped as already green on the pull request run: ${SKIPPED_GREEN:-none}"
           test "$FAILED" = "false"

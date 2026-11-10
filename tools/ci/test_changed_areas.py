@@ -332,8 +332,11 @@ class WorkflowRatchetTests(unittest.TestCase):
         self.assertIn("binary_smoke", self.jobs["binary-smoke-windows"]["if"])
 
     def test_changes_outputs_one_flag_per_area(self):
+        # Beside the area flags, `changes` carries the already-green flags (#1260):
+        # one per area and the comma list ci-ok logs. test_already_green.py grades those.
         outputs = self.jobs["changes"]["outputs"]
-        self.assertEqual(sorted(outputs), sorted(self.areas))
+        flags = {name for name in outputs if not name.startswith("already-green-")}
+        self.assertEqual(sorted(flags), sorted(self.areas))
 
 
 if __name__ == "__main__":
