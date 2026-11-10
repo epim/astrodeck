@@ -162,6 +162,11 @@ class TestTheRouteSaysWhy:
         assert r.status_code == 200, r.text
         assert engine._session.id == sid, "premise: CONTINUE continued it"
         _bank(engine, [1])
+        # The report the premise below reads is written off the loop, a
+        # moment after the run starts and after each banked sub; a
+        # process dies with those writes on disk, so settle them first
+        # (#1188). A kill that raced the first one left no report at all.
+        await engine.reporter.flush()
         await _die(engine)
         on_disk = session_store.load(sid)
         assert on_disk.status == "active", (
