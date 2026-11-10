@@ -33,7 +33,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Decides which jobs below run (#1259). tools/ci/areas.json says which paths
+  # belong to which job; a path it does not know, or a change to this file, to
+  # the map or to the tool, turns every job on. The unit tests of the tool and
+  # the ratchet that keeps this file and the map in step run here too.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      server: ${{ steps.areas.outputs.server }}
+      windows-private-state: ${{ steps.areas.outputs.windows-private-state }}
+      orangepi-security: ${{ steps.areas.outputs.orangepi-security }}
+      relay: ${{ steps.areas.outputs.relay }}
+      container-security: ${{ steps.areas.outputs.container-security }}
+      ui: ${{ steps.areas.outputs.ui }}
+      native: ${{ steps.areas.outputs.native }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: pip install PyYAML
+      - run: python -B -m unittest discover -s tools/ci -p 'test_*.py'
+      # The base is fetched by sha: the checkout is one commit deep. When it
+      # cannot be fetched (a force push, a deleted branch) the tool selects
+      # every area.
+      - id: areas
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          if [ -n "$BASE" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE" || echo "base $BASE not fetchable"
+          fi
+          python -B tools/ci/changed_areas.py --base "$BASE" --head "$HEAD" \
+            --event "$EVENT" --ref "$REF" >> "$GITHUB_OUTPUT"
+
   server:
+    needs: changes
+    if: needs.changes.outputs.server == 'true'
     runs-on: ubuntu-latest
     # 45, not 30: on unchanged code this job took 18 to 28 minutes across
     # hosted runners, and one run was cancelled at 99% with nothing failing
@@ -78,6 +118,8 @@ jobs:
   # Run the contract on NTFS for every change; only the symlink assertion may
   # skip when the hosted identity lacks Create symbolic links privilege.
   windows-private-state:
+    needs: changes
+    if: needs.changes.outputs.windows-private-state == 'true'
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -104,6 +146,8 @@ jobs:
   # these checks prevent credential, HTTP-boundary and systemd-policy drift on
   # every ordinary CI run.
   orangepi-security:
+    needs: changes
+    if: needs.changes.outputs.orangepi-security == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -120,6 +164,8 @@ jobs:
 
 
   relay:
+    needs: changes
+    if: needs.changes.outputs.relay == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -156,6 +202,8 @@ jobs:
   # bounded tmpfs remain writable and that named-volume state survives a
   # replacement container.
   container-security:
+    needs: changes
+    if: needs.changes.outputs.container-security == 'true'
     name: container-security (${{ matrix.arch }})
     strategy:
       fail-fast: false
@@ -187,6 +235,8 @@ jobs:
           --run-security-acceptance --run-security-live
 
   ui:
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -227,6 +277,8 @@ jobs:
   # AND builds the wheel so the native test files — including the P1 guiding
   # e2e convergence gate — actually run against the real engine.
   native:
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -401,3 +453,30 @@ jobs:
       # test passes, and release.yml is what publishes binaries.
       - name: Build + smoke-test the binary
         run: python packaging/build_binary.py
+
+  # The one check the merge step reads (#1259). A job the area filter skipped
+  # is allowed not to have run; a job that failed or was cancelled is not, and
+  # neither is `changes` itself failing, which would skip every job behind it.
+  ci-ok:
+    if: always()
+    needs:
+      - changes
+      - server
+      - windows-private-state
+      - orangepi-security
+      - relay
+      - container-security
+      - ui
+      - native
+      - windows-com
+      - binary-smoke-windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every job that ran passed
+        env:
+          FAILED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "job results: $RESULTS"
+          test "$FAILED" = "false"
