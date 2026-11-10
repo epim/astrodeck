@@ -173,6 +173,8 @@ def test_tonight_refuses_rather_than_ranking_the_gulf_of_guinea(unsited):
 
 
 def test_tonight_works_at_a_real_site(sited):
-    """The control for the refusal above."""
+    """The control for the refusal above. It took about 107 s on CI until
+    #1257, one ``compute_night`` per catalogue row; the whole-catalogue pass
+    answers in about a second, so it needs no allowance on the slow-test list."""
     r = sited.get("/api/catalog/tonight")
     assert r.status_code == 200, r.text

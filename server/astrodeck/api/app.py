@@ -12156,12 +12156,18 @@ def create_app(*, bind_host: str | None = None,
     @app.get("/api/catalog/tonight",
              dependencies=[Depends(require(CAP_VIEW_SITE_DERIVED))])
     @declare(CAP_VIEW_SITE_DERIVED)
-    async def catalog_tonight(date: str | None = None, alt_limit: float = 30.0):
+    async def catalog_tonight(date: str | None = None,
+                              alt_limit: float = Query(30.0, ge=-90, le=90)):
         """Rank the whole catalog by tonight's best-window visibility and tag each
-        object with a beginner difficulty rating (NOV-3). Mirrors post_order's
-        throttled fan-out of compute_night (visibility.py)."""
+        object with a beginner difficulty rating (NOV-3).
+
+        The night is computed for every row in one vectorised pass and cached in
+        process memory per site, night and altitude limit
+        (``visibility.nights_for_catalogue``, #1257); it was 13,370 calls of
+        ``compute_night``, 87 s. ``alt_limit`` is bounded as ``/api/visibility``
+        bounds it, which also bounds the cache's key space."""
         from ..catalog.objects import CATALOG, _TYPE_NAMES
-        from ..catalog.visibility import check_night_date, compute_night
+        from ..catalog.visibility import check_night_date, nights_for_catalogue
         from ..catalog.tonight import tonight_score, rank_picks
         from ..catalog.difficulty import difficulty_for
 
@@ -12172,7 +12178,8 @@ def create_app(*, bind_host: str | None = None,
         # catalogue for the Gulf of Guinea and every row would look
         # well-formed - and this is the list an operator picks targets off, so
         # a wrong answer is worse than no answer by the width of a night.
-        if not site_is_set(hub.site):
+        site = hub.site
+        if not site_is_set(site):
             raise HTTPException(409, detail={
                 "detail": "no observing site is saved, so tonight's windows "
                           "cannot be computed - save the site in Settings",
@@ -12180,17 +12187,14 @@ def create_app(*, bind_host: str | None = None,
         # A bad date otherwise falls back to TONIGHT inside the anchor parser,
         # answering for the wrong night with no sign anything went wrong.
         date = check_night_date(date)
-        sem = asyncio.Semaphore(8)
-
-        async def _night(o):
-            async with sem:
-                return await asyncio.to_thread(
-                    compute_night, o.ra_hours, o.dec_deg,
-                    date=date, step_min=20, alt_limit=alt_limit)
-
-        nights = await asyncio.gather(*[_night(o) for o in CATALOG])
+        # One worker thread, off the event loop. A client that gives up still
+        # leaves the answer cached for its retry.
+        nights = await asyncio.to_thread(
+            nights_for_catalogue, CATALOG, date=date, step_min=20,
+            alt_limit=alt_limit, site=site)
         picks: list[dict] = []
-        for o, night in zip(CATALOG, nights):
+        for i, o in enumerate(CATALOG):
+            night = nights.row(i)
             d = difficulty_for(o.id, o.mag, o.size_arcmin)
             bw = night["best_window"]
             picks.append({
@@ -12208,9 +12212,9 @@ def create_app(*, bind_host: str | None = None,
                 "never_rises_above_limit": night["never_rises_above_limit"],
                 "score": tonight_score(night),
             })
-        out_date = nights[0]["date"] if nights else (date or "")
+        out_date = nights.date if len(nights) else (date or "")
         return {"date": out_date, "picks": rank_picks(picks),
-                "site_is_default": bool(hub.site.get("is_default", False))}
+                "site_is_default": bool(site.get("is_default", False))}
 
     @app.get("/api/logs")
     @declare(CAP_VIEW_STATUS)
