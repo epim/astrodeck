@@ -2544,7 +2544,9 @@ class SequenceEngine:
         # tick returns silently when session_store.armed() is None, so there was
         # not even a log line to notice — the whole feature was absent, quietly,
         # on exactly the path it exists for.
-        session.auto_resume = True
+        #
+        # The flag is set by ``_arm_exclusively`` below, the one place a run
+        # is armed (#1176), fresh or resumed.
         # A SESSION THAT STARTS WAITS FOR NOTHING (#598, D-04). Cleared here
         # because every start path reaches this line (CONTINUE, a flow run,
         # /resume, ResumeArm's own tick, the promotion's own start): a marker
