@@ -32,11 +32,9 @@ import asyncio
 
 import pytest
 
-from astrodeck import providers
 from astrodeck.devices.sim import build_sim_rig
 
-pytestmark = pytest.mark.skipif(
-    not providers.NATIVE_AVAILABLE, reason="astrodeck_native wheel not installed")
+pytestmark = pytest.mark.native
 
 OVERSHOOT = 200
 STEP = 350

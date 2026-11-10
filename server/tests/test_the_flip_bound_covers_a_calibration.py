@@ -283,14 +283,12 @@ def test_the_bound_that_killed_the_run_was_smaller_than_the_walk():
     assert E.FLIP_CALIBRATE_TIMEOUT_S > E.GUIDE_CALIBRATE_TIMEOUT_S
 
 
+@pytest.mark.native
 def test_the_flip_outlasts_the_guiders_own_calibration_backstop():
     """The same rule ``GUIDE_CALIBRATE_TIMEOUT_S`` already lives by, one bound
     out: the guider caps its own walk at ``_CAL_TIMEOUT_S`` and fails there with
     the evidence attached, and an outer bound that races it replaces a
     diagnosis with "timed out — aborting"."""
-    from astrodeck.providers import NATIVE_AVAILABLE
-    if not NATIVE_AVAILABLE:
-        pytest.skip("native wheel absent")
     from astrodeck.guide import native as native_mod
 
     assert (engine_mod.FLIP_CALIBRATE_TIMEOUT_S

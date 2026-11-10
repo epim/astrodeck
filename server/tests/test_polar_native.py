@@ -22,8 +22,7 @@ from astrodeck.events import bus
 from astrodeck.hub import Hub
 from astrodeck.polar import native as nat
 
-pytestmark = pytest.mark.skipif(
-    not providers.NATIVE_AVAILABLE, reason="astrodeck_native wheel not installed")
+pytestmark = pytest.mark.native
 
 # A northern site well away from the default equator so the axis-fit hemisphere
 # logic is exercised and the traced circle sits at usable altitudes.

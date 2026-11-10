@@ -16,10 +16,10 @@ import math
 import numpy as np
 import pytest
 
-an = pytest.importorskip(
-    "astrodeck_native",
-    reason="native engine wheel not installed (build with maturin develop)",
-)
+from _native_gate import optional_native
+
+an = optional_native()
+pytestmark = pytest.mark.native
 
 
 def _synthetic_star_frame() -> np.ndarray:

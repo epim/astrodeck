@@ -77,8 +77,7 @@ from astrodeck.polar.session import PolarAlignSession
 from astrodeck.sequence.schedule import hour_angle_h
 from astrodeck.solve.base import SolveResult
 
-pytestmark = pytest.mark.skipif(
-    not providers.NATIVE_AVAILABLE, reason="astrodeck_native wheel not installed")
+pytestmark = pytest.mark.native
 
 # Invented site: northern, western hemisphere. Northern so the hemisphere branch
 # in calculate_mount_axis_error is the one the rig uses; western so the sign of

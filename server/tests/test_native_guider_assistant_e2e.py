@@ -24,9 +24,6 @@ import astrodeck.config as config_mod
 from astrodeck.config import ConfigStore, GuideConfig, GuideAxisParams
 from astrodeck.devices.base import DeviceError
 from astrodeck.guide import assistant as ga
-from astrodeck.providers import NATIVE_AVAILABLE
-
-native_only = pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
 
 
 # ------------------------------------------------------------- apply round-trip
@@ -51,7 +48,7 @@ def _apply_recs_to_guide_config(report: dict) -> GuideConfig:
         ra_params=ra, dec_params=dec)
 
 
-@native_only
+@pytest.mark.native
 async def test_assistant_e2e_on_sim(tmp_path, monkeypatch):
     from astrodeck.devices.sim import build_sim_rig
     from astrodeck.guide.native import NativeGuider
@@ -104,7 +101,7 @@ async def test_assistant_e2e_on_sim(tmp_path, monkeypatch):
 
 
 # ------------------------------------------------------------- guider refusals
-@native_only
+@pytest.mark.native
 @pytest.mark.parametrize("setup, needle", [
     ("guiding", "stop guiding"),
     ("parked", "unpark"),

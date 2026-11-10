@@ -39,10 +39,9 @@ import pytest
 from astrodeck.devices.base import PierSide
 from astrodeck.devices.sim import build_sim_rig
 from astrodeck.events import bus
-from astrodeck.providers import NATIVE_AVAILABLE
 
 pytestmark = [
-    pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent"),
+    pytest.mark.native,
 ]
 
 

@@ -37,10 +37,6 @@ import astrodeck.config as configmod
 import astrodeck.guide.native as nativemod
 from astrodeck.guide.native import (GP_DARK_VARIANCE, GP_MIN_MEASURED_POINTS,
                                     NativeGuider)
-from astrodeck.providers import NATIVE_AVAILABLE
-
-needs_wheel = pytest.mark.skipif(not NATIVE_AVAILABLE,
-                                 reason="native wheel absent")
 
 _GP_RS = (Path(__file__).resolve().parents[2] / "native" / "crates"
           / "astro-guide" / "src" / "algorithms" / "gaussian_process.rs")
@@ -499,7 +495,7 @@ def test_the_virtual_clock_refuses_monotonic_unless_a_test_opts_in():
     assert abs(opted_in.monotonic() - time.monotonic()) < 5.0
 
 
-@needs_wheel
+@pytest.mark.native
 @pytest.mark.asyncio
 @pytest.mark.parametrize("saved_before", [True, False],
                          ids=["over_a_saved_model", "with_no_saved_model"])
@@ -556,7 +552,7 @@ async def test_a_lock_then_two_blank_frames_saves_nothing(
     assert len(why) == 1 and "0 measured" in why[0], why
 
 
-@needs_wheel
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_control_a_guided_session_saves_its_model(rig, tmp_path):
     """CONTROL, green under every mutant in this file: a session that locks

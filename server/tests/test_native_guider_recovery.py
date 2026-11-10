@@ -17,10 +17,9 @@ import uuid
 
 import pytest
 from astrodeck.devices.sim import build_sim_rig
-from astrodeck.providers import NATIVE_AVAILABLE
 
 pytestmark = [
-    pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent"),
+    pytest.mark.native,
     # Fast/slow lane (pyproject markers): this module is deliberately
     # wall-clock-bound -- it buys timing realism, not extra assertions --
     # so `pytest -m 'not slow'` skips it for the inner loop. Every gate and

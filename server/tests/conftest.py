@@ -2388,6 +2388,15 @@ def _native_guiders_are_closed():
         yield
 
 
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item):
+    """The one gate on a test that needs the astrodeck_native wheel (#1255):
+    skipped without the wheel, an ERROR under ASTRODECK_REQUIRE_NATIVE=1.
+    First, so no fixture is built for a test that cannot run."""
+    from _native_gate import gate
+    gate(item)
+
+
 #: Seconds one test's call phase may take on CI before it fails the run
 #: (#1261). A test over it is on the allowlist in test_slow_test_ceiling.py,
 #: each entry with its reason, or it is made cheaper.
@@ -2478,6 +2487,11 @@ def pytest_configure(config):
         "markers", "real_file_times: hands the files it writes to a child "
         "process, so file times are not moved by a date replay "
         "(_ReplayedFileTimes)")
+    # Registered here and not in pyproject.toml, which is an input of the
+    # generated credits (test_credits.py): a marker is not a credit.
+    config.addinivalue_line(
+        "markers", "native: needs the astrodeck_native wheel; skipped without "
+        "it, an ERROR under ASTRODECK_REQUIRE_NATIVE=1 (_native_gate.py)")
     # Before pytest's own tmpdir plugin reads ``--basetemp`` (#909, #916).
     basetemp = _own_basetemp(config)
     if basetemp is not None:

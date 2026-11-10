@@ -19,10 +19,10 @@ import math
 import numpy as np
 import pytest
 
-native = pytest.importorskip(
-    "astrodeck_native",
-    reason="native engine wheel not installed (build with maturin develop)",
-)
+from _native_gate import optional_native
+
+native = optional_native()
+pytestmark = pytest.mark.native
 
 
 def _multi_gaussian_frame(w, h, stars, bg=100.0, amp=8000.0, sg=1.8):

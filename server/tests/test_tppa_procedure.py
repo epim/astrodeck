@@ -67,8 +67,6 @@ _REAL_ENGINE = nat._native
 #: The shipped post-rotation settle, read at import so the settle tests can
 #: put the real number back after ``make_rig`` zeroes it for everyone else.
 _SHIPPED_SETTLE_S = nat._SETTLE_AFTER_SLEW_S
-requires_engine = pytest.mark.skipif(
-    not nat.NATIVE_AVAILABLE, reason="astrodeck_native wheel not installed")
 
 
 def _ra_at_hour_angle(ha_hours: float) -> float:
@@ -303,7 +301,7 @@ class _Rig:
 @pytest.fixture
 def make_rig(monkeypatch):
     """Build the one rig this test drives. ``engine="real"`` uses the Rust wheel
-    (mark the test ``@requires_engine``); the default fake keeps every test that
+    (mark the test ``@pytest.mark.native``); the default fake keeps every test that
     does not depend on the fit's arithmetic runnable on a wheel-less runner."""
     monkeypatch.setattr(nat, "NATIVE_AVAILABLE", True)
     monkeypatch.setattr(nat, "_ADJUST_INTERVAL_S", 0.01)
@@ -532,7 +530,7 @@ async def test_a_refused_goto_stops_the_run_instead_of_measuring_twice(make_rig,
     assert "e3" in st["message"], st
 
 
-@requires_engine
+@pytest.mark.native
 async def test_a_mount_that_never_moves_at_all_is_caught(make_rig):
     """The control for the test below: when NO rotation lands, all three solves
     coincide and the Rust engine refuses outright with "mount did not move
@@ -548,7 +546,7 @@ async def test_a_mount_that_never_moves_at_all_is_caught(make_rig):
     assert "did not move" in st["message"].lower(), st
 
 
-@requires_engine
+@pytest.mark.native
 async def test_a_mount_that_stops_arriving_halfway_is_not_reported_as_aligned(
         make_rig, bus_lines):
     """A goto the mount ACCEPTS and does not honour — no exception, ``slew``
@@ -1119,7 +1117,7 @@ async def test_a_solver_with_no_rotation_is_recorded_as_zero_and_runs_on(
     assert not blamed, blamed
 
 
-@requires_engine
+@pytest.mark.native
 async def test_a_missing_rotation_cannot_move_the_number_you_turn_a_bolt_by(
         make_rig, bus_lines, monkeypatch):
     """CHARACTERISATION, and the measurement that refutes the claim above.
@@ -1417,7 +1415,7 @@ async def test_the_refused_arc_still_leaves_its_fit_in_the_log(make_rig,
     assert not [m for lvl, m, _s in bus_lines if "reproduces the commanded" in m]
 
 
-@requires_engine
+@pytest.mark.native
 async def test_the_engine_really_does_report_a_wild_number_for_that_arc(
         make_rig, bus_lines):
     """The control. Without this guard the operator is handed a bolt-turning

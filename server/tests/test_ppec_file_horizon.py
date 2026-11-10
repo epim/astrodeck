@@ -40,7 +40,7 @@ from astrodeck.guide.native import (GP_DARK_VARIANCE,
 # the same fake rig (rootdir-relative import, as elsewhere in this suite).
 from test_ppec_persist_needs_measured_points import (  # noqa: F401
     _GP_RS, _WallClock, _gp_path, _guider, _rows, _rust_fn_body, _save_file,
-    _sha, _star_frame, _start, _why, needs_wheel, rig)
+    _sha, _star_frame, _start, _why, rig)
 
 _ENGINE_RS = _GP_RS.parent.parent / "engine.rs"
 
@@ -97,7 +97,7 @@ def test_the_horizon_constants_are_the_rust_engines():
 # ------------------------------------------- parity with the real wheel
 
 
-@needs_wheel
+@pytest.mark.native
 def test_could_restore_answers_as_the_wheel_does_at_the_horizon(rig):
     """For a window restored at a downtime of the horizon minus 0.5 s, one
     ulp under it, exactly it, one ulp over it, and plus 0.5 s (and at zero
@@ -162,7 +162,7 @@ def test_could_restore_answers_as_the_wheel_does_at_the_horizon(rig):
 # ------------------------------------------ the #253 probe, on the real wheel
 
 
-@needs_wheel
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_253_a_quick_restart_restores_tonights_model(rig, tmp_path,
                                                           bus_lines):

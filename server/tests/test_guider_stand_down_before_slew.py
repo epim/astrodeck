@@ -32,11 +32,7 @@ from astrodeck.devices.base import PierSide
 from astrodeck.devices.sim import SimTelescope
 from astrodeck.guide.base import Guider, GuideStats
 from astrodeck.hub import Hub
-from astrodeck.providers import NATIVE_AVAILABLE
 from astrodeck.sequence import ExposureStep, SequenceEngine, SequencePlan, Target
-
-native_only = pytest.mark.skipif(not NATIVE_AVAILABLE,
-                                 reason="native wheel absent")
 
 
 @pytest.fixture
@@ -147,7 +143,7 @@ def _cal_pier(g) -> str | None:
     return (cal or {}).get("pier_side")
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.parametrize("center", [False, True],
                          ids=["plain slew", "goto and centre"])
 async def test_the_guide_loop_is_stopped_before_the_next_targets_slew(

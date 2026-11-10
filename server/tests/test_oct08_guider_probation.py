@@ -75,14 +75,10 @@ from astrodeck.guide.native import (
     DITHER_REFUSED, PROBATION_FAILED_MSG, PROBATION_FRAMES,
     PROBATION_LOOP_DIED_MSG, PROBATION_STOP_REASON, RUNAWAY_STOP_REASON,
     GuidingStopped, NativeGuider)
-from astrodeck.providers import NATIVE_AVAILABLE
 
 from _oct08_guider_harness import (
     CAP_MS, IDLE, Camera, Logs, Mount, ScriptedEngine, arm_loop, cal_dict,
     cal_path, make_guider, plant_cal, profile_id, pulse, stop_loop, wait_until)
-
-native_only = pytest.mark.skipif(not NATIVE_AVAILABLE,
-                                 reason="native wheel absent")
 
 
 @pytest.fixture(autouse=True)
@@ -142,7 +138,7 @@ def _lock_steady(g):
 # ------------------------------------------------------------ claim and fail
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_a_fresh_calibration_is_claimed_only_after_it_holds(
         _isolated_config_dir, monkeypatch):
@@ -181,7 +177,7 @@ async def test_a_fresh_calibration_is_claimed_only_after_it_holds(
         await g.disconnect()
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_a_calibration_that_does_not_hold_fails_the_start_and_is_discarded(
         _isolated_config_dir, monkeypatch):
@@ -216,7 +212,7 @@ async def test_a_calibration_that_does_not_hold_fails_the_start_and_is_discarded
         await g.disconnect()
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_a_reused_calibration_that_does_not_hold_is_discarded(
         _isolated_config_dir, monkeypatch):
@@ -308,7 +304,7 @@ async def test_a_healthy_walk_near_the_pole_passes(
         await stop_loop(g)
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_a_bad_dec_calibration_fails_by_growth(
         _isolated_config_dir, monkeypatch):
@@ -407,7 +403,7 @@ async def test_the_check_reads_calibrating(_isolated_config_dir, monkeypatch):
         assert task.done()
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_a_spent_start_budget_hands_the_check_to_the_loop(
         _isolated_config_dir, monkeypatch):
@@ -505,7 +501,7 @@ async def test_dither_is_refused_while_the_calibration_is_checked(
 # ------------------------------------------------------- stop, crash, cancel
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_stop_during_the_check_raises_guiding_stopped(
         _isolated_config_dir, monkeypatch):
@@ -532,7 +528,7 @@ async def test_stop_during_the_check_raises_guiding_stopped(
     assert not cal_path(_isolated_config_dir, pid).exists()
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_a_loop_crash_during_the_check_is_not_a_stop(
         _isolated_config_dir, monkeypatch):
@@ -551,7 +547,7 @@ async def test_a_loop_crash_during_the_check_is_not_a_stop(
     assert not isinstance(ei.value, GuidingStopped)
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_a_cancelled_start_does_not_leave_the_loop_running(
         _isolated_config_dir, monkeypatch):
@@ -627,7 +623,7 @@ async def test_needs_calibration_reads_the_live_declination(
     assert await g.needs_calibration() is False
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_the_probation_budget_follows_the_engines_bound(
         _isolated_config_dir, monkeypatch):
@@ -744,7 +740,7 @@ def _spy_bound(g, seen):
     g._await_probation = spy
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_a_reuse_answer_bounds_a_start_that_walks_after_all(
         _isolated_config_dir, monkeypatch):
@@ -782,7 +778,7 @@ async def test_a_reuse_answer_bounds_a_start_that_walks_after_all(
         await g.stop_guiding()
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_a_reuse_start_is_bounded_as_one_without_a_hint(
         _isolated_config_dir, monkeypatch):
@@ -812,7 +808,7 @@ async def test_a_reuse_start_is_bounded_as_one_without_a_hint(
         await g2.disconnect()
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_the_probation_budget_counts_the_time_the_walk_took(
         _isolated_config_dir, monkeypatch):
@@ -846,7 +842,7 @@ async def test_the_probation_budget_counts_the_time_the_walk_took(
         await g.stop_guiding()
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_a_fallback_walk_restarts_the_probation_clock(
         _isolated_config_dir, monkeypatch):
@@ -898,7 +894,7 @@ async def test_a_fallback_walk_restarts_the_probation_clock(
         await g2.disconnect()
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_a_restart_does_not_inherit_a_streak(
         _isolated_config_dir, monkeypatch):

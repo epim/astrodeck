@@ -20,16 +20,12 @@ the worst healthy frame clipped 0.0015% of its sampled pixels; the gate sits at
 import numpy as np
 import pytest
 
-from astrodeck import providers
 from astrodeck.devices.sim import build_sim_rig
 from astrodeck.events import bus
 from astrodeck.focus import run_autofocus
 from astrodeck.imaging.stars import OVEREXPOSED_FRAC, saturation_fraction
 import astrodeck.focus.autofocus as A
 import astrodeck.focus.native as N
-
-native_only = pytest.mark.skipif(
-    not providers.NATIVE_AVAILABLE, reason="astrodeck_native wheel not installed")
 
 
 async def _connected_sim():
@@ -108,7 +104,7 @@ def test_a_normalized_float_frame_rails_at_one():
 
 # ------------------------------------------------------- native path, the probe
 
-@native_only
+@pytest.mark.native
 async def test_an_overexposed_probe_blames_the_light_not_the_sky(monkeypatch):
     """The 2026-08-06 failure, exactly: a railed frame, a detector that honestly
     finds one merged blob, and a refusal that used to read "lack of stars — try
@@ -147,7 +143,7 @@ async def test_an_overexposed_probe_blames_the_light_not_the_sky(monkeypatch):
     assert events[-1].get("advice") == res.advice
 
 
-@native_only
+@pytest.mark.native
 async def test_a_starless_probe_that_is_not_clipped_keeps_the_old_advice(monkeypatch):
     """The gate must not rewrite the genuinely-sparse refusal: a dark, healthy
     frame with two stars still earns "longer exposure"."""
@@ -165,7 +161,7 @@ async def test_a_starless_probe_that_is_not_clipped_keeps_the_old_advice(monkeyp
 
 # ------------------------------------------------------ native path, mid-sweep
 
-@native_only
+@pytest.mark.native
 async def test_clipped_sweep_frames_flip_the_advice(monkeypatch):
     """A probe that measures fine, then sweep frames that rail (twilight
     brightening, a gain change, the field rotating onto a bright star): the

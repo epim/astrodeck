@@ -38,13 +38,10 @@ import time
 
 import pytest
 
-from astrodeck import providers
 
 import _focus_clock as clock          # noqa: E402 - sibling helper
 
-pytestmark = pytest.mark.skipif(
-    not providers.NATIVE_AVAILABLE,
-    reason="astrodeck_native wheel not installed")
+pytestmark = pytest.mark.native
 
 
 # ---------------------------------------------------------------- the clock

@@ -56,9 +56,8 @@ import statistics
 
 import pytest
 
-native = pytest.importorskip("astrodeck_native")
-
-from astrodeck.polar.native import (  # noqa: E402  (after importorskip)
+from _native_gate import optional_native
+from astrodeck.polar.native import (
     _DONE_THRESHOLD_ARCMIN,
     _RA_STEP_HOURS,
     LOW_MEASUREMENT_ALT_DEG,
@@ -66,6 +65,9 @@ from astrodeck.polar.native import (  # noqa: E402  (after importorskip)
     MIN_MEASUREMENT_ALT_DEG,
     MIN_POLE_DISTANCE_DEG,
 )
+
+native = optional_native()
+pytestmark = pytest.mark.native
 
 # The RA step the driver actually commands between measurement points.
 SHIPPED_STEP_DEG = _RA_STEP_HOURS * 15.0

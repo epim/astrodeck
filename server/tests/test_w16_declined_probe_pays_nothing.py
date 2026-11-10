@@ -64,12 +64,8 @@ import threading
 import pytest
 
 import astrodeck.focus.native as N
-from astrodeck import providers
 from astrodeck.devices.sim import build_sim_rig
 from astrodeck.focus.native import SPARSE_FIELD_WARN
-
-native_only = pytest.mark.skipif(
-    not providers.NATIVE_AVAILABLE, reason="astrodeck_native wheel not installed")
 
 
 async def _counted_sim():
@@ -115,7 +111,7 @@ def _probe_then_points(probe_stars: int, point_stars: int = 1, *,
     return detector
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.parametrize("probe", [SPARSE_FIELD_WARN - 1, 8, 2])
 async def test_a_probe_under_the_gate_costs_one_exposure_and_no_moves(
         monkeypatch, probe):
@@ -141,7 +137,7 @@ async def test_a_probe_under_the_gate_costs_one_exposure_and_no_moves(
     assert await foc.get_position() == start
 
 
-@native_only
+@pytest.mark.native
 async def test_a_refused_gated_probe_on_a_clipped_frame_pays_nothing(
         monkeypatch):
     """A clipped probe is never GATED (its few stars are merged, not missing),
@@ -165,7 +161,7 @@ async def test_a_refused_gated_probe_on_a_clipped_frame_pays_nothing(
         f"should cost one exposure and no moves")
 
 
-@native_only
+@pytest.mark.native
 async def test_a_sweep_with_no_gate_still_overlaps_the_probe_measurement(
         monkeypatch):
     """CONTROL. The initial autofocus and every plan refocus pass no gate: a
@@ -214,7 +210,7 @@ async def _whole_sweep(monkeypatch, min_probe_stars):
     return res, moves, exposures
 
 
-@native_only
+@pytest.mark.native
 async def test_a_probe_that_clears_the_gate_sweeps_exactly_as_an_ungated_one(
         monkeypatch):
     """CONTROL. A gated probe that clears the line goes on to sweep, and the

@@ -67,9 +67,6 @@ from astrodeck.polar.session import PolarAlignSession
 _LAT = 45.0
 _LON = -116.0
 
-requires_engine = pytest.mark.skipif(
-    not nat.NATIVE_AVAILABLE, reason="astrodeck_native wheel not installed")
-
 
 # ============================================================ the sidereal case
 
@@ -575,7 +572,7 @@ _GOTO_ERROR_ARCMIN = 10.0
 _INJ_AZ, _INJ_ALT = 5.0, 6.0
 
 
-@requires_engine
+@pytest.mark.native
 async def test_the_axis_rotation_recovers_the_error_through_a_pointing_error(
         sim_hub):
     """THE FIX, end to end, with the fault that broke the real thing present.
@@ -603,7 +600,7 @@ async def test_the_axis_rotation_recovers_the_error_through_a_pointing_error(
     assert abs(fit["alt_error"] - _INJ_ALT) < 0.5, fit
 
 
-@requires_engine
+@pytest.mark.native
 async def test_the_goto_arc_reports_a_wildly_wrong_error_on_the_same_mount(
         sim_hub, monkeypatch):
     """THE TEST THAT WOULD HAVE CAUGHT 2026-09-09, and the reason the mechanism
@@ -639,7 +636,7 @@ async def test_the_goto_arc_reports_a_wildly_wrong_error_on_the_same_mount(
         f"stopped modelling the fault that ruined three real runs")
 
 
-@requires_engine
+@pytest.mark.native
 async def test_the_guard_refuses_the_goto_arc_it_cannot_measure(sim_hub):
     """The same wrecked arc against the SHIPPED thresholds: refused, not
     reported.
@@ -660,7 +657,7 @@ async def test_the_guard_refuses_the_goto_arc_it_cannot_measure(sim_hub):
             or "do not lie on one circle" in fit["message"]), fit["message"]
 
 
-@requires_engine
+@pytest.mark.native
 async def test_half_that_pointing_error_slips_past_every_guard(sim_hub):
     """WHY THE MECHANISM HAD TO CHANGE AND NOT THE THRESHOLDS.
 
@@ -699,7 +696,7 @@ async def test_half_that_pointing_error_slips_past_every_guard(sim_hub):
         f"refusing it")
 
 
-@requires_engine
+@pytest.mark.native
 async def test_the_axis_rotation_is_unmoved_by_that_smaller_error_too(sim_hub):
     """The pair to the one above, and the point of the whole change: the same
     mount, the same 5 arcmin of goto pointing error, and the answer is right —
@@ -714,7 +711,7 @@ async def test_the_axis_rotation_is_unmoved_by_that_smaller_error_too(sim_hub):
     assert abs(math.hypot(fit["az_error"], fit["alt_error"]) - expected) < 0.5
 
 
-@requires_engine
+@pytest.mark.native
 async def test_a_clean_run_logs_the_agreement_it_achieved(sim_hub, bus_lines):
     """The commanded rotation handed to the guard is the quantity the guard's
     geometry expects — verified end to end rather than asserted.

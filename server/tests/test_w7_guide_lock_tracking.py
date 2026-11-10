@@ -35,6 +35,7 @@ import pytest
 
 import astrodeck.guide.native as nativemod
 from astrodeck.guide.native import NativeGuider
+from _native_gate import optional_native
 
 # No module-level ``pytestmark = pytest.mark.asyncio``: ``asyncio_mode =
 # "auto"`` (pyproject.toml) already collects the async tests below without it.
@@ -238,10 +239,7 @@ async def test_control_an_unpublished_tracking_keeps_the_pre_fix_frame_rescan(
 # ------------------------------------------------------- the real wheel, e2e
 
 
-native = pytest.importorskip(
-    "astrodeck_native",
-    reason="WP-81 needs a native wheel rebuilt with the tracking field; see "
-           "the work package's report for how to build one into a private venv")
+native = optional_native()
 
 
 def _ident_cal():
@@ -259,6 +257,17 @@ def _gaussian_frame(w, h, cx, cy, amp=4000.0, sg=1.6, bg=100):
     return np.clip(bg + g, 0, 65535).astype(np.uint16)
 
 
+def _wheel_lacks_the_tracking_field() -> str:
+    engine = native.GuideEngine({"image_scale_arcsec": 2.0})
+    engine.load_calibration(_ident_cal())
+    engine.begin_guiding()
+    if "tracking" in engine.stats():
+        return ""
+    return ("the installed astrodeck_native wheel predates WP-81's 'tracking' "
+            "field: it needs the wheel rebuilt and deployed")
+
+
+@pytest.mark.native(lacks=_wheel_lacks_the_tracking_field)
 def test_the_real_wheel_publishes_tracking_end_to_end():
     """WP-81, the Rust + binding half, exercised through the actual PyO3
     module (not a fake): a rebuilt wheel's ``stats()`` carries ``tracking``,
@@ -268,9 +277,9 @@ def test_the_real_wheel_publishes_tracking_end_to_end():
 
     Needs a REBUILT native wheel -- an unmodified pre-WP-81 one has no
     "tracking" key at all (``_note_lock`` then degrades to its documented
-    pre-#649 behaviour; see the fake-engine tests above). Skipped outright
-    when no wheel is installed at all (``pytest.importorskip``), and SKIPPED
-    (not failed) when one is installed but predates this field -- same
+    pre-#649 behaviour; see the fake-engine tests above). Skipped when no
+    wheel is installed, and SKIPPED (not failed) when one is installed but
+    predates this field (``_wheel_lacks_the_tracking_field``) -- same
     "deliberately never replaced by a worktree's own build" reasoning as
     ``test_w5_guide_lock_published.py``'s sibling test.
 
@@ -286,9 +295,6 @@ def test_the_real_wheel_publishes_tracking_end_to_end():
     e = native.GuideEngine({"image_scale_arcsec": 2.0})
     e.load_calibration(_ident_cal())
     e.begin_guiding()
-    if "tracking" not in e.stats():
-        pytest.skip("installed astrodeck_native wheel predates WP-81's "
-                    "'tracking' field -- needs the wheel rebuilt and deployed")
     assert e.stats().get("tracking") is None, "no star found yet this session"
 
     # t=0: the lock-establishing frame. tracking mirrors the just-established

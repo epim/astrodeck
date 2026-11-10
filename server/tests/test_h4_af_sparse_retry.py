@@ -75,7 +75,6 @@ import astrodeck.focus.native as N
 import astrodeck.sequence.engine as engine_mod
 from _group_harness import Night, group_hub, group_store, single  # noqa: F401
 from _simhub import sim_hub  # noqa: F401 (fixture import)
-from astrodeck import providers
 from astrodeck.config import EscalationConfig, config_store
 from astrodeck.devices.sim import SimFocuser, build_sim_rig
 from astrodeck.events import bus
@@ -83,9 +82,6 @@ from astrodeck.focus.autofocus import AutofocusResult
 from astrodeck.focus.native import SPARSE_FIELD_WARN
 from astrodeck.sequence import SequenceEngine
 from astrodeck.sequence.models import SequencePlan
-
-native_only = pytest.mark.skipif(
-    not providers.NATIVE_AVAILABLE, reason="astrodeck_native wheel not installed")
 
 TARGET = "NGC 7331"
 #: Where the scripted sweeps start and, failing, leave the focuser: the
@@ -119,7 +115,7 @@ def _probe_then_points(probe_stars: int, point_stars: int = 1):
     return detector
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.parametrize("probe", [SPARSE_FIELD_WARN - 1, 3])
 async def test_a_failure_on_a_sparse_field_says_so(monkeypatch, probe):
     """A field under ``SPARSE_FIELD_WARN`` at the start position, nothing
@@ -149,7 +145,7 @@ async def test_a_failure_on_a_sparse_field_says_so(monkeypatch, probe):
         f"sparse_field={res.sparse_field}, start_stars={res.start_stars}")
 
 
-@native_only
+@pytest.mark.native
 async def test_control_a_failure_on_a_rich_field_is_not_sparse(monkeypatch):
     """CONTROL. The same failure on a field AT the line (15 stars at the
     start position, nothing measurable once defocused): not sparse, so the
@@ -174,7 +170,7 @@ async def test_control_a_failure_on_a_rich_field_is_not_sparse(monkeypatch):
         f"called sparse")
 
 
-@native_only
+@pytest.mark.native
 async def test_control_a_clipped_probe_is_not_sparse(monkeypatch):
     """CONTROL. Three stars at the start position on a frame that is
     overexposed: the sweep refuses, and says the stars merged into saturated
@@ -222,7 +218,7 @@ def _counting_metric(measured: list):
     return metric
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.parametrize("probe", [SPARSE_FIELD_WARN - 1, 8, 2])
 async def test_a_probe_under_the_gate_declines_to_sweep(monkeypatch, probe):
     """The sweep is given ``min_probe_stars`` (the owed re-sweep's line) and
@@ -278,7 +274,7 @@ async def test_a_probe_under_the_gate_declines_to_sweep(monkeypatch, probe):
         events[-1].get("message") == res.message), events[-1]
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.parametrize("min_stars, probe", [
     pytest.param(None, 8, id="no line asked: the initial autofocus"),
     pytest.param(SPARSE_FIELD_WARN, SPARSE_FIELD_WARN, id="at the line"),
@@ -314,7 +310,7 @@ async def test_control_a_probe_that_clears_the_gate_sweeps(monkeypatch,
         f"{len(measured)} sweep point(s) measured")
 
 
-@native_only
+@pytest.mark.native
 async def test_control_a_clipped_probe_is_never_gated(monkeypatch):
     """CONTROL. Eight stars on a frame that is overexposed: the "few stars"
     are merged ones, not missing ones, and declining to sweep would wait
@@ -827,7 +823,7 @@ async def _native_night(hub, monkeypatch, probes, *, plan, clears=(),
     return night, attempts
 
 
-@native_only
+@pytest.mark.native
 async def test_a_starved_probe_is_declined_once_a_cadence_and_never_swept(
         group_hub, monkeypatch):
     """THE NIGHT OF #558. Every light frame finds 100 stars, the sky the
@@ -935,7 +931,7 @@ async def test_a_starved_probe_is_declined_once_a_cadence_and_never_swept(
     assert len(night.captures) == 10, "premise: the run shot its frames"
 
 
-@native_only
+@pytest.mark.native
 async def test_a_probe_that_clears_the_gate_sweeps_and_clears_the_debt(
         group_hub, monkeypatch):
     """The same night, and the sky comes back: the first probe (the third

@@ -57,7 +57,6 @@ import pytest
 from astrodeck.devices.sim import build_sim_rig
 from astrodeck.guide import native
 from astrodeck.guide.native import RUNAWAY_STOP_REASON, NativeGuider
-from astrodeck.providers import NATIVE_AVAILABLE
 
 from _oct08_guider_harness import (
     CAP_MS, X_RATE, Y_RATE, Logs, Mount, ScriptedEngine, arm_loop, cal_dict,
@@ -290,11 +289,8 @@ def test_the_capability_mirrors_the_engine():
 # ------------------------------------------------------------- the real engine
 
 
-pytestmark_native = pytest.mark.skipif(not NATIVE_AVAILABLE,
-                                       reason="native wheel absent")
 
-
-@pytestmark_native
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_a_reversed_ra_axis_on_the_sim_is_stopped(
         _isolated_config_dir, monkeypatch):

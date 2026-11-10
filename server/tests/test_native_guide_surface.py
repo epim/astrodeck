@@ -4,7 +4,10 @@ import math
 import numpy as np
 import pytest
 
-native = pytest.importorskip("astrodeck_native")  # skip cleanly when wheel absent
+from _native_gate import optional_native
+
+native = optional_native()
+pytestmark = pytest.mark.native
 
 import astrodeck.config as config_mod
 from astrodeck.config import ConfigStore, GuideConfig, GuideAxisParams, DEC_GUIDE_MODES

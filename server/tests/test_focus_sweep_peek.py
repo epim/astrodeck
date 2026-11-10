@@ -22,24 +22,18 @@ import math
 
 import pytest
 
-from astrodeck import providers
+from _native_gate import optional_native
 
-if providers.NATIVE_AVAILABLE:
-    import astrodeck_native
+astrodeck_native = optional_native()
 
-    _HAS_PEEK = hasattr(astrodeck_native.FocusSweep, "peek_next")
-else:  # the module below is skipped entirely; keep the names defined
-    astrodeck_native = None
-    _HAS_PEEK = False
 
-pytestmark = [
-    pytest.mark.skipif(
-        not providers.NATIVE_AVAILABLE,
-        reason="astrodeck_native wheel not installed"),
-    pytest.mark.skipif(
-        providers.NATIVE_AVAILABLE and not _HAS_PEEK,
-        reason="installed astrodeck_native wheel predates peek_next"),
-]
+def _wheel_lacks_peek() -> str:
+    if hasattr(astrodeck_native.FocusSweep, "peek_next"):
+        return ""
+    return "the installed astrodeck_native wheel predates peek_next"
+
+
+pytestmark = pytest.mark.native(lacks=_wheel_lacks_peek)
 
 STEP = 350
 SIDES = 4
