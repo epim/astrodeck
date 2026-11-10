@@ -134,7 +134,7 @@ jobs:
           output-file: dist/astrodeck-sbom.cdx.json
           upload-release-assets: false
       - name: Retain accepted source release files
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: accepted-source
           if-no-files-found: error
@@ -143,7 +143,7 @@ jobs:
             dist/astrodeck-sbom.cdx.json
       - name: Retain source gate diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: source-gate-report
           if-no-files-found: ignore
@@ -224,7 +224,7 @@ jobs:
         shell: bash
         run: mv "${{ matrix.path }}" "dist/${{ matrix.asset }}"
       - name: Retain accepted platform files
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: accepted-${{ matrix.platform }}
           if-no-files-found: error
@@ -234,7 +234,7 @@ jobs:
             dist/*.whl
       - name: Retain platform gate diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gate-${{ matrix.platform }}
           if-no-files-found: ignore
@@ -376,7 +376,7 @@ jobs:
           done
       - name: Retain the image inventory reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: image-gate-report
           if-no-files-found: ignore
