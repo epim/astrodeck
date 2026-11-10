@@ -85,7 +85,7 @@ import astrodeck.flows.store as flow_store_module
 import astrodeck.sequence.report as report_mod
 import astrodeck.sequence.session as session_mod
 # T0 is imported by the scenarios from here too: the night's instant.
-from _group_harness import T0, Night, close_night_hub, night_hub
+from _group_harness import T0, Night, close_night_hub, night_hub, wall_budget_s
 from astrodeck.auth import (principal_for_role, reset_active_provider,
                             set_active_provider)
 from astrodeck.config import ConfigStore
@@ -110,7 +110,7 @@ DAY_S = 86400.0
 #: read fails it. `Night.settle` bounds each wait, but nothing bounded a
 #: loop of them: a scenario that read night 1 without grading it ran for
 #: over ten minutes under a ledger mutant, each read waiting out
-#: `FlowRig._report`'s two seconds (test_s7_sim_solve_failure.py
+#: `FlowRig._report`'s guard (test_s7_sim_solve_failure.py
 #: ``night_one``, #523). A scenario takes 3 to 12 s here; the margin is for
 #: a loaded parallel run.
 #:
@@ -548,6 +548,8 @@ class FlowRig:
         sid = (progress.get("session") or {}).get("id")
         assert sid, f"{at}: the progress route names no session: {progress}"
         session = await asyncio.to_thread(session_store.load, sid)
+        if night.engine.reporter is not None:
+            await night.engine.reporter.flush()
         reports: dict[str, dict] = {}
         for rid in session.nights:
             reports[rid] = await self._report(rid, session, at)
@@ -555,10 +557,11 @@ class FlowRig:
                        viewer=viewer, reports=reports, session=session)
 
     async def _report(self, rid: str, session: Session, at: str) -> dict:
-        """``GET /api/reports/{rid}``, waiting up to 2 s of real time for the
-        snapshot that holds as many frames of that run as the ledger does:
-        the snapshot after a frame is written on a worker thread, and a read
-        that raced it would grade the write, not the report.
+        """``GET /api/reports/{rid}``, once ``read`` has awaited the reporter's
+        pending writes (#1149). The poll that remains is a guard for a write
+        the reporter had not yet scheduled, bounded by ``wall_budget_s`` so a
+        loaded box is given the time it needs, not an idle box's two seconds:
+        a read that raced the write would grade the write, not the report.
 
         A 404 is waited out the same way and then fails: since #517 the
         reporter writes its first file at the run's start, when
@@ -566,7 +569,7 @@ class FlowRig:
         banked nothing yet still has a report, with no frames."""
         want = sum(1 for f in session.frames if f.night == rid)
         loop = asyncio.get_running_loop()
-        end = loop.time() + 2.0
+        end = loop.time() + wall_budget_s(2.0)
         while True:
             self.as_role("operator")
             try:
