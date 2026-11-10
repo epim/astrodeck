@@ -12,19 +12,14 @@ on:
         default: false
   push:
     branches: [main]
-    # A docs- or scratch-only push should not spend five jobs (one of them
-    # Windows, which bills at 2x). Code paths only.
+    # Scratch notes only. Documentation is not ignored here: tests read
+    # Markdown (the mosaic spec, licensing notes), so tools/ci/areas.json
+    # decides which jobs a docs change runs (#1267).
     paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
       - '.remember/**'
-      - 'tools/ux/**'
   pull_request:
     paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
       - '.remember/**'
-      - 'tools/ux/**'
 
 # Supersede in-flight runs for the same ref. Pushing a follow-up commit thirty
 # seconds later used to pay for BOTH runs; now the first is cancelled.
