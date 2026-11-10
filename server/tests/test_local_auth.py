@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-import time
 
 import pytest
 from fastapi import Depends, FastAPI
@@ -432,29 +431,34 @@ def test_configure_provider_arms_interlock_only_with_method(monkeypatch, tmp_pat
 
 # ---- Fix 3 (medium): unknown-user timing (anti-enumeration) -----------------
 
-def test_dummy_verify_runs_a_real_bcrypt_compare():
+def test_dummy_verify_runs_a_real_bcrypt_compare(monkeypatch):
     """``dummy_verify`` must execute a genuine cost-12 bcrypt compare (so an
     unknown username is timing-indistinguishable from a known one), unlike
-    ``verify_password(pw, None)`` which short-circuits before bcrypt runs."""
-    # The short-circuit path is effectively instant.
-    t0 = time.perf_counter()
-    for _ in range(3):
-        verify_password("whatever", None)
-    short_circuit = time.perf_counter() - t0
+    ``verify_password(pw, None)`` which short-circuits before bcrypt runs.
 
-    # A real bcrypt compare against a real hash.
-    real_hash = hash_password("anchor-password")
-    t0 = time.perf_counter()
-    verify_password("anchor-password", real_hash)
-    real = time.perf_counter() - t0
+    Counted, not timed (#1119): two wall-clock durations taken at different
+    moments can each be inflated by a loaded machine, so a ratio between them
+    proves nothing. What makes the unknown-user path as slow as the real one is
+    that it reaches ``bcrypt.checkpw`` against a hash of the pinned cost."""
+    import bcrypt
 
-    # dummy_verify must be in the same order of magnitude as a REAL compare,
-    # and decisively slower than the no-bcrypt short-circuit path.
-    t0 = time.perf_counter()
+    compared = []
+    real_checkpw = bcrypt.checkpw
+
+    def _spy(password, hashed):
+        compared.append(hashed)
+        return real_checkpw(password, hashed)
+
+    monkeypatch.setattr(bcrypt, "checkpw", _spy)
+
+    # The short-circuit path never reaches bcrypt.
+    verify_password("whatever", None)
+    assert compared == []
+
     assert dummy_verify("whatever") is False
-    dummy = time.perf_counter() - t0
-    assert dummy > short_circuit * 10  # not the instant short-circuit
-    assert dummy >= real * 0.4         # genuinely a bcrypt-cost operation
+    assert len(compared) == 1, "dummy_verify must run exactly one bcrypt compare"
+    assert compared[0].startswith(f"$2b${BCRYPT_ROUNDS:02d}$".encode("ascii")), \
+        "the decoy hash must carry the pinned cost, or the compare is faster than a real one"
 
 
 def test_verify_unknown_user_burns_a_real_compare(tmp_path, monkeypatch):
