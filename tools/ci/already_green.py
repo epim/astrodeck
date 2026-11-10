@@ -48,9 +48,9 @@ OUTPUT_PREFIX = "already-green-"
 API_ROOT = "https://api.github.com"
 
 # Jobs a push to main must run even when the pull request's run was green,
-# because that run did not run them in full. EMPTY today. WP 7.1 adds "ui" here
-# when pull requests start running a selection of the UI suite.
-NEVER_ALREADY_GREEN: tuple[str, ...] = ()
+# because that run did not run them in full. "ui": a pull request runs only the
+# test files its change can reach (#1258), so main runs the whole UI suite.
+NEVER_ALREADY_GREEN: tuple[str, ...] = ("ui",)
 
 Fetch = Callable[[str], object]
 

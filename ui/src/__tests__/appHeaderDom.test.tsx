@@ -171,5 +171,4 @@ act(() => { root.unmount(); });
 const total = passed + failed;
 console.log(`appHeaderDom.test: ${passed}/${total} passed`);
 for (const f of failures) console.log("  " + f);
-export default { passed, failed, total };
-export { passed, failed, total };
+export const result = { passed, failed, total };
