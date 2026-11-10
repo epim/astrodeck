@@ -282,6 +282,12 @@ class FrameRecord(BaseModel):
     accepted: bool = True
     hfr: float | None = None
     sensor_temp_c: float | None = None
+    #: The guide RMS over this frame's own exposure, in arcsec, as the ledger
+    #: quotes it (#1144): None when the guider was not guiding at the shutter,
+    #: the frame is a calibration frame, the guider published too few samples
+    #: to judge it (#1222) or reports pixels with no image scale. A report
+    #: written before that holds the guider's rolling figure at the moment the
+    #: frame was recorded, stale or not, in whatever unit it reported.
     guide_rms_total: float | None = None
     saved_path: str | None = None
     # --- PRO-10 stacking-bundle fields (all additive; every existing persisted

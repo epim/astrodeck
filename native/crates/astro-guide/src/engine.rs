@@ -79,6 +79,17 @@ use crate::types::{Action, AxisPulse, Direction, FrameMeta, MeasuredStar, StarSh
 const MASS_WINDOW_MS: f64 = 22500.0;
 /// Star-mass change threshold (dossier §3.1/§15
 /// `/guider/onestar/MassChangeThreshold`).
+///
+/// This gate is a saturation and cloud guard and nothing else. It drops a
+/// frame whose star mass jumps against the recent high-water mark (a star
+/// saturating, a cloud crossing the guide star), and it is deliberately
+/// loose. It is NOT a test that the star is the lock star: on the
+/// simulator it accepts a star at 1.47 times the lock star's flux, and it
+/// accepted both wrong stars behind #1143. Telling one star from another
+/// is the identity check the host runs when the guider re-locks after a
+/// loss, on the star's flux and half-flux diameter
+/// (`STAR_FLUX_TOLERANCE` and `STAR_HFD_TOLERANCE` in `guide/native.py`,
+/// #1083). Do not tighten this threshold to do that job.
 const MASS_CHANGE_THRESHOLD: f64 = 0.5;
 /// Seconds a star may be missing before the engine gives up the lock. Reuses
 /// dossier §13's `THRESHOLD_SECONDS` (`guider.cpp:1113`): once no star has
@@ -92,6 +103,10 @@ const DEC_COMP_LIMIT: f64 = PI / 3.0;
 /// §9 item 6) to keep `cos(dec)` well away from zero.
 const DEC_COMP_MAX_DEC: f64 = 89.0 * PI / 180.0;
 /// Rolling window of recent accepted frames kept for [`GuideStatsSnapshot`].
+/// The `rms_*` figures are computed over exactly this window, so raising it
+/// changes what the live RMS means everywhere it is shown. The host keeps its
+/// own, longer trace for judging a long exposure (`guide/native.py`,
+/// `_note_sample`, #1146): do not raise this for that.
 const RECENT_CAP: usize = 100;
 /// Default dither/settle window (dossier §12) [`GuideEngine::dither`] opens.
 /// Not yet threaded through [`EngineConfig`] (the brief's frozen

@@ -17,6 +17,13 @@ class SettleParams(TypedDict, total=False):
     timeout: float
 
 
+#: How far back a guider's own sample trace reaches (``Guider.guide_samples``,
+#: #1146): the longest exposure a plan accepts (``ExposureStep.exposure_s``,
+#: 3600 s) and two minutes for the frame to be graded after it closes. A trace
+#: is bounded by time, not by count, because the guide cadence is the user's.
+GUIDE_TRACE_S = 3720.0
+
+
 @dataclass
 class GuideStats:
     guiding: bool = False
@@ -199,6 +206,19 @@ class Guider(ABC):
         """Whether the guider is really guiding right now (queries the backend
         where possible, rather than a local flag) — used to detect a lost star."""
         return self.stats().guiding
+
+    def guide_samples(self, lo: float, hi: float) -> list[dict] | None:
+        """The guider's accepted samples stamped in ``[lo, hi]`` (epoch s), as
+        ``{t, ra, dec}`` in the unit ``stats().is_arcsec`` names, or None when
+        this guider keeps no longer record than ``stats().recent``.
+
+        ``stats().recent`` is clipped to about 120 samples because it rides
+        the bus on every guide cycle, so an exposure of five minutes or more
+        outruns it (#1146). A guider that keeps a trace of ``GUIDE_TRACE_S``
+        answers from it here, and the sequence engine judges an exposure on
+        every sample stamped inside it. An empty list means the trace holds
+        none in the window: the guider is silent, not unmeasured."""
+        return None
 
     def dump_flight_recorder(self, event: str) -> None:
         """Write the guide loop's recent cycles to disk for later forensics
