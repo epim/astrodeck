@@ -65,6 +65,7 @@ from astrodeck.sequence import ExposureStep, SequenceEngine, SequencePlan, Targe
 from astrodeck.sequence import schedule
 from astrodeck.sequence.cloudstate import CloudState
 
+from _group_harness import wall_budget_s
 from test_idle_park_hold import (  # noqa: F401 (fixtures and harness)
     LAT, LON, _Clocked, _constraint_waiter, _lst_h, _ra_at, sim_hub,
     temp_store)
@@ -207,9 +208,15 @@ class _Watched:
         """Run ``plan`` to the horizon. ``start_kw`` goes to `start`, as
         ``tracking=`` for a run handed a target auto-resume re-centred."""
         import asyncio
+        # A night is CPU-bound work on the fake clock: about 32 s of real time
+        # on an idle box for the longest of them, and the more the box is shared
+        # the longer it takes, so the real-time ceiling moves with the load
+        # (#1119). The reading blocks for 0.3 s, so it is taken before the
+        # run starts.
+        budget_s = wall_budget_s(timeout)
         self.engine.start(plan, **start_kw)
         loop = asyncio.get_running_loop()
-        end = loop.time() + timeout
+        end = loop.time() + budget_s
         while loop.time() < end:
             if self.run.frozen.is_set() or not self.engine.running:
                 break

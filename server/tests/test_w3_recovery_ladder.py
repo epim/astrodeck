@@ -47,7 +47,7 @@ import pytest
 import astrodeck.flows.tonight as tonight_mod
 import astrodeck.hub as hub_module
 from _group_harness import (Night, group_hub, group_store,  # noqa: F401
-                            single)
+                            single, wall_budget_s)
 from _group_harness import T0 as GROUP_T0
 from _humanizer_mirror import CLIP_AT, humanizer_rewrites
 from _simhub import sim_hub  # noqa: F401 (fixture import)
@@ -805,14 +805,33 @@ async def test_a_halt_under_the_tracking_recoverys_goto_pauses_without_using_its
         sim_hub, monkeypatch, bus_lines):
     """A refused track is recovered by park, unpark and a re-centre. An
     operator's halt under that re-centre pauses the run, and the pause does
-    not use up the recovery's outer time bound (patched to half a second,
-    the pause lasts longer): after the resume the re-centre is made again
-    and the recovery finishes."""
+    not use up the recovery's outer time bound (patched to a few seconds,
+    the pause lasts longer than it): after the resume the re-centre is made
+    again and the recovery finishes.
+
+    THE BOUND AND THE PAUSE ARE REAL SECONDS, so both move with the load
+    (#1119): the work the bound has to cover (the re-centre after the
+    resume, 0.16 s on an idle box) takes longer on a shared one, and a bound
+    of half a second that left it three times the margin idle was crossed by
+    the work alone, with no pause involved. The bound is two seconds scaled
+    by ``wall_budget_s``, twelve times the work, and the pause is half as
+    long again as the bound, so a bound the pause were charged to is crossed
+    in the pause on any box, and one the work alone could cross is not.
+
+    MUTANT "the pause is charged to the bound" (the ``bound.reschedule(None)``
+    in `SequenceEngine._hold_for_operator` removed): RED (observed), the
+    recovery's bound running out inside the pause and the setup ending with
+    the original refusal:
+        assert not task.done()
+        <Task finished name='Task-25' coro=<SequenceEngine._setup_target() ...
+        exception=RuntimeError("tracking on rejected (reply '0')")>.done
+    """
     import astrodeck.sequence.schedule as schedule_mod
     hub, tel, skies, events = _rig(sim_hub, monkeypatch, on_target=True)
+    bound_s = wall_budget_s(2.0)            # takes the reading before timing
     monkeypatch.setattr(schedule_mod, "dark_enough", lambda site, *a, **k: True)
     monkeypatch.setattr(engine_mod, "TRACKING_CONFIRM_S", 0.0)
-    monkeypatch.setattr(engine_mod, "TRACKING_RECOVERY_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(engine_mod, "TRACKING_RECOVERY_TIMEOUT_S", bound_s)
     limit = {"on": True}
     set_on, get_on, park = tel.set_tracking, tel.get_tracking, tel.park
 
@@ -846,14 +865,15 @@ async def test_a_halt_under_the_tracking_recoverys_goto_pauses_without_using_its
 
     task = asyncio.create_task(e._setup_target(0, t))
     try:
-        await _until(lambda: e.paused or task.done(), "the pause")
+        await _until(lambda: e.paused or task.done(), "the pause",
+                     timeout_s=wall_budget_s(20.0))
         assert e.paused, task.exception() if task.done() else None
         assert e.state["recovery"] == "paused_by_operator"
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(1.5 * bound_s)
         assert len(calls) == 2, "the run moved the mount while paused"
         assert not task.done()
         e.resume()
-        await asyncio.wait_for(task, 30)
+        await asyncio.wait_for(task, wall_budget_s(30.0))
     finally:
         if not task.done():
             task.cancel()

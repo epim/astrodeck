@@ -51,10 +51,10 @@ shared tree (#254).
 from __future__ import annotations
 
 import asyncio
-import time
 
 import pytest
 
+import _group_harness as harness
 import astrodeck.catalog.coords as coords_mod
 from _group_harness import (LON, T0, TERMINAL, Night, close_night_hub,
                             group_hub, group_store, night_hub)  # noqa: F401
@@ -340,6 +340,14 @@ async def test_a_meridian_read_that_never_answers_does_not_hold_up_the_night(
         SpinNeverYielded: Night.run: the event loop did not come back for
         10.2 s of real time, against a bound of 10 s
     """
+    # The hold's own bound is real seconds scaled by the box's contention
+    # factor (#1119): on a loaded box half a second is several, and a fixed
+    # outer wait (or an elapsed-time assertion) cannot tell a slow box from a
+    # hold that never gives up. So the hold's bound is made small and the outer
+    # wait is a hundred times it, both moved by the same factor; only a hold
+    # with no bound at all outlasts the outer wait.
+    monkeypatch.setattr(harness, "MERIDIAN_HOLD_BOUND_S", 0.05)
+    outer_s = harness.wall_budget_s(5.0)    # takes the reading before timing
     night = Night(group_hub, monkeypatch)
     try:
         tel = group_hub.devices["telescope"]
@@ -349,15 +357,12 @@ async def test_a_meridian_read_that_never_answers_does_not_hold_up_the_night(
 
         monkeypatch.setattr(tel, "pier_side", pier_side)
         group_hub.last_meridian = dict(_CONNECT_TIME)
-        t0 = time.monotonic()
         try:
-            await asyncio.wait_for(night._hold_the_meridian(), 5.0)
+            await asyncio.wait_for(night._hold_the_meridian(), outer_s)
         except TimeoutError:
-            pytest.fail("the harness's meridian hold waited 5 s on a pier "
-                        "read that never answers")
-        took = time.monotonic() - t0
+            pytest.fail(f"the harness's meridian hold waited {outer_s:.0f} s "
+                        "on a pier read that never answers")
         assert group_hub.last_meridian is None, (
             f"a hold cut short left {group_hub.last_meridian}")
-        assert took < 2.0, took
     finally:
         await night.close()
