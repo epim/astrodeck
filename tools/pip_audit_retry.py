@@ -8,7 +8,8 @@ keeps the two apart:
 
 * a vulnerability finding fails at once; retrying cannot change it;
 * an index or network outage (a 5xx from the index, a refused or timed-out
-  connection, a failed name lookup) is retried, up to ``--attempts`` times with
+  connection, a failed name lookup, an attempt that outlives ``--timeout``
+  seconds and is stopped) is retried, up to ``--attempts`` times with
   ``--delay`` seconds between tries; if every try meets an outage, the wrapper
   prints a WARNING that the dependencies were not audited and exits 0;
 * any other failure (a 4xx from the index, a bad argument, a crash) fails,
@@ -25,6 +26,7 @@ Standard library only, so it runs before anything is installed.
 from __future__ import annotations
 
 import argparse
+import functools
 import re
 import subprocess
 import sys
@@ -45,11 +47,14 @@ _OUTAGE = re.compile(
     r"|requests\.exceptions\.(?:ConnectionError|Timeout|ConnectTimeout"
     r"|ReadTimeout|ChunkedEncodingError)"
     r"|Max retries exceeded"
-    r"|Temporary failure in name resolution",
+    r"|Temporary failure in name resolution"
+    r"|^pip-audit: attempt exceeded \S+ seconds",
+    re.MULTILINE,
 )
 
 _OUTAGE_DETAIL = re.compile(r"^.*(?:\b5\d\d Server Error|Max retries exceeded"
                             r"|Temporary failure in name resolution"
+                            r"|attempt exceeded \S+ seconds"
                             r"|requests\.exceptions\.\w+).*$", re.MULTILINE)
 
 Runner = Callable[[Sequence[str]], "tuple[int, str]"]
@@ -66,11 +71,29 @@ def classify(returncode: int, output: str) -> str:
     return ERROR
 
 
-def _run_command(command: Sequence[str]) -> "tuple[int, str]":
-    """Run the audit, merging stderr into stdout so one transcript is judged."""
-    done = subprocess.run(command, stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT, text=True,
-                          encoding="utf-8", errors="replace", check=False)
+DEFAULT_ATTEMPT_TIMEOUT = 300.0
+
+
+def _run_command(command: Sequence[str],
+                 timeout: float = DEFAULT_ATTEMPT_TIMEOUT) -> "tuple[int, str]":
+    """Run the audit, merging stderr into stdout so one transcript is judged.
+
+    An attempt still running after ``timeout`` seconds is killed and reported
+    as an outage: a stalled index connection never errors by itself.
+    """
+    try:
+        done = subprocess.run(command, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True,
+                              encoding="utf-8", errors="replace", check=False,
+                              timeout=timeout)
+    except subprocess.TimeoutExpired as expired:
+        partial = expired.stdout or ""
+        if isinstance(partial, bytes):
+            partial = partial.decode("utf-8", errors="replace")
+        if partial and not partial.endswith("\n"):
+            partial += "\n"
+        return 1, (partial + f"pip-audit: attempt exceeded {timeout:g} seconds "
+                   f"and was stopped; the package index did not answer.\n")
     return done.returncode, done.stdout
 
 
@@ -80,9 +103,12 @@ def _outage_detail(output: str) -> str:
 
 
 def run(command: Sequence[str], attempts: int, delay: float,
-        runner: Runner = _run_command,
-        sleep: Callable[[float], None] = time.sleep) -> int:
+        runner: Runner | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        attempt_timeout: float = DEFAULT_ATTEMPT_TIMEOUT) -> int:
     """Audit with retries; return the exit code the workflow step should have."""
+    if runner is None:
+        runner = functools.partial(_run_command, timeout=attempt_timeout)
     detail = ""
     for attempt in range(1, attempts + 1):
         returncode, output = runner(command)
@@ -115,12 +141,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="audit runs before an outage is tolerated")
     parser.add_argument("--delay", type=float, default=20.0,
                         help="seconds to wait between attempts")
+    parser.add_argument("--timeout", type=float, default=DEFAULT_ATTEMPT_TIMEOUT,
+                        help="seconds one audit run may take before it is "
+                             "stopped and counted as an outage")
     parser.add_argument("command", nargs="+",
                         help="the audit command, after --")
     args = parser.parse_args(argv)
     if args.attempts < 1:
         parser.error("--attempts must be at least 1")
-    return run(args.command, attempts=args.attempts, delay=args.delay)
+    if args.timeout <= 0:
+        parser.error("--timeout must be positive")
+    return run(args.command, attempts=args.attempts, delay=args.delay,
+               attempt_timeout=args.timeout)
 
 
 if __name__ == "__main__":

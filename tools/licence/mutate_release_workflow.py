@@ -51,7 +51,17 @@ MUTANTS=[
 def run(target=None):
     return subprocess.run([sys.executable,"-B","-m","unittest","test_release_pipeline"+(".ReleasePipeline."+target if target else "")],cwd=ROOT/"server/tests",text=True,capture_output=True)
 
-def main():
+def report_path(record):
+    """The committed evidence file only on --record; otherwise untracked .probe/ (#802)."""
+    if record:
+        return ROOT/"tools/licence/release-workflow-mutations.md"
+    return ROOT/".probe/release-workflow-mutations.md"
+
+def main(argv):
+    unknown=[a for a in argv if a!="--record"]
+    if unknown:
+        raise SystemExit("usage: mutate_release_workflow.py [--record]  (--record rewrites the tracked report)")
+    record="--record" in argv
     if run().returncode: raise RuntimeError("Unmutated pipeline tests must pass first")
     rows=["# Release workflow mutation evidence", "", "Run " + datetime.now(timezone.utc).isoformat(), "", "These tests inspect real workflow commands and dependency/upload order. No workflow is dispatched. Every mutation is killed by its named assertion; exact bytes are restored in finally and SHA-256 checked.", ""]
     for name,before,after,target,expected in MUTANTS:
@@ -72,8 +82,11 @@ def main():
     result=run()
     if result.returncode: raise RuntimeError("Restored pipeline suite failed")
     rows += ["## Restored suite", "", "```text", result.stderr.strip(), "```", ""]
-    (ROOT/"tools/licence/release-workflow-mutations.md").write_text("\n".join(rows),encoding="utf-8")
+    report=report_path(record)
+    report.parent.mkdir(parents=True,exist_ok=True)
+    report.write_text("\n".join(rows),encoding="utf-8",newline="\n")
+    print("report written to "+str(report))
     print(result.stderr,end="")
 
 if __name__=="__main__":
-    main()
+    main(sys.argv[1:])

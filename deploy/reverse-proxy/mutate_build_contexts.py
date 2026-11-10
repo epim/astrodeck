@@ -59,7 +59,7 @@ def main(argv):
     evidence += ["## Restored suite", "", "```text", restored.stderr.strip(), "```", ""]
     report=report_path(record)
     report.parent.mkdir(parents=True,exist_ok=True)
-    report.write_text("\n".join(evidence),encoding="utf-8")
+    report.write_text("\n".join(evidence),encoding="utf-8",newline="\n")
     print("report written to "+str(report))
     print(restored.stderr,end="")
 

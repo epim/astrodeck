@@ -140,3 +140,97 @@ def test_the_budget_recipe_writes_a_changed_fixture_in_the_files_own_eol(tmp_pat
     lf.write_bytes(b'{\n "a": 1\n}\n')
     assert write_fixture_preserving_eol(lf, '{\n "a": 2\n}\n') is True
     assert lf.read_bytes() == b'{\n "a": 2\n}\n'
+
+
+# ------------------------------------------------------------------- #802 (release workflow harness)
+
+releasewf = _load("astrodeck_w75_hygiene_releasewf",
+                  _ROOT / "tools" / "licence" / "mutate_release_workflow.py")
+
+_WORKFLOW_BYTES = b"name: release\r\nneeds: [release, binaries]\r\n"
+
+
+def _release_tree(tmp_path: Path, monkeypatch, killed: bool = True):
+    """A throwaway tree holding a CRLF workflow and the tracked report, with
+    `run` answering as the unittest module would."""
+    (tmp_path / "tools" / "licence").mkdir(parents=True)
+    workflow = tmp_path / "release.yml"
+    workflow.write_bytes(_WORKFLOW_BYTES)
+    tracked = tmp_path / "tools" / "licence" / "release-workflow-mutations.md"
+    tracked.write_text("tracked evidence\n", encoding="utf-8")
+    monkeypatch.setattr(releasewf, "ROOT", tmp_path)
+    monkeypatch.setattr(releasewf, "WORKFLOW", workflow)
+    monkeypatch.setattr(releasewf, "MUTANTS", [
+        ("ONE", "needs: [release, binaries]", "needs: [release]",
+         "test_one", "wrong value")])
+
+    def fake_run(target=None):
+        if target is None or not killed:
+            return _Done(0, "OK")
+        return _Done(1, "AssertionError: wrong value\nFAILED (failures=1)")
+
+    monkeypatch.setattr(releasewf, "run", fake_run)
+    return workflow, tracked
+
+
+def test_the_release_harness_leaves_every_tracked_file_as_it_found_it(tmp_path, monkeypatch):
+    """A verifier must not dirty tracked state (#802): the report goes to
+    `.probe/`, and the mutated workflow comes back byte for byte (CRLF kept).
+
+    MUTATION: write the report to the tracked path unconditionally, or drop
+    the restore in `finally`. Observed: a tracked file's bytes changed.
+    """
+    workflow, tracked = _release_tree(tmp_path, monkeypatch)
+    report_before = tracked.read_bytes()
+    releasewf.main([])
+    assert workflow.read_bytes() == _WORKFLOW_BYTES, "the workflow was left mutated"
+    assert tracked.read_bytes() == report_before, "the harness rewrote a tracked file"
+    probe = tmp_path / ".probe" / "release-workflow-mutations.md"
+    assert "ONE" in probe.read_text(encoding="utf-8"), "the report was not written"
+
+
+def test_the_release_harness_restores_the_workflow_when_a_mutant_survives(tmp_path, monkeypatch):
+    """A mutant that is not killed aborts the run; the abort must not leave
+    the workflow mutated.
+
+    MUTATION: restore after the loop instead of in `finally`. Observed: the
+    workflow kept `needs: [release]`.
+    """
+    workflow, tracked = _release_tree(tmp_path, monkeypatch, killed=False)
+    with pytest.raises(RuntimeError, match="survived"):
+        releasewf.main([])
+    assert workflow.read_bytes() == _WORKFLOW_BYTES
+    assert not (tmp_path / ".probe").exists()
+
+
+def test_the_release_harness_records_the_tracked_report_on_request(tmp_path, monkeypatch):
+    """`--record` is the explicit way to refresh the committed evidence, and
+    it writes LF whatever the platform.
+
+    MUTATION: ignore `--record`. Observed: the tracked file kept its old
+    bytes.
+    """
+    workflow, tracked = _release_tree(tmp_path, monkeypatch)
+    releasewf.main(["--record"])
+    assert "ONE" in tracked.read_text(encoding="utf-8")
+    assert b"\r\n" not in tracked.read_bytes()
+    assert workflow.read_bytes() == _WORKFLOW_BYTES
+    assert not (tmp_path / ".probe").exists()
+
+
+def test_the_release_harness_refuses_an_unknown_argument(tmp_path, monkeypatch):
+    _release_tree(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        releasewf.main(["--recrod"])
+
+
+def test_the_context_harness_writes_its_report_with_lf_endings(tmp_path, monkeypatch):
+    """Evidence recorded on Windows and on Linux must be the same bytes (#802
+    comment, class of #776).
+
+    MUTATION: write the report without `newline="\n"`. Observed on Windows:
+    the tracked report held CRLF.
+    """
+    tracked = _one_mutant_tree(tmp_path, monkeypatch)
+    contexts.main(["--record"])
+    assert b"\r\n" not in tracked.read_bytes()
