@@ -17,6 +17,7 @@ import importlib.util
 import json
 import re
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -24,6 +25,7 @@ import pytest
 
 from _simhub import sim_hub  # noqa: F401
 from astrodeck import bootcause
+from astrodeck import hub as hub_module
 from astrodeck.config import config_store
 from astrodeck.sequence.schedule import observing_night
 
@@ -107,11 +109,35 @@ def test_with_no_site_and_nothing_pending_it_still_arms(sim_hub, monkeypatch):
     assert sim_hub.arm_refusal(now=NOW) is None
 
 
-async def test_the_rig_status_says_a_restart_is_pending(sim_hub, monkeypatch):
-    _registry(monkeypatch, pending=True, hours=(16, 10))
+class _ClockAt:
+    """``astrodeck.hub``'s ``time`` module with ``time()`` held at ``now``:
+    the clock ``poll_status`` and ``arm_refusal`` read when given no ``now``."""
+
+    def __init__(self, now: float):
+        self._now = now
+
+    def time(self) -> float:
+        return self._now
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
+@pytest.mark.parametrize("hour", range(24))
+async def test_the_rig_status_says_a_restart_is_pending(sim_hub, monkeypatch, hour):
+    """Pinned at each hour of a local day (#1254): the test read the real clock,
+    so it failed at the hours where the rest of the fixture night fell inside
+    its active hours. The hours here are the one after dawn, in the PC's own
+    clock, so the rest of tonight lies outside them at any hour and in any zone."""
+    now = datetime(2026, 11, 5, hour, 0).timestamp()
+    monkeypatch.setattr(hub_module, "time", _ClockAt(now))
+    _, dawn = observing_night(sim_hub.site, now=now)
+    start = (datetime.fromtimestamp(dawn).hour + 1) % 24
+    end = (start + 1) % 24
+    _registry(monkeypatch, pending=True, hours=(start, end))
     status = await sim_hub.poll_status()
     assert status["restart"] == {"pending": True, "sources": ["windows_update"],
-                                 "active_hours": {"start": 16, "end": 10},
+                                 "active_hours": {"start": start, "end": end},
                                  "acknowledged": False,
                                  "arm_refusal": sim_hub.arm_refusal()}
     assert status["restart"]["arm_refusal"] is not None

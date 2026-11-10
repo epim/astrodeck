@@ -27,8 +27,9 @@ from pathlib import Path
 
 import yaml
 
+from _bash import BASH, BASH_SKIP_REASON
+
 ROOT = Path(__file__).resolve().parents[2]
-BASH = shutil.which("bash")
 JQ = shutil.which("jq")
 DIGEST = "sha256:" + "ab" * 32
 FAKE_IMAGE = "ghcr.io/example/astrodeck@" + DIGEST
@@ -100,7 +101,7 @@ class WorkflowShape(unittest.TestCase):
         self.assertEqual("write", self.job["permissions"]["packages"])
 
 
-@unittest.skipUnless(BASH, "needs bash to execute the release workflow's step text")
+@unittest.skipUnless(BASH, BASH_SKIP_REASON)
 class GateStepBehaviour(unittest.TestCase):
     STUBS = (
         'docker() {\n'
@@ -157,7 +158,7 @@ class GateStepBehaviour(unittest.TestCase):
         self.assertEqual("docker rm container-arm64", calls[-2], "the export finished before the failing inventory")
 
 
-@unittest.skipUnless(BASH and JQ, "needs bash and jq to execute the cleanup step's text")
+@unittest.skipUnless(BASH and JQ, BASH_SKIP_REASON or "needs jq to execute the cleanup step's text")
 class CleanupStepBehaviour(unittest.TestCase):
     # gh answers a --jq argument through the real jq, as the real gh does.
     GH = (
