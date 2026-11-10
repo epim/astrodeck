@@ -27,6 +27,35 @@ The plan was reread against main at eb13b3a1 (this plan's own merge) before any 
 4. On main the area filter and the already-passed skip both apply. Their order is now stated.
 5. The baseline for the before and after comparison is recorded below.
 
+## Revision 2026-11-10 (after wave 7; owner rulings)
+
+Wave 7 is merged (pull requests #1264, #1266, #1265, #1270, #1272, #1273, #1276, #1275; main at 39a08595). Its usage and its CI readings are in `program/usage-wave7.md`. What it showed, and what the owner ruled the same day, change the plan as follows. Where this section and an older line disagree, this section holds.
+
+What wave 7 measured:
+
+- A push to main whose tree equals its pull request's went from 36.9 job-minutes to 1.8 (seven jobs skipped as already green).
+- The wait on a pull request is still the full server job: 18 to 21 minutes after the slow-test cuts, 19 to 30 before, on a handful of runs.
+- The 15 percent saving expected from the per-job path filter did not arrive. UI tests read `server/`, `tools/`, `docs/` and `native/` files from disk, so the ui job still runs for a server-only change (#1268), and the UI selector's floor is the 144 undeclared disk readers: about 150 of 776 files for a small change, not 28.
+- Ten full server runs under 40 CPU burners all had failures (13 to 28 each, 37 tests in all; table on #1119). Three tests fail in nearly every loaded run, and one test added in wave 7 fails in seven of ten.
+- Filed: #1267, #1268, #1269, #1271, #1274.
+
+Owner rulings, 2026-11-10:
+
+- D-1 (#1073): the frozen Windows executable IS still wanted. This reverses the default below. First step: a written licence plan, no code (what blocks the executable, item by item, and the decision each item needs), kept at `program/licence-plan-frozen-exe.md` and brought to the owner. The "stay source-first" edits are not made. The docker trio (#1123, #1155, #800) keeps waiting. No gate-held asset is attached by hand meanwhile.
+- D-2 (#1220): shoot the unrotated flat set at dusk and each rotated set right after the night's first plate solve. Nothing learned is stored on disk. #1220 becomes a code package; it touches the engine, so it is placed where `engine.py` has no other owner.
+- D-3 (#1143): the mass gate stays a saturation and cloud guard. The intent is written into `native/crates/astro-guide/src/engine.rs` with WP 8.1, and #1143 closes with it.
+- D-4 (#754, #442): not closed. The owner keeps both open until more runs have been made, because nothing shows their cause was found and fixed.
+- D-5 (#1192): parked. Labelled `later`, open, not scheduled.
+- D-6 (#16): yes, one medium package after wave 9.
+- D-8: stands (only the jobs whose area changed; the server job in full). Added: the server job is split into parallel shards to shorten the wait on a pull request (WP 8.11).
+- D-9: the rig is off or away. Rig-gated items wait; the coordinator asks again at the close of each wave.
+- D-10: not now. The coordinator's wait for `ci-ok` remains the only merge gate.
+- #1119: its close rule changes. One package fixes the four tests named in WP 8.8; then ten consecutive full runs with 24 burners (the machine's CPU count), not 40, close it.
+- #1271, the 4.8 MB Tonight answer: leave it. The other two items of #1271 stay open as filed.
+- The Dependabot pull requests #1217 and #1218 are reviewed and merged if green, with the other uses of the same actions bumped to match.
+- The older owed questions (#766 spec section 12, the D-03 cap of six held passes, #178's real export) are prepared in plain words with options and put to the owner at the close of wave 8.
+- Wave 8 starts once the rulings work above is done, with four packages added (8.8 to 8.11, in the wave 8 table).
+
 ## State on 2026-11-09
 
 - Baseline for D-8, computed from the last 30 pull request runs of `ci.yml` that passed on their first attempt (2026-11-06 to 2026-11-09, `program/testing-review/ci-runs.tsv` and `ci-jobs.tsv`): the wait from the run's creation to its end has a median of 28.9 minutes (p90 29.9), and it is the server job (median 28.9 minutes; the ui job 7.6). A run costs a median of 42.9 job-minutes (p90 46.9). Of the 121 pull request runs in the window, 42 did not end in success and 14 were rerun.
@@ -247,8 +276,12 @@ Wave close, the D-8 figures: rerun `program/testing-review/ci_ledger.py` and rep
 | 8.5 | #1145 | Star detection, cloud score and the no-light check measure per region, so a half-blocked frame is not averaged into a clear one | `server/astrodeck/imaging/stars.py`, `server/astrodeck/imaging/clouds.py`, `server/astrodeck/solve/light.py`, `server/astrodeck/imaging/frame_class.py` | M | whole-frame statistics again: the half-obstructed fixture frame classifies as clear |
 | 8.6 | #1173 | The status poll does not run between a reconnect's disconnect and connect | `server/astrodeck/hub.py` (owner: `reconnect_role`, the status poll's entry), `server/astrodeck/devices/alpaca.py`, `server/tests/test_967_reconnect_role_profile_alpaca.py` | S | drop the guard: the interleaved poll makes the reconnect fail |
 | 8.7 | #829, #1124, #1151, #1158 | Leftovers: the position-unknown note's level and wording, stale comments, one docstring | `server/astrodeck/flows/to_plan.py` (note level and docstrings only), `ui/src/lib/slewController.ts`, `ui/src/views/MountView.tsx`, `ui/src/next/hubs/rig/sheets/mount.tsx`, `ui/src/components/flows/flowsSlice.ts`, `ui/src/components/flows/flowsTypes.ts`, `ui/src/next/hubs/session/flows/canvas/FlowCanvasToolbar.tsx`, `server/astrodeck/catalog/build_ngc_extras.py` | S | the note text drifts between the two UIs: the shared-constant test goes red |
+| 8.8 | #1119 | The four load-fragile tests named on #1119 are fixed at their cause: `test_group_harness_meridian_clock.py::test_a_meridian_read_that_never_answers_does_not_hold_up_the_night`, `test_cloud_hold_follows_the_mount.py::test_a_cloudy_wait_opens_no_hold_and_the_night_goes_on`, `test_w3_recovery_ladder.py::test_a_halt_under_the_tracking_recoverys_goto_pauses_without_using_its_bound`, `test_1106_pip_audit_retry.py::test_a_hung_attempt_is_retried_and_a_clean_retry_passes` | those four test files and the test helpers they use; no product file | M (four S) | one per test: the product behaviour each guards is broken and the fixed test still goes red; each passes 10 of 10 under 24 burners |
+| 8.9 | #1268 | A run-time read map of the UI suite; each disk-reading UI test declares what it reads; the `ui` area narrows to `ui/**` plus the declared paths | `ui/run-tests.mjs` (the read recorder, behind a flag), the UI test files that read from disk (one `// disk-reads:` line each), `ui/src/__tests__/selectTestsRatchet.test.ts` (the list shrinks), `tools/ci/areas.json` (the `ui` area, after 8.10 and 8.11), `tools/ci/test_changed_areas.py` | M | a test reads a path it does not declare: the ratchet names it. Second: the `ui` area loses a declared path, and the area test goes red |
+| 8.10 | #1267 | A docs or Markdown change no longer skips CI when tests read the file: `docs/**`, `**/*.md` and `tools/ux/**` leave `paths-ignore`; `areas.json` places them (read paths select `server`, and `container-security` for the two it reads; unread documentation is inert) | `.github/workflows/ci.yml` (owner: `paths-ignore` only), `tools/ci/areas.json`, `tools/ci/test_changed_areas.py`, `server/tests/test_docs_read_by_tests_are_not_inert.py` (new) | S | a document a test reads is listed as inert: the new test names it |
+| 8.11 | D-8 addition | The `server` job runs as parallel shards (two or three, chosen by measurement) so a pull request waits about half as long for the same job-minutes; every shard is needed by `ci-ok`, known to the area map and to the already-green rule, under the 60 s ceiling, and keeps its duration list on main | `.github/workflows/ci.yml` (shared: the `server` job, after 8.10), `tools/ci/areas.json`, `tools/ci/already_green.py` (job names only), `tools/ci/test_changed_areas.py`, `tools/ci/test_already_green.py`, `tools/ci/shard_tests.py` (new) and its test | M | a test file lands in no shard: the partition test goes red. Second: `ci-ok` loses one shard from its needs, and the ratchet names it |
 
-Merge order: 8.7, 8.3, 8.4, 8.5, 8.6, 8.2, then 8.1 (rebased on 8.2). Part 4 of #1146 (a guide-optics field on the profile) is a new issue, filed when 8.1's design is accepted.
+Merge order: 8.7, 8.3, 8.4, 8.5, 8.6, 8.2, then 8.1 (rebased on 8.2). The four added packages merge beside these: 8.8 at any time (test files only); 8.10, then 8.11, then 8.9, one at a time, because each edits `ci.yml` or `tools/ci/areas.json`. WP 8.1 also carries D-3: the intent of the mass gate written into `engine.rs`, closing #1143. Part 4 of #1146 (a guide-optics field on the profile) is a new issue, filed when 8.1's design is accepted.
 
 ## Wave 9 (engine.py owner 9.1; hub.py and app.py owner 9.4)
 
