@@ -276,6 +276,48 @@ class RealAreasTests(unittest.TestCase):
         self.assertEqual(pick(["artifacts/flows-parity/01-library.png"], config=self.config), [])
         self.assertEqual(pick([".claude/skills/stop-slop/SKILL.md"], config=self.config), [])
 
+    def test_a_change_to_the_mosaic_spec_runs_the_server_job_that_reads_it(self):
+        spec = "docs/superpowers/specs/2026-09-23-flows-mosaic-target-block-design.md"
+        got = pick([spec], config=self.config)
+        self.assertIn("server", got)
+        self.assertNotIn("relay", got)
+
+    def test_every_document_a_test_reads_selects_the_server_job(self):
+        # The run-time read map of WP 7.2 (#1267): files under docs/ and
+        # Markdown elsewhere that a server test opened.
+        for path in (
+            "docs/comhost.md",
+            "docs/flows/nina-import.md",
+            "docs/guide/guiding.md",
+            "docs/hardware/player-one-sdk-licensing.md",
+            "docs/ui-rebuild/01-screen-ia-map.md",
+            "THIRD-PARTY-NOTICES.md",
+            "README.md",
+            "design_handoff_astrodeck_flows/milestone2-contract.md",
+            "server/astrodeck/vendor/playerone/README.md",
+            "tools/ux/uxkit.py",
+        ):
+            self.assertIn("server", pick([path], config=self.config), path)
+
+    def test_the_documents_the_container_contract_reads_select_that_job(self):
+        for path in ("docs/guide/install-docker.md", "docs/SECURITY.md", "relay/README.md"):
+            self.assertIn("container-security", pick([path], config=self.config), path)
+
+    def test_a_plan_document_runs_no_job(self):
+        self.assertEqual(pick(["docs/superpowers/plans/2026-11-09-open-issue-plan-2.md"],
+                              config=self.config), [])
+
+    def test_a_plan_document_beside_a_read_document_still_runs_the_reader(self):
+        got = pick(["docs/superpowers/plans/x.md", "docs/comhost.md"], config=self.config)
+        self.assertIn("server", got)
+
+    def test_root_markdown_a_test_reads_selects_the_server_job(self):
+        self.assertIn("server", pick(["THIRD-PARTY-NOTICES.md"], config=self.config))
+
+    def test_a_new_document_directory_falls_open(self):
+        every = sorted(self.config["areas"])
+        self.assertEqual(pick(["docs/a-new-dir/x.md"], config=self.config), every)
+
     def test_a_new_top_level_path_falls_open(self):
         every = sorted(self.config["areas"])
         self.assertEqual(pick(["a-new-top-level-dir/x.py"], config=self.config), every)
@@ -326,6 +368,13 @@ class WorkflowRatchetTests(unittest.TestCase):
             needs = [needs] if isinstance(needs, str) else needs
             self.assertIn("changes", needs, name)
             self.assertIn("needs.changes.outputs.%s == 'true'" % name, str(job.get("if")), name)
+
+    def test_only_scratch_notes_are_ignored_by_the_workflow_triggers(self):
+        # Tests read Markdown and docs/ (#1267), so ci.yml must start for them
+        # and areas.json decide. The `on:` key loads as True under YAML 1.1.
+        triggers = self.ci.get("on", self.ci.get(True))
+        for event in ("push", "pull_request"):
+            self.assertEqual(triggers[event]["paths-ignore"], [".remember/**"], event)
 
     def test_the_always_jobs_keep_their_own_condition(self):
         self.assertIn("refs/heads/main", self.jobs["windows-com"]["if"])
