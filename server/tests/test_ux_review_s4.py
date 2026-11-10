@@ -202,13 +202,37 @@ def test_log_persistence_never_raises_into_publish(tmp_path, monkeypatch):
     assert bus.log_history[-1]["data"]["message"] == "still fine"
 
 
-def test_old_nights_are_pruned(tmp_path, monkeypatch):
+class _ClockShiftedBy:
+    """``astrodeck.events``' ``time`` module with ``time()`` moved by ``days``:
+    the clock the night key and the log lines read, and nothing else."""
+
+    def __init__(self, days: int):
+        self._days = days
+
+    def time(self) -> float:
+        return time.time() + self._days * 86400.0
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
+@pytest.mark.parametrize("shift_days", [0, 365])
+def test_old_nights_are_pruned(tmp_path, monkeypatch, shift_days):
+    """The fixture's nights are the five before tonight on the clock the code
+    reads, so the test holds on any date (#1189: it once pinned July dates and
+    failed under the date replay, where tonight is in June)."""
+    import datetime
+
+    import astrodeck.events as eventsmod
     import astrodeck.hub as hubmod
     monkeypatch.setattr(hubmod, "CAPTURE_DIR", tmp_path)
+    monkeypatch.setattr(eventsmod, "time", _ClockShiftedBy(shift_days))
     d = tmp_path / "logs"
     d.mkdir()
+    tonight = datetime.date.fromisoformat(night_key())
     for day in range(1, 6):
-        (d / f"2026-07-0{day}.jsonl").write_text("{}\n", encoding="utf-8")
+        stem = (tonight - datetime.timedelta(days=day)).isoformat()
+        (d / f"{stem}.jsonl").write_text("{}\n", encoding="utf-8")
     bus = EventBus()
     bus.night_log.keep_nights = 3
     bus.log("info", "tonight", "hub")
