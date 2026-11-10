@@ -44,8 +44,8 @@
     },
     {
       "path": "server/astrodeck/api/app.py",
-      "sha256": "b3d38e060da229126fa01f4e40cbcde063753e63c6910b3fda4a32f54e098f14",
-      "review": "Read the delta from daaa3450 (the round-1 state). The quick-flow body gains autofocus, watchdog and dither_every and passes them to flow_wizard.quick (#820), and the compile route's docstring counts 29 doctor rules (L2). First-party code and comments.",
+      "sha256": "4eb22bbf02286ab766276fd4fb8bc0e5cc84eae028f9fc673b7207491db9ba02",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. Application wiring and routes: the app installs the engine's layout relay (flows.to_plan.relay_layout on the flow store) for Measure at the first solve (#187); CONTINUE reads layout_restarts off the plan before it is replaced and logs and returns them; start and retry messages say candidate and pool where the group is a pool (#183). First-party code and message text; no dependency or data.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
@@ -68,8 +68,8 @@
     },
     {
       "path": "server/astrodeck/hub.py",
-      "sha256": "d6930e294d7e38ab7b60213082cab66250de5163cae9cee7130751062ea5004a",
-      "review": "Read the complete diff from the 0.3.47 reviewed state. Hub gains HALT_* causes with bump_motion_epoch(cause) and operator_halted_since (WP 3.1, #880), arm_refusal and acknowledge_restart for a pending Windows restart (#1076), and a restart block in poll_status. First-party code and comments; the restart facts come from bootcause.",
+      "sha256": "b309eda1b15fa302e99a144a39fe3e6fc8cf0af3f6eceb2a118f5d930b236da6",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. The flip-hold note loop now records slewing, ra_hours, dec_deg and tracking instead of slewing alone (#1037, #1237). Ten changed lines, first-party.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
@@ -80,20 +80,20 @@
     },
     {
       "path": "server/astrodeck/sequence/engine.py",
-      "sha256": "87564c4b7a507fbe0d68f34003524906fb8e508193ad610c75d183a10989042f",
-      "review": "Read the delta from daaa3450 (about 525 added lines). The DUSK FLATS stage runs the twilight-sky method (#603 job C, WP 4.1b): waits for the Sun window, requires a roof that reads open, slews without centring to the sky opposite the Sun with the sun-avoidance gate and the mount's limits checked, shoots and re-meters, stops when too dark, restores tracking and cover; one flat set per panel angle with the rotator turned to each (#783); day darks honour the Always policy (#1219). Site-derived log lines are flagged and carry no figure. First-party code; no new dependency or data.",
+      "sha256": "161f84cf5da0f137e3e04e68789298eb851dfb2d467dad749622c5247d77e0f0",
+      "review": "Read the complete diff from the 0.3.48 reviewed state (about 930 added lines, read in full). The engine gains: pool groups and their pick at each visit boundary (#183); rotating mosaic panels that are skipped to the back of the round and recorded, never set aside for their own failures (D-E, #180 part B); on_mosaic_complete fired once per group (#184); chained stage phases (#1074); the Measure at the first solve relay, its id re-keying walk and relay lines (#187); and focus-site and When policy for a mosaic hop (#185). First-party code, comments and log text; the only non-ASCII is an em dash in a log line that was reworded and already had it; no dependency, data or third-party text.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
       "path": "server/astrodeck/sequence/resume_arm.py",
-      "sha256": "040a885c0859dfbe8d14e339beee301ecfb9a3d62d5a3e9bc56aad0decc96115",
-      "review": "Read the complete diff from b3ce0f1b (the ledger row for this path was an older review and does not match the 0.3.47 tree, so the base is the comparison). Auto-resume gains the pending Windows restart hold (#1076), opens the roof and dust cover before the first solve (#601, #192), and an operator halt under its re-centre disarms the session (#880, D-A) through a shared _write_disarm. First-party code and text.",
+      "sha256": "1c277603f1aefd6dbc6ae0dfb894d856579afbebe7e578dc6082182968d6724f",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. The resume arm orders a pool by its strategy with the sky scores, and orders a mosaic with its standing skips last, using the same engine rules (#183, D-E); helpers _skipped_tonight and _pool_scores; chained phases are respected when judging whether every owed step is set aside (#1074). First-party code.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
       "path": "server/astrodeck/sequence/session.py",
-      "sha256": "e7ae5ac337d9abcdfc38b952705a2a47eff265572545ece990329a92b5605965",
-      "review": "Read the delta from daaa3450. Session keeps flow_blocks and flow_stages beside its plan, written on every save by note_stages and applied by a model validator, so a plan read back from disk names its stages again (#1231, #464, #1125). First-party code.",
+      "sha256": "e5cf9e8064de2af08a1ccee50d111bffe984dcb4168b2f3dac4cfe41db7b21ec",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. Session record for skipped panels (D-E, #180 part B): panel_skips with note_panel_skipped, panel_skips_on and standing_skip, the starved streak reading skip records too, and mosaics_of ignoring pool groups (#183). First-party code and docstrings.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
@@ -110,8 +110,8 @@
     },
     {
       "path": "ui/src/components/flows/flowRunState.ts",
-      "sha256": "43fc609ab75e50a6cfcb8e68503bb845d244fcd269cade3b2e4cb188eaca2757",
-      "review": "Read the complete diff from b3ce0f1b: gains the single definition of RUN_PHASE_BRIDGE_MS (20,000 ms) with its comment, moved from flowRunControls.tsx so the autosave and the RUN button share one number (#716). First-party.",
+      "sha256": "183b2edda88d2cef2be6580a20fe46325eac89833986f6ef9227a35c44202551",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. groupForBlock returns null for a pool group, whose candidates are no panels (#183), with a comment line. First-party.",
       "reviewed_revision": "e764e172cbb3996c04132f2c83d03ad338c2f8ea"
     },
     {
@@ -261,13 +261,13 @@
     },
     {
       "path": "ui/src/components/flows/FlowWizard.tsx",
-      "sha256": "a3dc7210713d8cd7572596c358f162a58459176ccfbd86d100990fc535830120",
-      "review": "Read the complete diff from the 0.3.47 reviewed state. The classic wizard asks MOST MINUTES ON THE TARGET for a single target (asksMaxTime, nightGap takes the kind, #1094). First-party code and copy."
+      "sha256": "a18a89d3a4df65a451ba1044924767d665e8a513c20cb64ddb5c1c05c0f46cda",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. The max-minutes field is wrapped in a fragment and followed by a paragraph that shows MAX_TIME_HELP (#1207); the label and input are the same markup re-indented. First-party code and copy."
     },
     {
       "path": "ui/src/components/flows/runCopy.ts",
-      "sha256": "123c8ec36044343d17824e2a93c9a7c3a286826e7d998ebf9fc13168fc353fb1",
-      "review": "Read the complete diff from b3ce0f1b: runCopy now reads CONTINUE for a complete session the route says owes_more, through a new continues() predicate, besides a dormant one (#778, #1112); comments updated. First-party copy logic."
+      "sha256": "fa5f8dd522e2b4f06cfee061b853fd0e29cfef8ec3cdd38811a42c3c93588127",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. The run's place line reads a pool as N of M candidates done instead of a pass (#183). One middle dot separator already used by neighbouring lines. First-party."
     },
     {
       "path": "ui/src/components/flows/wizard/nightAnswers.ts",
@@ -281,8 +281,8 @@
     },
     {
       "path": "ui/src/lib/flowsApi.ts",
-      "sha256": "7e80aecba8feca90ee2ad097b865a8d575d7dc02e303d386f8edcfbe8fcd9697",
-      "review": "Read the delta from daaa3450. The quick-flow answers type gains optional autofocus, watchdog and dither_every (#820). First-party typing."
+      "sha256": "a6ac7391e71f1b77696bec247ba2e707c407b6163688d0d2e7decb6474acc85b",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. One optional field on FlowProgressBlock, measured_angle, mirroring the server's progress answer (#187). First-party type."
     },
     {
       "path": "ui/src/lib/keys.ts",
@@ -296,8 +296,8 @@
     },
     {
       "path": "ui/src/next/hubs/session/flows/create/wizard.tsx",
-      "sha256": "97040d3c5e1fb3cf7e83acdf7ec509969f125a4f6064db74ae3fc7100ae591b6",
-      "review": "Read the complete diff from the 0.3.47 reviewed state. The new-flow wizard asks MOST MINUTES ON THE TARGET for a single target (asksMaxTime, nightGap takes the kind, #1094). First-party code and copy."
+      "sha256": "e19922c7441493a36f5626eca53175af0b01020c413c8ac09d5c68a7be240668",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. The new-flow wizard's max-minutes field takes MAX_TIME_HELP as its hint (#1207). Import and one prop. First-party."
     },
     {
       "path": "ui/src/next/hubs/session/flows/create/wizardModel.ts",
@@ -396,13 +396,13 @@
     },
     {
       "path": "server/astrodeck/flows/compile.py",
-      "sha256": "012c840c6129a505263da9b53365765844d1dc2203035aec49f9553f7be8516e",
-      "review": "Read the delta from daaa3450. The compiled calibration queue's policy is read from the node's darks value (Always, Skip, else if_stale) instead of a constant (#1219). First-party code."
+      "sha256": "fd56db3d5eb168f6f7c9bc6e353472731f6e5fc93f158f974a57bf7a0ada4d35",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. Compile support for the mosaic and pool work: POOL strategy words (pool_strategy_of, #183); the Measure at the first solve angle code (#187); the panelExposure grammar and parse_panel_exposure with its shared PANEL_EXPOSURE_FORM sentence (#186); the lane-order checks ordered_lanes and lane_order_refusals for chained stages (#1074, #774); ends_mosaic_lane and the on_mosaic_complete trigger for a REPORT that ends a mosaic lane (#184); autofocus_when carried to receiving targets (#185). First-party code and message text."
     },
     {
       "path": "server/astrodeck/flows/continuation.py",
-      "sha256": "a6b3e4a5fafe51b3b2df5a11280ccc649575fc5c2f272ee4dd3dd3d4ab91b92b",
-      "review": "Read the complete diff from b3ce0f1b: reopen_report asks the session's new owes_more and owed_under instead of recomputing the owed count inline (#778, #1112); same result. First-party."
+      "sha256": "785ffe16f9bb592b0ffa9fbb593546ca448eacc83d43628d2a6cf1ccb058e7a1",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. One new function, layout_restarts, which words one sentence for each block whose last measured angle restarted its counts with subs left behind, read off the plan a session froze before CONTINUE replaces it (#187). First-party code and message text."
     },
     {
       "path": "server/astrodeck/flows/examples.py",
@@ -411,13 +411,13 @@
     },
     {
       "path": "server/astrodeck/flows/to_plan.py",
-      "sha256": "6a6eee900a9f66fdf6b003827fddd3df71723edd264f857fb0cbc8b6b31835f3",
-      "review": "Read the delta from daaa3450. DUSK_FLATS_RUNS and the method labels are read off nodes.DUSK_FLATS_METHODS (twilight sky now runs, #603 job C), a 'target done' wire into a calibration queue funds the end-of-night darks (END_OF_NIGHT_TRIGGERS) with day_darks_always for the Always policy and no lane for Skip (#818, #1219), and the quick flow's autofocus and dither settings reach the plan (#820). First-party code and message text."
+      "sha256": "04d6229809e6fd072970f21421bb8a92ec310fcc19b4f24a29343e0e2107e699",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. Compile to a sequence plan: pool groups of kind pool with a strategy (#183) and the repeated-name fallback; chain phases on steps (#1074); per-panel exposure overrides and a flattening note (#186); autofocus_when and the measure angle on the group (#187); end-of-night darks accept on_mosaic_complete (#184); and the relay (relay_layout, Relaid, RELAY_TRIES) that writes a measured angle through the flow store's one writer. First-party code and message text."
     },
     {
       "path": "server/astrodeck/flows/tonight.py",
-      "sha256": "9d6161a65708498e1ed06093be885cf35b7decdd1f52b9982019914a36639d38",
-      "review": "Read the delta from daaa3450. Tonight words and places the twilight-sky flats, prices a runnable DUSK FLATS block with flats_duration_s (a nominal frame cost, an estimate that uses only the operator's own count and filters, #845), and describes the end-of-night darks triggers. First-party code and copy; no site figure."
+      "sha256": "6db2389af36a86b4f982ef7ee7e223943490a06c49c315686acfba6f33c54b17",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. Tonight reads per-panel exposure overrides (#186) in the hours and hop estimates, words the Measure at the first solve angle (#187), and words a panel that is being skipped each round (D-E, #180 part B) while the starved sentence now says no frame. First-party code and message text."
     },
     {
       "path": "server/astrodeck/focus/autofocus.py",
@@ -451,13 +451,13 @@
     },
     {
       "path": "server/astrodeck/sequence/group_rules.py",
-      "sha256": "df9197d2df6e8027da5baad23a961e81db5ecf9bd327bb11ea901f8d8e475e26",
-      "review": "Read the complete diff from b3ce0f1b: close_pass and _decide_pass_end take an optional frame_cause that the centring-hold sentence names in place of 'the sky or the geometry' (#1093, #1108). First-party."
+      "sha256": "51fe787faa70538ed99b75babe88276690ebd821a6e62052e01b69735dbca710",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. Group rules: a rotate mode on GroupRun so a mosaic panel at its failure bound is skipped, not set aside, with skip_kind and restore_skip (D-E, #180 part B); pool_sky_scores (altitude times the Moon factor, imports of the project's own coords and moon_factor, #183); and a relay verdict in angle_decision for measure_pending (#187). First-party code and docstrings."
     },
     {
       "path": "server/astrodeck/sequence/models.py",
-      "sha256": "e585e6a34c6a80edd443865a71e3a5dc42c7899d563550e97b4208385849ccc0",
-      "review": "Read the delta from daaa3450. SequencePlan gains day_darks_always, omitted from the dump while False (#1219). First-party model field."
+      "sha256": "7f35d4fd868f74aa7d7c70e25dad370290b74034a9e4108cd42e7bb75d5e9a72",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. Plan model additions, each omitted from the dump at its default: ExposureStep.phase for chained stages (#1074), Target.autofocus_when (#185), TargetGroup kind pool with pool_strategy and the measure_angle, node_id and measured fields (#183, #187), the on_mosaic_complete trigger name, LayoutRelayRefused, and a strategy check in plan_identity_errors. First-party code."
     },
     {
       "path": "server/astrodeck/sequence/report.py",
@@ -491,23 +491,23 @@
     },
     {
       "path": "server/astrodeck/flows/doctor.py",
-      "sha256": "deb761a9335d3eeec29ae077b03a7aeb2acb9960672ecb022829bab2c1f90187",
-      "review": "Read the delta from daaa3450. New rule L2: a DUSK FLATS block whose method the engine does not run is a danger naming the methods it does (#843, #1111). First-party code and message text."
+      "sha256": "5dc39b7aac8fbe27c90954208d4bce951d9b75ebb77757d14c769f9a6554e82e",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. Doctor rules: notes for Measure at the first solve (#187); the panel exposure check (#186); lane rules C1 and C2 and a pool quota note for chained stages (#1074, #774); the M14 per-panel note is retired because the compile now fires one on_mosaic_complete (#184). One non-ASCII glyph (a small right triangle) is a message-prefix glyph the file already uses in its older messages. First-party code and message text."
     },
     {
       "path": "server/astrodeck/flows/nodes.py",
-      "sha256": "129910d518a8da5133d3be071e299b66f8dc6fe54dd0c433df3df9e0590d72d6",
-      "review": "Read the delta from daaa3450. Adds the Capability dataclass and three tables, DUSK_FLATS_METHODS, AUTOMATION_CHIPS and the QUICK_AUTOFOCUS and QUICK_DITHER_EVERY setting keys, with flats_method and default_flats_method, and a created_as method for the DUSK FLATS node (#843, #820, #1111). The method and chip names are the product's own vocabulary. First-party data tables and code; nothing copied or third-party."
+      "sha256": "93ade652142b811e9c5066a0524b9b04d09d8ee23b5be7920b4cc8e2ac8e0211",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. Node vocabulary: the AUTOFOCUS When options and autofocus_when (#185), the TARGET panelExposure default (#186), and the fourth TARGET angle Measure at the first solve with MEASURE_ANGLE (#187). First-party data defaults and comments."
     },
     {
       "path": "server/astrodeck/flows/wizard.py",
-      "sha256": "54b25a799ce487ab0eedf76fe4294b7f38f777598e4b52f783ba8cb65253b322",
-      "review": "Read the delta from daaa3450. flow_wizard.generate and quick take autofocus, watchdog and dither_every and write the quickAutofocus and quickDitherEvery flow settings (#820, WP 4.1a). First-party code."
+      "sha256": "432dfd70291fa5c42b66fc82ef196fc1bc8a5d4ec0a1740382ed33412ef32a87",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. One comment and one unpacking: TARGET_ANGLES now has four entries and MEASURE_AT_FIRST_SOLVE is unpacked so a fifth fails at import (#187). First-party."
     },
     {
       "path": "server/astrodeck/imaging/mosaic_preview.py",
-      "sha256": "5853ae0bfa015d6ea6ff5f1febc74c6ff1441f541c71091dec380456b0b8075a",
-      "review": "New file, read in full (380 lines). First-party: lays each mosaic panel's live stack on one canvas by the plan's footprints (gnomonic projection through catalog.framing, a direct-linear-solve homography, bilinear resampling with a feathered blend and one stretch) and renders a JPEG with holes outlined (#779, #172 part B). Imports only numpy, Pillow and AstroDeck modules; no copied code, no embedded data, carries the project header."
+      "sha256": "356ce906b4ef70f10f651c8e0681a1718f2c4ee85ea70c821557d3ed6f6c9c59",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. Two lines: a pool group is skipped when the preview walks groups, since a pool's candidates tile nothing (#183). First-party."
     },
     {
       "path": "server/astrodeck/imaging/sessionstack.py",
@@ -531,8 +531,8 @@
     },
     {
       "path": "server/astrodeck/sequence/coverage.py",
-      "sha256": "4351b174440d8558767dadbc8c191bf793118723dea553d9810cabf8b9e2e3fd",
-      "review": "Read the complete diff from b3ce0f1b. Renames the private _planned_angle and _field to public planned_angle and group_field (their bodies are unchanged) so the mosaic preview can reuse them. First-party rename."
+      "sha256": "eb2654a76ca096194a702f96e21e90faf5fa8e1f93cbff663f15287ab17dc9b3",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. The coverage check and the stamping-off note consider mosaic groups only, so a pool is not reported as a grid (#183). First-party."
     },
     {
       "path": "server/astrodeck/sequence/recovery.py",
@@ -576,8 +576,8 @@
     },
     {
       "path": "ui/src/components/atlas/PanelLayer.tsx",
-      "sha256": "ee7d6b97cdfba7ac11b9f736e5eddbb79d5b4ec83f88135534186abb20312898",
-      "review": "Read the complete diff from b3ce0f1b. PanelShapes draws the object ellipse with objectMinorRPx and objectPaDeg when given (#181). First-party SVG code."
+      "sha256": "70b0954dbcb4a2ffe0f9343fc52743af128555a2b7484d35989a61a4079de157",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. A panel can carry coverage short (#177): a translucent wash of the one ink drawn under the state's own shape, a data-coverage attribute, and a screen-reader phrase. A comment block, one exported constant and one opacity constant. First-party code and copy."
     },
     {
       "path": "ui/src/components/atlas/SkyCanvas.tsx",
@@ -596,13 +596,13 @@
     },
     {
       "path": "ui/src/components/flows/framing/TargetFramingSheet.tsx",
-      "sha256": "9c2cda66491481de53a96d3b04e57b2ab121fdb316d53e0736858bd7d4d96bc4",
-      "review": "Read the complete diff from b3ce0f1b. SUGGEST GRID and FIT OBJECT use suggestGridFor and fitSizeArcmin so an object's ellipse sizes the grid (#181). First-party code."
+      "sha256": "1cf4c80cbe7a2ae6b2e084d1706b6534d377f4dd0658524ebbece3aacbb1596a",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. Target framing sheet wiring: Measure at the first solve (#187: the angle section hides the typed degree and shows the help and the run's measured line), per-panel exposure boxes (#186, onPanelExposure writing panelExposure), and the coverage map in run mode (#177: useCoverage and blockCoverage feed the rows and the sky). Imports are the project's own modules. First-party code."
     },
     {
       "path": "ui/src/components/flows/framing/framingModel.ts",
-      "sha256": "a48919f490ddee4768780be686d8aa6cf9faf9b24852485fad43ccce5dbeaaed",
-      "review": "Read the complete diff from b3ce0f1b. Adds suggestGridFor, which sizes a grid from the object's ellipse and the camera angle through lib/objectShape (#181). First-party code."
+      "sha256": "e8b6325fdead99de63ad2906d1e7d10f3e316a57713e53988607fd07683c3448",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. Framing model additions: the Measure at the first solve choice (#187: angleLocks entry, angleOwed, stripAngle, MEASURE_HELP, MEASURE_HOLDS_ANGLE, measuredAngleLine, the MeasuredAngleRecord type derived from the route's own type) and the panel exposure mirror of the server parser (#186: parsePanelExposure, panelExposureProblem, setPanelExposure, one regular expression). Plain TypeScript with comments; the comment names a test fixture that is not shipped. First-party code and copy."
     },
     {
       "path": "ui/src/components/flows/framing/sections/WhereSection.tsx",
@@ -611,13 +611,13 @@
     },
     {
       "path": "ui/src/components/flows/nodeDefs.ts",
-      "sha256": "ed4c9c4f83382878ef061a3e53e054930ebe35ee1c56caccd913642aa871cb54",
-      "review": "Read the delta from daaa3450. Adds the client mirror of nodes.py: Capability, DUSK_FLATS_METHODS, AUTOMATION_CHIPS, capableFlatsMethods and chipEngineCapable; the DUSK FLATS node is created with the first runnable method and its description now says two methods run (#843, #820, #1111). First-party tables and copy."
+      "sha256": "714c4caebecc1accc27b3809bbb02f9516e4acdb94a4150b90c32f84fdd0798f",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. Node definitions: the fourth TARGET angle and MEASURE_ANGLE (#187), the TARGET panelExposure parameter and field (#186), the AUTOFOCUS When parameter and options (#185), and MAX_TIME_HELP for the target's maximum time (#1207), which mirror nodes.py. First-party data defaults and copy."
     },
     {
       "path": "ui/src/components/flows/wizard/SendToWizardSheet.tsx",
-      "sha256": "0fa2b43bfc25ace68232ccaa72861f7f6514da7c6d565b605fd55ae6d1c51aa7",
-      "review": "Read the complete diff from b3ce0f1b. Adds the MAX MINUTES ON TARGET question for a non-mosaic flow and carries it into the NIGHT summary line (#1094). First-party code and copy."
+      "sha256": "f17f59f35593455cd80c388bb75943381364d8274a6e1cadb3ad82069a917ce5",
+      "review": "Read the complete diff from the 0.3.48 reviewed state. The max-minutes question is wrapped in a fragment and followed by the MAX_TIME_HELP note (#1207). First-party."
     },
     {
       "path": "ui/src/components/preview/SessionStack.tsx",
@@ -788,6 +788,111 @@
       "path": "ui/src/next/hubs/sky/sheets/quickCopy.ts",
       "sha256": "7ab2ca11eba4bc88c9733f148a20f8fbcd7d9abaa9f348ac13aada86838f10bf",
       "review": "Read the complete diff from b3ce0f1b. Help copy for the quick sheet rewritten to what the engine now does: the automation list without cloud hold and live stack, autofocus off, DUSK FLATS adding the twilight-sky block, DARKS AFTER at the end of the night with Darks Always (#820, #843, #1219, #818). First-party prose."
+    },
+    {
+      "path": "server/astrodeck/catalog/framing.py",
+      "sha256": "a28810aff2817c355b0ecf69e06d898345ac7d8ef76c155dbf9abb99a3db4f12",
+      "review": "Read the complete diff from b3ce0f1b. One new function, fold_measured_angle: of the two readings of one footprint (measured angle and measured plus half a turn) it returns the one nearest the current layout, in [0, 360) (#187). Pure arithmetic with a docstring. First-party code."
+    },
+    {
+      "path": "server/astrodeck/catalog/moon_factor.py",
+      "sha256": "fb3e7d65af75a81b515447c911686cc2e94ead9bf80de069ba95e700236291f3",
+      "review": "New file, read in full (26 lines; git log --follow shows it added by wave 5 WP 5.1a, not in b3ce0f1b or the 0.3.48 state). It is the Moon penalty function moved out of catalog/visibility.py so the engine can use it without the web layer: if the moon is down the factor is 1.0, otherwise a proximity term scaled by illumination, clamped to [0.3, 1.0]. The body is the old _moon_factor with its comment text retyped in ASCII; the file carries the project's own two-line header. First-party code, no third-party text."
+    },
+    {
+      "path": "server/astrodeck/catalog/visibility.py",
+      "sha256": "04e3c77f842cb4846a320864841cd7da657838476535f13e3078a6902cd21db8",
+      "review": "Read the complete diff from b3ce0f1b. _moon_factor is removed and the name is kept as an alias of the function now in catalog/moon_factor.py (one import and a three-line comment). First-party refactor, no data or dependency."
+    },
+    {
+      "path": "server/astrodeck/flows/progress.py",
+      "sha256": "13724a1faa020405449b1526735546a55dd5a3fce86f7eda903eba2bfdc22600",
+      "review": "Read the complete diff from b3ce0f1b. The progress answer gains measured_angle (#187, _measured_angle: numbers and a night key from the relay's record) and rotating (D-E, #180 part B, _rotating: a visit count and a word from a closed set) on the panel and block entries, with the small helper _finite_or_none and one import of STARVING_KINDS. First-party code; docstrings say the answers carry words and numbers only."
+    },
+    {
+      "path": "server/astrodeck/flows/readouts.py",
+      "sha256": "778d24f3ccb6ff60c887f2023203642b4a963e34cd756d27ece8f90d8bf09087",
+      "review": "Read the complete diff from b3ce0f1b. Readouts count each panel on its own steps (#186): helpers _recipe, _lane_member, _subs, _shutter_s, _pass_shutter_s, _rounds and _visits replace in-line sums, and a pool's candidates are no longer walked as mosaic groups (#183). One stdlib import (collections.Counter). First-party code."
+    },
+    {
+      "path": "server/astrodeck/flows/save_rules.py",
+      "sha256": "7aadc05171bcd75f5d34804417083cfed624d9c558a046797491fb2932e2d3b6",
+      "review": "Read the complete diff from b3ce0f1b. Save rules for Measure at the first solve (#187): a block in the mode keeps the server-owned rotation across client saves (_measured_rotation) and prepare_save takes a measured mapping from the run's relay. One stdlib import (collections.abc.Mapping). First-party code and docstring."
+    },
+    {
+      "path": "server/astrodeck/flows/store.py",
+      "sha256": "a2b45b0d031e3e9716a0dd79cf411192249337c7f2f07c5cce1270f20cd4cbd6",
+      "review": "Read the complete diff from b3ce0f1b. The flow store gains a save lock held for the whole of a save, a measured argument on save_and_report passed to the save rules (#187), and the v3 compatibility note for the new angle word. The big hunk is the existing save body re-indented under the lock, with its text unchanged; the one em dash in it was already in the base message. One stdlib import (threading). First-party code."
+    },
+    {
+      "path": "server/astrodeck/sequence/instructions.py",
+      "sha256": "5cdb6c8827fae2a12791383f4df8bc520b274dc57506cfac829c4dec2d23e918",
+      "review": "Read the complete diff from b3ce0f1b. The on_mosaic_complete trigger: a vocabulary entry, a mosaic_complete flag on the trigger context and its test in the evaluator (#184), with a comment. First-party."
+    },
+    {
+      "path": "server/astrodeck/sequence/panel_order.py",
+      "sha256": "d73236222fcfa63b0a01e4a47952fcdc4eb3859e9955c963a2ebd634a6847104",
+      "review": "Read the complete diff from b3ce0f1b. Panel order: skipped panels sort last under every policy (D-E, #180 part B), OrderSnapshot gains pool_score and skipped, and a new order_pool picks a pool's next candidate by best, priority or round robin (#183). Plain Python sorting code with docstrings. First-party."
+    },
+    {
+      "path": "ui/src/components/flows/framing/coverageModel.ts",
+      "sha256": "e574a1fd109d2f24dba9e06a6cbfcea619b7a959ac4a05c0e2157c5822f33a00",
+      "review": "New file, read in full (118 lines; git log --follow shows it added by wave 6 WP 6.5, #177). A pure reader of the coverage route's answer: which block it is about, the per-panel PANELS line (shortfall sentence, not checked yet), and whether the sky tints a panel. Imports only the project's own types; carries the project's own two-line header. First-party code and copy; no data table or third-party text."
+    },
+    {
+      "path": "ui/src/components/flows/framing/framingApi.ts",
+      "sha256": "eb648fa243ecaeee9658dd27116a93f042962c10e4aebf5f9f68664c1f178911",
+      "review": "Read the complete diff from b3ce0f1b. One new method, framingApi.coverage, a GET of the flow's coverage route, with a type import and a doc comment. First-party."
+    },
+    {
+      "path": "ui/src/components/flows/framing/sections/AngleSection.tsx",
+      "sha256": "ec421dd1ca1d659f33dd11579222270bd59841043918b7d6d27eee533951cbd0",
+      "review": "Read the complete diff from b3ce0f1b. The angle section gains the fourth segment label MEASURE AT FIRST SOLVE (#187) and two optional rows, the help line and the run's measured line, with their props. First-party code and copy."
+    },
+    {
+      "path": "ui/src/components/flows/framing/sections/PanelsSection.tsx",
+      "sha256": "a6418ca4e69a59aab5b1f045ecb3394b816a0bc7d0da2ce66db5a98d41aa267d",
+      "review": "Read the complete diff from b3ce0f1b. The PANELS section gains per-panel EXPOSURE and COUNT boxes (PanelExposureCells, committed on blur or Enter, #186) with their labels and note text, and the run-mode coverage lines and note (#177, via coverageModel); panelRows takes exposures and coverage. First-party code and copy; React and the project's own modules only."
+    },
+    {
+      "path": "ui/src/components/flows/framing/useCoverage.ts",
+      "sha256": "97f65819b8f86a6b3b88d0905000ed3933c1f5810babb1a0ac266407eac5246f",
+      "review": "New file, read in full (47 lines; git log --follow shows it added by wave 6 WP 6.5, #177). A React hook that asks the coverage route when the sheet is open in run mode and each time the progress answer is replaced, clearing the answer on a 403 or 404. Imports React and the project's own modules; carries the project's own two-line header. First-party code."
+    },
+    {
+      "path": "ui/src/components/flows/targetSummary.ts",
+      "sha256": "ad2f474405834f000df0157ed13b3cc7fc3ae5731870aae32d18b0e43d3fce41",
+      "review": "Read the complete diff from b3ce0f1b. The TARGET card summary says measured, last PA n, or measures its angle, for the new angle (#187). First-party."
+    },
+    {
+      "path": "ui/src/components/sequence/SchedulePanel.tsx",
+      "sha256": "f17dce7a763514047c31ce5d711db284b3b60dbbe11ca2fc8f0892aa03d05013",
+      "review": "Read the complete diff from b3ce0f1b. A MAX_RUN_NOTE constant and a paragraph under the max-run stepper saying what the cap does when reached (#1207). First-party copy."
+    },
+    {
+      "path": "ui/src/lib/sessionReview.ts",
+      "sha256": "7ef2fc19f390802e1222841a03e3cb902d91e2fbdcf132bfb037789c11f313e2",
+      "review": "Read the complete diff from b3ce0f1b. mosaicGroupsOf skips plan groups of kind pool and their members, as the server's mosaics_of does (#183). First-party."
+    },
+    {
+      "path": "ui/src/next/hubs/session/flows/inspector/FlowFieldRow.tsx",
+      "sha256": "4e5219d96a42d1dba3f934ba1a98656532e9d352a3487e9fa770d572eaa280e4",
+      "review": "Read the complete diff from b3ce0f1b. A comment edit only: TARGET's maxTime now carries help as well as autoResume (#1207). No code change. First-party prose."
+    },
+    {
+      "path": "ui/src/next/hubs/session/now/IntegrationBar.tsx",
+      "sha256": "471791a76a43ce1adf0e3237a815365d57de116cd01eb4e4b187c729c8feb5e3",
+      "review": "Read the complete diff from b3ce0f1b. plannedShutter treats only mosaic groups as panels, so a pool group's candidates stay in the pool cut (#183), with its comment. First-party."
+    },
+    {
+      "path": "ui/src/next/hubs/session/now/RunHeader.tsx",
+      "sha256": "07fd0b1baf776bcb1a9257cefec1bfae47e39e11cf628516c3de7b77de5254ad",
+      "review": "Read the complete diff from b3ce0f1b. The run header says candidates and target pool for a pool group instead of panels and mosaic (#183). One middle dot separator already used by neighbouring lines. First-party copy."
+    },
+    {
+      "path": "ui/src/next/hubs/session/plan/PlanScheduleSheet.tsx",
+      "sha256": "9d08e594bc3ecf32b01079c9a4be573ad7f0f1e965a4d0a36e5fb069eb4845a9",
+      "review": "Read the complete diff from b3ce0f1b. A MAX_RUN_HINT constant, the classic editor's note word for word, used as the MAXIMUM RUN field hint (#1207). First-party copy."
     }
   ],
   "upstream_review": {
