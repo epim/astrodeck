@@ -320,8 +320,8 @@ class TestInstructions:
         note = [u for u in un if u["key"] == "campaign"]
         assert note, "a campaign must still be called out"
         detail = note[0]["detail"]
-        assert note[0]["level"] == "warn", (
-            "the campaign runs; only its stop condition is approximate")
+        assert note[0]["level"] == "note", (
+            "the campaign runs and loses nothing: the note says what it does")
         for lie in ("cursor is not persisted", "will not re-arm",
                     "images ONE night", "no target is marked done"):
             assert lie not in detail, f"the note still claims {lie!r}"
@@ -648,9 +648,10 @@ class TestPlansWithNoMosaicMoveOnlyByTheirCentring:
     carries (``plan.model_dump`` writes every field, not only the ones
     ``compile_plan`` chose to write), so all seven hashes move together
     again, whatever its own value (True for example-campaign and
-    example-eaa, whose DUSK WINDOWs are not "Single night"; False for the
-    other five, #195: "Single night" means auto-resume does not arm across
-    nights). Diffed against the pre-change dump for each of the seven and
+    example-eaa, whose flows arm across nights; False for the other five
+    (#195: Automatic resume On decides whether a campaign arms, via
+    compile.campaign_block; DUSK WINDOW's Repeat row and its "Single night"
+    are retired). Diffed against the pre-change dump for each of the seven and
     confirmed this one key is the only thing that moved. Regenerated from
     the SAME ``_dump`` below, against the fixed code, with no other change.
 

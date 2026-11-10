@@ -789,9 +789,9 @@ class TestTheGolden2x2:
 
         RE-PINNED AGAIN IN BACKLOG WP-34 (#195, 2026-09-30): ``plan`` now
         carries ``resume_across_nights: false`` (``SequencePlan``'s new
-        field; #195: "Single night" means auto-resume does not arm across
-        nights, and the wizard's DUSK WINDOW has no explicit ``repeat``, so
-        it defaults to "Single night"), observed as the only diff:
+        field; #195: Automatic resume On decides whether a campaign arms, via
+        compile.campaign_block; the wizard's flow is not a campaign, and
+        DUSK WINDOW's Repeat row and "Single night" are retired), observed as the only diff:
 
             E   AssertionError: $.plan.resume_across_nights: unexpected
 
