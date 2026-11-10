@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // wp15uRunnerReport.test.ts - what run-tests.mjs PRINTS about a broken file
 // (#753), and that a silent or dishonestly-green child is named and timed
-// (#754, #914; WP 1.5u).
+// (#754, #914; WP 1.5u), and which files it runs when it is given arguments
+// (#1152, #1258; WP 7.1).
 //
 //   Run:  node --import ./test-css-stub.mjs --import tsx src/__tests__/wp15uRunnerReport.test.ts   (from ui/)
 //   Also run by `npm test` (run-tests.mjs) and type-checked by `tsc -b`.
@@ -22,6 +23,14 @@
 // child is killed at its timeout and the reason says how long it ran, and a
 // child that exits nonzero after a clean tally is a broken file, never a pass.
 //
+// #1152. The runner used to ignore its arguments, so `run-tests.mjs <file>` ran
+// all of the suite. `chooseFiles` is the one place that turns the command line
+// into the files to run: a path or a substring names files, a name that matches
+// nothing is an error (exit 1), `--changed <base>` selects by import and runs
+// everything when git cannot say what changed. The no-match exit is also run
+// through a real `node run-tests.mjs`, because a code that is right in the
+// function and dropped by `main` would pass the unit cases.
+//
 // The runner's cap and report are exercised on real child output (a flood
 // fixture run through `runOne`), not only on strings, because a function that
 // caps a string it is handed says nothing about what `runOne` captured.
@@ -39,10 +48,19 @@
 // "a clean tally hides a nonzero exit" (`computeOk`'s `if (err &&
 // !graceKilled) return false;` removed). Observed red: "a child that prints a
 // clean tally and then exits 1 is broken, and the reason says it exited 1".
+//
+// WP 7.1 (#1152). "the runner ignores its arguments" (`chooseFiles`'s
+// `return { files: named.files };` made `return { files: allFiles };`).
+// "a filter that matches no file exits 0" (its `code: 1` made `code: 0`).
+// Observed red: see the report of WP 7.1.
+//
+// disk-reads: ui/run-tests.mjs, ui/tools/selectTests.mjs
 
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFile, execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 interface RunOneResult {
   file: string;
@@ -60,12 +78,19 @@ interface RunTestsModule {
   formatBroken(b: { name: string; why: string; output: string }, outDir: string): string;
   runOne(file: string, timeoutMs?: number): Promise<RunOneResult>;
   brokenReason(r: RunOneResult): string;
+  parseArgs(argv: string[]): { changed: string | null; filters: string[] };
+  chooseFiles(
+    argv: string[], allFiles: string[], ctx: { root: string; cwd: string },
+  ): { files?: string[]; line?: string; error?: string; code?: number };
+  chooseChanged(base: string, allFiles: string[], root: string): { files: string[]; line: string };
 }
 const nodeImport = (s: string): Promise<unknown> =>
   (Function("m", "return import(m)") as (m: string) => Promise<unknown>)(s);
 const RUN_TESTS_URL = new URL("../../run-tests.mjs", import.meta.url).href;
-const { OUTPUT_CAP_BYTES, capOutput, formatBroken, runOne, brokenReason } =
-  (await nodeImport(RUN_TESTS_URL)) as RunTestsModule;
+const {
+  OUTPUT_CAP_BYTES, capOutput, formatBroken, runOne, brokenReason, parseArgs, chooseFiles, chooseChanged,
+} = (await nodeImport(RUN_TESTS_URL)) as RunTestsModule;
+const UI_DIR = dirname(fileURLToPath(RUN_TESTS_URL));
 
 // ---------------------------------------------------------------- harness
 let passed = 0;
@@ -134,6 +159,89 @@ test("one enormous line is bounded too", () => {
     `a single 5 MiB line must be cut to the cap, got ${bytes(r.text)} bytes (cut=${r.cut})`);
 });
 
+// ------------------------------------------------- which files an invocation runs
+const FAKE_UI = join(tmpdir(), "astrodeck-wp71-ui");
+const fakeTest = (rel: string): string => join(FAKE_UI, "src", rel);
+const ALL = ["a.test.ts", "b/c.test.ts", "b/d.test.tsx", "e.test.ts"].map(fakeTest).sort();
+const ctx = { root: FAKE_UI, cwd: join(FAKE_UI, "src", "b") };
+
+test("no arguments runs every file", () => {
+  const r = chooseFiles([], ALL, ctx);
+  assert(JSON.stringify(r.files) === JSON.stringify(ALL), `got ${JSON.stringify(r)}`);
+});
+
+test("a path names exactly that file, whether it is given from ui/ or from the current directory", () => {
+  const fromRoot = chooseFiles(["src/a.test.ts"], ALL, ctx);
+  assert(JSON.stringify(fromRoot.files) === JSON.stringify([fakeTest("a.test.ts")]),
+    `a path from ui/ must name one file, got ${JSON.stringify(fromRoot)}`);
+  const fromCwd = chooseFiles(["c.test.ts"], ALL, ctx);
+  assert(JSON.stringify(fromCwd.files) === JSON.stringify([fakeTest("b/c.test.ts")]),
+    `a path from the current directory must name one file, got ${JSON.stringify(fromCwd)}`);
+});
+
+test("a substring names every file whose path holds it; several arguments are a sorted union without repeats", () => {
+  const r = chooseFiles(["b/", "src/b/c.test.ts", "e.test"], ALL, ctx);
+  assert(JSON.stringify(r.files) === JSON.stringify([fakeTest("b/c.test.ts"), fakeTest("b/d.test.tsx"), fakeTest("e.test.ts")]),
+    `got ${JSON.stringify(r)}`);
+});
+
+test("a filter that matches no file is an error that names it and exits 1, even beside one that matches", () => {
+  for (const argv of [["zzz"], ["a.test", "zzz"]]) {
+    const r = chooseFiles(argv, ALL, ctx);
+    assert(r.error === "no test file matches: zzz" && r.code === 1 && r.files === undefined,
+      `${JSON.stringify(argv)} must be refused with exit 1, got ${JSON.stringify(r)}`);
+  }
+});
+
+test("a bad command line is a usage error (exit 2) and runs nothing", () => {
+  for (const argv of [["--changed"], ["--changed", "--x"], ["--changed", "main", "a.test.ts"], ["--nope"]]) {
+    const r = chooseFiles(argv, ALL, ctx);
+    assert(r.code === 2 && /usage:/.test(r.error ?? "") && r.files === undefined,
+      `${JSON.stringify(argv)} must be a usage error, got ${JSON.stringify(r)}`);
+  }
+  assert(parseArgs(["--changed", "origin/main"]).changed === "origin/main", "--changed takes the next argument as its base");
+});
+
+test("--changed against a base git cannot read runs everything and says why", () => {
+  const r = chooseChanged("no-such-base", ALL, FAKE_UI);
+  assert(JSON.stringify(r.files) === JSON.stringify(ALL), `every file must run, got ${JSON.stringify(r.files)}`);
+  assert(r.line.startsWith(`selected ${ALL.length} of ${ALL.length} test files (everything: cannot read the changes against no-such-base`),
+    `the line must say why, got ${r.line}`);
+});
+
+test("--changed in a real repository runs the test that imports the edited file and not the one that does not", () => {
+  const repo = mkdtempSync(join(tmpdir(), "astrodeck-wp71-repo-")).split("\\").join("/");
+  try {
+    const put = (rel: string, text: string): string => {
+      mkdirSync(dirname(join(repo, rel)), { recursive: true });
+      writeFileSync(join(repo, rel), text, "utf8");
+      return join(repo, rel);
+    };
+    put("ui/src/a.ts", "export const a = 1;\n");
+    put("ui/src/z.ts", "export const z = 1;\n");
+    const tests = [
+      put("ui/src/uses.test.ts", "import { a } from \"./a\";\nexport const r = a;\n"),
+      put("ui/src/other.test.ts", "import { z } from \"./z\";\nexport const r = z;\n"),
+    ].sort();
+    const git = (...args: string[]): void => {
+      execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args],
+        { cwd: repo, stdio: "pipe" });
+    };
+    git("init", "-q", "-b", "main");
+    git("add", "-A");
+    git("commit", "-q", "-m", "base");
+    put("ui/src/a.ts", "export const a = 2;\n");
+    const r = chooseChanged("HEAD", tests, join(repo, "ui"));
+    const wanted = tests.filter((t) => t.endsWith("uses.test.ts"));
+    assert(JSON.stringify(r.files) === JSON.stringify(wanted),
+      `only the importing test must run, got ${JSON.stringify(r.files)}`);
+    assert(r.line === `selected 1 of 2 test files (1 by import, 0 by declared disk read, 0 always-run disk readers)`,
+      `got ${r.line}`);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 // ------------------------------------------------------------ real children
 let dir: string | undefined;
 try {
@@ -185,6 +293,18 @@ try {
     const full = (pathLine as RegExpExecArray)[1];
     assert(existsSync(full), `the printed path does not exist: ${full}`);
     assert(readFileSync(full, "utf8") === r.output, "the file must hold the whole captured output");
+  });
+
+  await testAsync("a real `node run-tests.mjs` given a name that matches no file exits 1 and says so before it runs anything", async () => {
+    const out = await new Promise<{ code: number | null; stderr: string; stdout: string }>((resolve) => {
+      execFile(process.execPath, [join(UI_DIR, "run-tests.mjs"), "zzz-no-such-test-file"], { cwd: UI_DIR },
+        (err, stdout, stderr) => resolve({
+          code: err === null ? 0 : ((err as { code?: number }).code ?? null), stderr, stdout,
+        }));
+    });
+    assert(out.code === 1, `the exit code must be 1, got ${out.code}`);
+    assert(out.stderr.includes("no test file matches: zzz-no-such-test-file"), `stderr must say why, got ${out.stderr}`);
+    assert(!/\d+ files /.test(out.stdout), "nothing may have run");
   });
 
   await testAsync("a real child with a short output writes no file", async () => {

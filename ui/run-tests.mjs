@@ -1,8 +1,17 @@
 // Copyright (c) 2026 James Penick
 // SPDX-License-Identifier: Apache-2.0
-// Run every UI test file and fail the process if any assertion failed.
+// Run UI test files and fail the process if any assertion failed.
 //
-//   npm test
+//   npm test                          every test file
+//   npm test -- <file-or-filter> ...  exactly those files
+//   npm test -- --changed <base>      the files a change against <base> can affect
+//
+// A test file is named by its path (from here, from the current directory or
+// absolute) or by a substring of its path under ui/; each argument must match
+// at least one file, and one that matches none exits 1 saying so, so a typo
+// never reads as a clean run (#1152). `--changed` selects by the import graph
+// in tools/selectTests.mjs (#1258) and prints one line saying how many files it
+// chose and why; whenever it cannot be sure it runs everything and says why.
 //
 // Why this exists: the test files are plain tsx scripts. Each runs its own
 // assertions, prints "N/M passed", and exports { passed, failed, total }. That
@@ -46,11 +55,14 @@
 // module for those exports must not itself run the whole suite — see the
 // `isMain` guard at the bottom of the file.
 
-import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { availableParallelism, tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  buildGraph, changedFiles, describeSelection, selectTests,
+} from "./tools/selectTests.mjs";
 
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const MAX_CONCURRENCY = 8;
@@ -91,6 +103,94 @@ function findTests(dir, out = []) {
     }
   }
   return out;
+}
+
+const toPosix = (p) => p.split("\\").join("/");
+
+/** Split the command line into `--changed <base>` and the file filters.
+ *  Throws an Error whose message is the usage problem. */
+export function parseArgs(argv) {
+  let changed = null;
+  const filters = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--changed") {
+      changed = argv[++i];
+      if (changed === undefined || changed.startsWith("--")) {
+        throw new Error("--changed needs a base, for example --changed origin/main");
+      }
+    } else if (argv[i].startsWith("--")) {
+      throw new Error(`unknown option ${argv[i]}`);
+    } else {
+      filters.push(argv[i]);
+    }
+  }
+  if (changed !== null && filters.length > 0) {
+    throw new Error("name files or use --changed <base>, not both");
+  }
+  return { changed, filters };
+}
+
+/** The test files that `filters` name, out of `allFiles` (absolute paths).
+ *
+ *  A filter that is the path of a test file (from `cwd` or from `root`) names
+ *  that file alone; any other filter is a substring of a file's path under
+ *  `root`. Returns the files, sorted and without repeats, and the filters that
+ *  matched nothing. */
+export function matchFilters(filters, allFiles, { root, cwd }) {
+  const byPath = new Map(allFiles.map((f) => [resolve(f), f]));
+  const chosen = new Set();
+  const unmatched = [];
+  for (const filter of filters) {
+    const exact = [resolve(cwd, filter), resolve(root, filter)]
+      .map((p) => byPath.get(p)).find((f) => f !== undefined);
+    const hits = exact !== undefined
+      ? [exact]
+      : allFiles.filter((f) => toPosix(relative(root, f)).includes(toPosix(filter)));
+    if (hits.length === 0) unmatched.push(filter);
+    hits.forEach((f) => chosen.add(f));
+  }
+  return { files: [...chosen].sort(), unmatched };
+}
+
+/** The files `--changed <base>` runs, and the line that says why. Git failing
+ *  to say what changed is a reason to run everything, never to run nothing. */
+export function chooseChanged(base, allFiles, root) {
+  const repoRoot = resolve(root, "..");
+  let selection;
+  try {
+    const graph = buildGraph(toPosix(repoRoot));
+    selection = selectTests(graph, changedFiles(toPosix(repoRoot), base));
+  } catch (e) {
+    const line = `selected ${allFiles.length} of ${allFiles.length} test files`
+      + ` (everything: cannot read the changes against ${base}: ${String(e.message).split("\n")[0]})`;
+    return { files: allFiles, line };
+  }
+  const wanted = new Set(selection.tests.map((t) => resolve(repoRoot, t)));
+  return {
+    files: allFiles.filter((f) => wanted.has(resolve(f))),
+    line: describeSelection(selection, allFiles.length),
+  };
+}
+
+/** The files one invocation runs. Returns { files } (with a `line` to print
+ *  when the choice needs explaining) or { error, code } for a command line that
+ *  must not run anything. */
+export function chooseFiles(argv, allFiles, { root, cwd }) {
+  let args;
+  try {
+    args = parseArgs(argv);
+  } catch (e) {
+    return { error: `${e.message}\nusage: run-tests.mjs [<file-or-filter> ...] | --changed <base>`, code: 2 };
+  }
+  if (args.filters.length > 0) {
+    const named = matchFilters(args.filters, allFiles, { root, cwd });
+    if (named.unmatched.length > 0) {
+      return { error: `no test file matches: ${named.unmatched.join(", ")}`, code: 1 };
+    }
+    return { files: named.files };
+  }
+  if (args.changed !== null) return chooseChanged(args.changed, allFiles, root);
+  return { files: allFiles };
 }
 
 /** Recover the pass/fail counts from a file's printed summary.
@@ -769,13 +869,20 @@ function typecheck() {
 }
 
 async function main() {
-  if (!await typecheck()) process.exit(1);
-  const files = findTests(join(ROOT, "src")).sort();
-  if (files.length === 0) {
+  const allFiles = findTests(join(ROOT, "src")).sort();
+  if (allFiles.length === 0) {
     console.error("no test files found — the discovery walk is broken, which " +
                   "would otherwise read as a clean run");
     process.exit(1);
   }
+  const chosen = chooseFiles(process.argv.slice(2), allFiles, { root: ROOT, cwd: process.cwd() });
+  if (chosen.error) {
+    console.error(chosen.error);
+    process.exit(chosen.code);
+  }
+  if (chosen.line) console.log(chosen.line);
+  const files = chosen.files;
+  if (!await typecheck()) process.exit(1);
 
   const results = [];
   let next = 0;

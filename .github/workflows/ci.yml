@@ -293,7 +293,11 @@ jobs:
       run:
         working-directory: ui
     steps:
+      # Two commits deep: on a pull request the checkout is the merge commit,
+      # and its first parent is the base the selection is taken against (#1258).
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
       # Pinned to Node 22.15+ (see issue #61): `npm test` spawns test files that
       # call `node:module`'s `registerHooks()` (added in v22.15.0/v23.5.0) to
       # stub out `.css` imports for jsdom, both the ~53 per-file inline stubs
@@ -318,7 +322,20 @@ jobs:
       # running it by hand and reading the output. run-tests.mjs runs each in its
       # own process (they install fake globals and do not clean up) and turns the
       # result into an exit code.
-      - run: npm test
+      # A pull request runs the test files its change can reach (#1258): by the
+      # import graph, plus every test that reads files from disk without saying
+      # which. Anything the selector cannot judge runs everything, and says why.
+      # main runs the whole suite, and is never skipped as already green,
+      # because the pull request ran only this selection.
+      - name: npm test (a pull request runs the selection; main runs all)
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            npm test -- --changed HEAD^1
+          else
+            npm test
+          fi
       - run: npm run build
 
   # The Rust native engine (star detection / autofocus / TPPA / guiding) + its

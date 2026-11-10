@@ -99,6 +99,9 @@ def recorded(runs, jobs, *, run_id=None):
 
 
 def decide(api, merge=None, jobs=GATED, **kwargs):
+    # The rule itself is graded with an empty never-list; the real list is
+    # graded by its own cases below.
+    kwargs.setdefault("never", ())
     return already_green.decide(jobs, merge or facts(), api, repo=REPO_NAME, **kwargs)
 
 
@@ -288,6 +291,14 @@ class DecisionTests(unittest.TestCase):
     def test_never_already_green_names_only_jobs_that_exist(self):
         self.assertLessEqual(set(already_green.NEVER_ALREADY_GREEN), set(GATED))
 
+    def test_the_ui_job_is_never_already_green_because_a_pull_request_runs_a_selection(self):
+        # #1258: a pull request's ui job runs the test files its change can
+        # reach, so its green says nothing about the rest of the suite on main.
+        self.assertIn("ui", already_green.NEVER_ALREADY_GREEN)
+        verdicts = already_green.decide(GATED, facts(), self.green_api(), repo=REPO_NAME)
+        self.assertFalse(verdicts["ui"].green)
+        self.assertEqual(greens(verdicts), [g for g in GATED if g != "ui"])
+
 
 # Recorded answers of the real API (slimmed to the fields the tool reads) for two
 # merges that ran on main. The first merge's tree equals its pull request head's
@@ -332,7 +343,7 @@ class RealAnswersTests(unittest.TestCase):
         })
         merge = facts(parents=("0" * 40, REAL_SAME["head"]), head_tree=REAL_SAME["tree"],
                       second_parent_tree=REAL_SAME["tree"])
-        verdicts = already_green.decide(GATED, merge, api, repo="epim/astrodeck")
+        verdicts = already_green.decide(GATED, merge, api, repo="epim/astrodeck", never=())
         self.assertEqual(greens(verdicts), GATED)
         self.assertEqual(verdicts["server"].run_url, "https://github.com/epim/astrodeck/actions/runs/42695961395")
 

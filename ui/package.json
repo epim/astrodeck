@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
+    "typecheck": "tsc -b",
     "test": "node --import tsx run-tests.mjs",
     "build:lib": "vite build -c vite.lib.config.ts && tsc -p tsconfig.lib.json"
   },
