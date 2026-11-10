@@ -49,21 +49,18 @@ A NO_LIGHT THROUGH A NARROWBAND FILTER IS NOT A CAP (#531). This function does
 not know the filter. A caller that does maps ``NO_LIGHT`` on a narrowband
 frame to what ``solve.light.NARROWBAND`` means, as ``failed_solve_error`` does.
 
-THE OBSTRUCTION TEST reads the frame as a coarse grid of block medians, which
-stars (a few pixels each) cannot move, and asks four things of it: some blocks
-are DARKER than the sky by far more than a median's own noise; the dark blocks
-are SMOOTH among themselves (a wall of tree is one level, not texture); the
-drop from sky to dark happens in ONE block step (a SHARP edge: cloud bank
-edges, vignetting and sky glow ramp over many blocks, so they never qualify);
-and the lit side holds stars, while a bright starless patch is cloud and not a
-sky. Every threshold below is named and says where its number came from.
+THE OBSTRUCTION TEST is ``imaging.stars.find_obstruction`` (#1145): the frame
+read as a coarse grid of block medians, asking for a smooth dark region with a
+sharp edge and stars on the lit side only. It lives there because
+``cloud_score`` needs it too: a score over a frame part behind a tree describes
+neither the tree nor the sky, so ``cloud_score`` judges the lit blocks alone
+and reports ``CloudResult.obstructed``, which is what is read here.
 
 PURE: no I/O, no clock, no camera. ``imaging.stars.detect_stars`` is run here
 only when the caller did not hand in the stars it already found.
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -73,7 +70,10 @@ import numpy as np
 from ..solve import light
 from ..solve.light import Reference
 from .clouds import cloud_score
-from .stars import HFR_BOX_PX, Star, detect_stars
+# The obstruction test's constants live in ``stars``; the classifier's tests
+# and docs name this one here (#1108).
+from .stars import (HFR_BOX_PX, OBSTRUCTION_MIN_LIT_STARS,  # noqa: F401
+                    Star, detect_stars)
 
 
 class FrameClass(str, Enum):
@@ -118,59 +118,6 @@ STARS_MIN_BRIGHT = 15
 #: hold a measurable star, so no class would mean anything.
 MIN_FRAME_PX = 2 * HFR_BOX_PX
 
-#: The grid the obstruction test reads, blocks per side. 8 x 8 puts a block
-#: at 1/64 of the frame, big enough for a median to ignore stars and small
-#: enough that a tree line crossing the field occupies several blocks.
-OBSTRUCTION_GRID = 8
-
-#: A block is not measured below this many pixels per side: its median would
-#: be noise. A thumbnail is no basis for a horizon.
-OBSTRUCTION_MIN_BLOCK_PX = 16
-
-#: The block level that stands for "the sky": this percentile of the block
-#: medians. 90 reads the lit side of a frame that is up to 90 % covered, and
-#: it is not a maximum, so one bright block cannot set it.
-OBSTRUCTION_SKY_PERCENTILE = 90.0
-
-#: How far under the sky the DARKEST block must sit for the frame to hold
-#: any structure at all, in standard errors of a block median
-#: (``MEDIAN_SE_FACTOR x pixel sigma / sqrt(block pixels)``, the statistic
-#: ``solve.light`` builds its no-light band from). Pure noise spreads 64 block
-#: medians over about 4 standard errors, so 10 never fires on a flat frame,
-#: while a real obstruction differs from the sky by many ADU against a median
-#: that is known to a fraction of one.
-OBSTRUCTION_SIGNIFICANCE_SE = 10.0
-
-#: The smallest fraction of blocks that may be dark, and of blocks that must
-#: stay lit, for the frame to hold a boundary at all. Both come from the grid:
-#: 10 % is 6.4 blocks, the least that is a region and not a stray block.
-OBSTRUCTION_MIN_DARK_FRACTION = 0.10
-OBSTRUCTION_MIN_LIT_FRACTION = 0.10
-
-#: The edge is SHARP when its largest dark-to-lit block step is at least this
-#: fraction of the whole drop from sky to the dark region. A ramp across the
-#: eight-block grid steps about 1/8 of its drop per block (vignetting, sky
-#: glow, a cloud edge); a treeline steps nearly all of it. Half sits between
-#: with room on both sides.
-OBSTRUCTION_EDGE_FRACTION = 0.5
-
-#: The dark blocks are SMOOTH when their levels spread by less than this
-#: fraction of the drop (population standard deviation of the dark block
-#: medians over the drop). An obstruction is one surface; a quarter of the
-#: drop allows a lit edge and a gradient across it, and rejects a frame whose
-#: "dark" blocks are really many levels of cloud.
-OBSTRUCTION_SMOOTH_FRACTION = 0.25
-
-#: Detected stars the lit side must hold. ``autofocus.MIN_STARS_PER_POINT``:
-#: three stars is the least this project fits anything to. A bright region
-#: with fewer is cloud lit from the ground, not a sky.
-OBSTRUCTION_MIN_LIT_STARS = 3
-
-#: The floor on one pixel's noise, in ADU: the rounding of integer ADU,
-#: ``1 / sqrt(12)``, as ``solve.light`` derives it for ``OFFSET_STABILITY_ADU``.
-#: Keeps a nearly flat frame from reading every block as infinitely different.
-_MIN_PIXEL_NOISE_ADU = 1.0 / math.sqrt(12.0)
-
 
 def _pixels(frame: Any) -> Any | None:
     """The frame's linear pixels, or None when it holds none that can be
@@ -182,78 +129,6 @@ def _pixels(frame: Any) -> Any | None:
     if frame is None or not getattr(frame, "data_is_linear", True):
         return None
     return getattr(frame, "data", None)
-
-
-def _pixel_noise(img: np.ndarray) -> float:
-    """One pixel's robust sigma from neighbour differences, in ADU. The
-    differences cancel smooth structure (an obstruction's level, a gradient),
-    so unlike the frame's own MAD it is not inflated by the thing the test is
-    looking for; ``sqrt(2)`` because a difference of two pixels has twice the
-    variance. MAD to sigma as ``solve.light`` does."""
-    d = img[:, 1:] - img[:, :-1]
-    mad = float(np.median(np.abs(d - np.median(d))))
-    sigma = mad * light.MAD_TO_SIGMA / math.sqrt(2.0)
-    return max(sigma, _MIN_PIXEL_NOISE_ADU)
-
-
-def _block_medians(img: np.ndarray, grid: int) -> tuple[np.ndarray, int, int]:
-    """``(medians, block_h, block_w)``: the median of each block of a
-    ``grid`` x ``grid`` tiling (the remainder rows and columns are dropped)."""
-    bh, bw = img.shape[0] // grid, img.shape[1] // grid
-    tiles = img[:bh * grid, :bw * grid].reshape(grid, bh, grid, bw)
-    return np.median(tiles.transpose(0, 2, 1, 3).reshape(grid, grid, -1),
-                     axis=2), bh, bw
-
-
-def _has_sharp_edge(levels: np.ndarray, dark: np.ndarray,
-                    drop: float) -> bool:
-    """Does the dark region meet the lit one in a single block step of at
-    least ``OBSTRUCTION_EDGE_FRACTION`` of ``drop``? Steps are read between
-    horizontally and vertically adjacent blocks that are on opposite sides."""
-    steps = []
-    for axis in (0, 1):
-        across = np.diff(dark.astype(np.int8), axis=axis) != 0
-        steps.append(np.abs(np.diff(levels, axis=axis))[across])
-    steps = np.concatenate(steps)
-    return bool(steps.size and steps.max() >= OBSTRUCTION_EDGE_FRACTION * drop)
-
-
-def _lit_stars(stars: list[Star], dark: np.ndarray, bh: int, bw: int) -> int:
-    """How many of ``stars`` sit in lit blocks."""
-    grid = dark.shape[0]
-    count = 0
-    for s in stars:
-        row = min(max(int(s.y // bh), 0), grid - 1)
-        col = min(max(int(s.x // bw), 0), grid - 1)
-        count += not dark[row, col]
-    return count
-
-
-def _obstructed(data: Any, stars: list[Star]) -> bool:
-    """The obstruction test (see the module docstring)."""
-    img = np.asarray(data).astype(np.float32)
-    grid = OBSTRUCTION_GRID
-    if min(img.shape) // grid < OBSTRUCTION_MIN_BLOCK_PX:
-        return False
-    levels, bh, bw = _block_medians(img, grid)
-    se = light.MEDIAN_SE_FACTOR * _pixel_noise(img) / math.sqrt(bh * bw)
-    sky = float(np.percentile(levels, OBSTRUCTION_SKY_PERCENTILE))
-    lowest = float(levels.min())
-    if sky - lowest < OBSTRUCTION_SIGNIFICANCE_SE * se:
-        return False
-    # Dark is the lower half of the range, so a block the edge crosses, whose
-    # median sits near the sky, stays lit and does not roughen the dark region.
-    dark = levels < (sky + lowest) / 2.0
-    dark_fraction = float(dark.mean())
-    if (dark_fraction < OBSTRUCTION_MIN_DARK_FRACTION
-            or 1.0 - dark_fraction < OBSTRUCTION_MIN_LIT_FRACTION):
-        return False
-    drop = sky - float(np.median(levels[dark]))
-    if float(np.std(levels[dark])) > OBSTRUCTION_SMOOTH_FRACTION * drop:
-        return False
-    if not _has_sharp_edge(levels, dark, drop):
-        return False
-    return _lit_stars(stars, dark, bh, bw) >= OBSTRUCTION_MIN_LIT_STARS
 
 
 def classify(frame: Any, context: FrameContext | None = None) -> FrameClass:
@@ -281,7 +156,7 @@ def classify(frame: Any, context: FrameContext | None = None) -> FrameClass:
     cloud = cloud_score(data, stars=stars)
     if not cloud.cloudy and cloud.bright_stars >= STARS_MIN_BRIGHT:
         return FrameClass.STARS
-    if _obstructed(data, stars):
+    if cloud.obstructed:
         return FrameClass.OBSTRUCTED
     if light.classify(data, ctx.reference).kind == light.NO_LIGHT:
         return FrameClass.NO_LIGHT
