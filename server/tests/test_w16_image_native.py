@@ -30,6 +30,8 @@ import unittest
 
 import yaml
 
+from _bash import BASH, BASH_SKIP_REASON
+
 ROOT = Path(__file__).resolve().parents[2]
 _SPEC = importlib.util.spec_from_file_location("image_native_contexts", ROOT / "deploy/reverse-proxy/check_build_contexts.py")
 gate = importlib.util.module_from_spec(_SPEC)
@@ -37,7 +39,6 @@ sys.modules[_SPEC.name] = gate
 _SPEC.loader.exec_module(gate)
 
 SH = shutil.which("sh")
-BASH = shutil.which("bash")
 MOUNT = "--mount=type=bind,from=native,target=/native"
 
 X86 = "astrodeck_native-0.1.0-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
@@ -279,7 +280,7 @@ def image_step_run(marker: str) -> str:
     return found[0]
 
 
-@unittest.skipUnless(BASH, "needs bash to execute the release workflow's step text")
+@unittest.skipUnless(BASH, BASH_SKIP_REASON)
 class ReleaseImageSteps(unittest.TestCase):
     """The probe and retag steps run as GitHub runs them (`bash -eo pipefail`) against a stubbed docker."""
 
