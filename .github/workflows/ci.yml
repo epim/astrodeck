@@ -101,14 +101,28 @@ jobs:
           python -B tools/ci/already_green.py --event "$EVENT" --ref "$REF" \
             --head "$HEAD" --areas-on-json "$AREAS" >> "$GITHUB_OUTPUT"
 
+  # Three parallel shards of the server tests (WP 8.11): one runner took 17 to 19
+  # minutes of pytest, nearly all of the wait on a pull request. The job id stays
+  # `server`, so `needs`, the area map and the already-green rule see its legs
+  # `server (1)` to `server (3)` as one job. tools/ci/shard_tests.py gives each
+  # shard its test files by recorded duration, a file never split across shards;
+  # SHARD_TOTAL below is the one total, and the matrix must list 1 to SHARD_TOTAL
+  # (tools/ci/test_shard_tests.py holds both to it).
   server:
     needs: changes
     if: needs.changes.outputs.server == 'true' && needs.changes.outputs.already-green-server != 'true'
+    name: server (${{ matrix.shard }})
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     runs-on: ubuntu-latest
-    # 45, not 30: on unchanged code this job took 18 to 28 minutes across
+    # 25, not 45: a shard is a third of a job that took 18 to 28 minutes on
     # hosted runners, and one run was cancelled at 99% with nothing failing
     # (#1162). The --durations list below is where the next cut comes from.
-    timeout-minutes: 45
+    timeout-minutes: 25
+    env:
+      SHARD_TOTAL: '3'
     defaults:
       run:
         working-directory: server
@@ -134,17 +148,22 @@ jobs:
       # test and the line it is stuck on. It only dumps; it fails nothing.
       # The whole duration list is kept on main (#1261): the top 30 hide
       # where the rest of the time sits. A pull request prints the top 30.
+      # Only this shard's files are passed to pytest. An empty list would run
+      # the whole suite in every shard, so the step stops on one.
       - name: pytest
         env:
           DURATIONS: ${{ github.ref == 'refs/heads/main' && '0' || '30' }}
+          SHARD: ${{ matrix.shard }}
         run: |
           set -o pipefail
-          pytest -q -n auto --durations="$DURATIONS" -o faulthandler_timeout=300 2>&1 | tee pytest-output.txt
+          FILES=$(python ../tools/ci/shard_tests.py --shard "$SHARD" --of "$SHARD_TOTAL")
+          test -n "$FILES"
+          pytest -q -n auto --durations="$DURATIONS" -o faulthandler_timeout=300 $FILES 2>&1 | tee pytest-output.txt
       - name: Keep the whole duration list (main only)
         if: ${{ always() && github.ref == 'refs/heads/main' }}
         uses: actions/upload-artifact@v7
         with:
-          name: server-durations
+          name: server-durations-${{ matrix.shard }}
           path: server/pytest-output.txt
           if-no-files-found: ignore
           retention-days: 90
@@ -152,8 +171,10 @@ jobs:
       # known-vulnerable installed dependency; local editable packages
       # (astrodeck, astrodeck-native) are skipped, not failed. Runs AFTER the
       # tests so installing the audit tool cannot perturb the environment the
-      # tests just graded.
+      # tests just graded. One shard runs it: the audit reads the installed
+      # dependencies, which every shard installs alike.
       - name: pip-audit (fail on a vulnerable dependency)
+        if: matrix.shard == 1
         run: |
           pip install pip-audit
           python ../tools/pip_audit_retry.py -- pip-audit
