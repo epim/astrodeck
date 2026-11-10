@@ -29,6 +29,7 @@ server-side ``Connected`` state per device and can be taken down.
 """
 from __future__ import annotations
 
+import asyncio
 import sys
 
 import httpx
@@ -41,6 +42,7 @@ import astrodeck.hub as hub_module
 from astrodeck.comhost.device import ComDevice
 from astrodeck.config import ConfigStore
 from astrodeck.devices import alpaca
+from astrodeck.devices.alpaca import AlpacaReplyError
 from astrodeck.devices.ascom_registry import AscomDriver
 from astrodeck.devices.backend import BACKENDS
 from astrodeck.hub import Hub
@@ -69,6 +71,9 @@ class FakeAlpacaServer:
         self.connected: dict[tuple, bool] = {}
         self.connect_puts: list[tuple[tuple, bool]] = []
         self.connections_opened = 0
+        #: Awaited with the method name before every GET is answered; a test
+        #: sets it to land another coroutine at an exact point of a connect.
+        self.on_get = None
 
     def connection_class(self):
         server = self
@@ -85,6 +90,8 @@ class FakeAlpacaServer:
                     raise httpx.ConnectError("connection refused")
 
             async def get(self, dev_type, dev_num, method, **params):
+                if server.on_get is not None:
+                    await server.on_get(method)
                 self._reach()
                 return _ANSWERS.get(method, 0)
 
@@ -296,3 +303,135 @@ async def test_a_profile_connected_ascom_local_role_reconnects(
         await h.disconnect_all()
         srv.com_host.close()
         srv.shutdown()
+
+
+# --------------------------------------------------- the status poll (#1173)
+
+async def test_a_status_poll_inside_a_reconnect_does_not_undo_it(hub_env, server):
+    """#1173: the poll read the device between the reconnect's two halves, got
+    NotConnected, and set ``connected`` False under the connect that was still
+    running. The interleaving is forced, not timed: the server holds the
+    focuser's first connect probe, the poll runs to completion inside that
+    gap, and any ``position`` read it issues is answered NotConnected."""
+    h, lib = hub_env
+    prof = _profile("focuser")
+    lib.save(prof)
+    await h.connect_profile_id(prof.id)
+    dev = h.devices["focuser"]
+
+    in_gap = asyncio.Event()
+    release = asyncio.Event()
+    position_reads: list[str] = []
+
+    async def on_get(method):
+        if method == "maxstep" and not in_gap.is_set():
+            in_gap.set()
+            await release.wait()
+        if method == "position" and in_gap.is_set():
+            position_reads.append(method)
+            raise AlpacaReplyError("not connected", http_status=200,
+                                   error_number=0x407)
+
+    server.on_get = on_get
+    reconnect = asyncio.create_task(h.reconnect_role("focuser"))
+    await asyncio.wait_for(in_gap.wait(), 5)
+
+    status = await asyncio.wait_for(h.poll_status(), 5)
+    assert "focuser" not in status, (
+        "the poll must leave a role that is mid-reconnect out of the frame")
+    assert position_reads == [], "the poll read a device that is mid-reconnect"
+
+    release.set()
+    assert await asyncio.wait_for(reconnect, 5) is True
+    assert dev.connected is True
+
+
+async def test_a_status_poll_still_reads_the_other_roles_during_a_reconnect(
+        hub_env, server):
+    """The hold is per role: a reconnect of the focuser must not blank the rest
+    of the status frame."""
+    h, lib = hub_env
+    prof = Profile(name="two roles", primary_backend="none", devices=[
+        ProfileDevice(role=r, backend="alpaca", host=HOST, port=PORT,
+                      dev_type=r, dev_num=2, name=f"Test {r}")
+        for r in ("focuser", "filterwheel")])
+    lib.save(prof)
+    await h.connect_profile_id(prof.id)
+
+    in_gap = asyncio.Event()
+    release = asyncio.Event()
+
+    async def on_get(method):
+        if method == "maxstep" and not in_gap.is_set():
+            in_gap.set()
+            await release.wait()
+
+    server.on_get = on_get
+    reconnect = asyncio.create_task(h.reconnect_role("focuser"))
+    await asyncio.wait_for(in_gap.wait(), 5)
+    try:
+        status = await asyncio.wait_for(h.poll_status(), 5)
+        assert "filterwheel" in status
+        assert "focuser" not in status
+    finally:
+        release.set()
+        await asyncio.wait_for(reconnect, 5)
+
+
+async def test_a_reconnect_waits_for_a_status_read_already_in_flight(
+        hub_env, server):
+    """A read the poll started before the reconnect did can still answer
+    NotConnected in the gap, so the reconnect lets it finish first."""
+    h, lib = hub_env
+    prof = _profile("focuser")
+    lib.save(prof)
+    await h.connect_profile_id(prof.id)
+    dev = h.devices["focuser"]
+
+    probe = asyncio.get_running_loop().create_future()
+    h._status_reads = {"focuser.position": (dev, probe)}
+    disconnects: list[int] = []
+    real_disconnect = dev.disconnect
+
+    async def spy_disconnect():
+        disconnects.append(1)
+        await real_disconnect()
+
+    dev.disconnect = spy_disconnect
+    reconnect = asyncio.create_task(h.reconnect_role("focuser"))
+    await asyncio.sleep(0.05)
+    assert disconnects == [], "the reconnect began under a read still in flight"
+
+    probe.set_result(1)
+    assert await asyncio.wait_for(reconnect, 5) is True
+    assert disconnects == [1]
+
+
+async def test_a_reconnect_that_hangs_stops_holding_the_poll_off(
+        hub_env, server, monkeypatch):
+    """The bound: the hold lasts ``RECONNECT_STATUS_HOLD_S`` and no longer, so a
+    reconnect that never returns cannot blind the poll for ever."""
+    h, lib = hub_env
+    prof = _profile("focuser")
+    lib.save(prof)
+    await h.connect_profile_id(prof.id)
+    monkeypatch.setattr(hub_module, "RECONNECT_STATUS_HOLD_S", 0.2)
+
+    in_gap = asyncio.Event()
+
+    async def on_get(method):
+        if method == "maxstep" and not in_gap.is_set():
+            in_gap.set()
+            await asyncio.Event().wait()        # never answers
+
+    server.on_get = on_get
+    reconnect = asyncio.create_task(h.reconnect_role("focuser"))
+    try:
+        await asyncio.wait_for(in_gap.wait(), 5)
+        server.on_get = None
+        assert "focuser" not in await asyncio.wait_for(h.poll_status(), 5)
+        await asyncio.sleep(0.3)
+        assert "focuser" in await asyncio.wait_for(h.poll_status(), 5)
+    finally:
+        reconnect.cancel()
+        await asyncio.gather(reconnect, return_exceptions=True)
