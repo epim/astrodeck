@@ -77,9 +77,11 @@ independent Alpaca endpoints:
    success return. Reads are never gated, and ABORT paths (``stop``,
    ``abort_exposure``, ``halt``) are never gated either -- an emergency stop
    that refused because the box was busy would be the worst possible failure.
-   An abort still takes the link lock, so it can wait behind a cancelled RPC
-   until that RPC's thread returns; ``abort_exposure`` cancels a download in
-   flight first so it never waits behind one.
+   The stop commands (``stop_exposure``, the mount's stop, the focuser's stop)
+   go out on a SECOND libasi client with its own lock (``_Link.abort_call``),
+   so they never wait behind a cancelled command RPC whose reply the box has
+   not sent yet (#1194); each client has its own sockets and request ids, so a
+   late reply on one cannot be taken by a call on the other.
 """
 from __future__ import annotations
 
@@ -151,6 +153,8 @@ ASIAIR_NOT_MOVED_REASON = ("the ASIAIR answered OK but the mount's position "
 
 #: Poll cadence while waiting for a slew / park / focus move to settle.
 POLL_S = 0.5
+#: How long one preview-file delete may take before it is given up and logged.
+PREVIEW_DELETE_BOUND_S = 2 * DEFAULT_TIMEOUT_S
 #: Wall-clock caps. Each raises a stated-reason DeviceError rather than hanging.
 SLEW_TIMEOUT_S = 300.0
 PARK_TIMEOUT_S = 180.0
@@ -226,6 +230,16 @@ def make_client(host: str, timeout: float = DEFAULT_TIMEOUT_S) -> Any:
     except Exception as exc:  # noqa: BLE001
         raise DeviceError(_LIBASI_HINT) from exc
     return ASIAIRClient(host, timeout=timeout)
+
+
+def _make_abort_client(host: str, timeout: float) -> Any:
+    """The second client for stop commands (#1194), or None when libasi cannot
+    build one: the main client's own ``make_client`` call has already raised the
+    actionable error in that case."""
+    try:
+        return make_client(host, timeout)
+    except DeviceError:
+        return None
 
 
 #: Cached result of the libasi BusyError lookup: unset / the class / False when
@@ -336,10 +350,16 @@ class _Link:
     with it RELEASED so a capture never blocks the mount status poll. A
     cancelled RPC keeps the lock until its thread returns (see ``call``)."""
 
-    def __init__(self, client: Any, host: str) -> None:
+    def __init__(self, client: Any, host: str,
+                 abort_client: Any = None) -> None:
         self.client = client
         self.host = host
         self._lock = asyncio.Lock()
+        #: A second libasi client (its own sockets and request-id counter) that
+        #: carries ONLY the stop commands, under its own lock (#1194). None when
+        #: it was not opened or could not connect: aborts then use ``client``.
+        self.abort_client = abort_client
+        self._abort_lock = asyncio.Lock()
         self.connected = False
         self.last_ok: float | None = None
         self.last_error: str | None = None
@@ -363,15 +383,32 @@ class _Link:
             raise failure from None
         self.connected = True
         self.last_ok = time.time()
+        await self._connect_abort_client()
+
+    async def _connect_abort_client(self) -> None:
+        """Open the abort client's sockets. Best effort: a box that refuses a
+        second connection still gets every abort, through the main client."""
+        if self.abort_client is None:
+            return
+        try:
+            await asyncio.to_thread(self.abort_client.connect, True)
+        except Exception as exc:  # noqa: BLE001 - the main client still aborts
+            _log.warning("asiair: no second connection for stop commands, "
+                         "they will queue behind other calls (%s)",
+                         _shown_failure(exc))
+            self.abort_client = None
 
     async def close(self) -> None:
         """Drop OUR sockets. Bridge semantics: this never closes the ASIAIR's
         own camera/focuser/mount, and never changes anything on the box."""
         self.connected = False
-        try:
-            await asyncio.to_thread(self.client.disconnect)
-        except Exception:  # noqa: BLE001 — teardown is best-effort
-            pass
+        for client in (self.client, self.abort_client):
+            if client is None:
+                continue
+            try:
+                await asyncio.to_thread(client.disconnect)
+            except Exception:  # noqa: BLE001 — teardown is best-effort
+                pass
 
     # -- RPC ---------------------------------------------------------------
 
@@ -398,7 +435,35 @@ class _Link:
         making progress holds the lock until it is done, and the next RPC,
         an abort included, waits for it. A FITS download is the one call that
         can run that long, so it does not go through here: see ``download``."""
-        await self._lock.acquire()
+        return await self._run_locked(self._lock, fn, args, kwargs, what)
+
+    async def abort_call(self, pick, *args, what: str):
+        """Send ONE stop command (``stop_exposure``, the mount's stop, the
+        focuser's stop) without queueing behind a cancelled command RPC.
+
+        ``pick`` takes a libasi client and returns the method to call. The
+        command goes out on the abort client under the abort lock, so it never
+        waits for a command call whose reply the box has not sent yet, and a
+        reply on one client cannot be taken by a call on the other (each has
+        its own sockets and request ids). Only another stop command can make it
+        wait. With no abort client it is an ordinary ``call``.
+
+        Worst-case delay between the caller's ``abort_call`` and the command
+        leaving for the box: before this lane, up to one libasi socket timeout
+        (``DEFAULT_TIMEOUT_S``, 10 s) per stalled read of the cancelled call,
+        longer while that call kept making progress; now the thread-pool
+        dispatch only, unless an earlier stop command is itself still stalled
+        (then up to ``DEFAULT_TIMEOUT_S`` for that one)."""
+        if self.abort_client is None:
+            return await self.call(pick(self.client), *args, what=what)
+        return await self._run_locked(self._abort_lock,
+                                      pick(self.abort_client), args, {}, what)
+
+    async def _run_locked(self, lock: asyncio.Lock, fn, args, kwargs,
+                          what: str):
+        """``call``'s body, for either lane: run ``fn`` in a thread under
+        ``lock``; a cancel keeps ``lock`` until the thread returns."""
+        await lock.acquire()
         orphaned = False
         failure: AsiairCallError | None = None
         try:
@@ -407,13 +472,14 @@ class _Link:
                 value = await asyncio.shield(rpc)
             except asyncio.CancelledError:
                 orphaned = True
-                rpc.add_done_callback(self._release_after_orphan)
+                rpc.add_done_callback(
+                    lambda done: self._release_after_orphan(done, lock))
                 raise
             except Exception as exc:  # noqa: BLE001 — one honest DeviceError out
                 failure = self._failure(exc, what)
         finally:
             if not orphaned:
-                self._lock.release()
+                lock.release()
         if failure is not None:
             # Outside the handler and ``from None``: libasi's exception is on
             # neither ``__cause__`` nor ``__context__`` (#955).
@@ -453,13 +519,14 @@ class _Link:
         return AsiairCallError(
             f"ASIAIR {self.host}: {what} failed — {shown} ({_NOT_QUOTED})", exc)
 
-    def _release_after_orphan(self, rpc: asyncio.Future) -> None:
+    def _release_after_orphan(self, rpc: asyncio.Future,
+                              lock: asyncio.Lock) -> None:
         """Done-callback of a call whose caller was cancelled: retrieve its
         outcome (nobody awaits it, and an unretrieved exception would be
-        logged with its text) and release the link lock."""
+        logged with its text) and release the lane's lock."""
         if not rpc.cancelled():
             rpc.exception()
-        self._lock.release()
+        lock.release()
 
     def _busy_message(self, exc: BaseException, what: str) -> str:
         activity = str(getattr(exc, "activity", "") or "another operation")
@@ -842,7 +909,7 @@ class AsiairTelescope(_AsiairDevice, Telescope):
         if axis not in ("ra", "dec"):
             raise DeviceError(f"{self.name}: unknown axis {axis!r}")
         if rate_deg_s == 0.0:
-            await self._link.call(self._link.client.mount.stop, what="stop")
+            await self._link.abort_call(lambda c: c.mount.stop, what="stop")
             return
         self._require_cap("move", "manual slewing")
         await self._link.require_idle("a manual slew", allow_guiding=True)
@@ -856,7 +923,7 @@ class AsiairTelescope(_AsiairDevice, Telescope):
 
     async def stop(self) -> None:
         """Emergency stop — ``scope_abort_slew``. NEVER gated on idleness."""
-        await self._link.call(self._link.client.mount.stop, what="stop")
+        await self._link.abort_call(lambda c: c.mount.stop, what="stop")
 
     # -- settle ------------------------------------------------------------
 
@@ -921,8 +988,8 @@ class AsiairTelescope(_AsiairDevice, Telescope):
                            f"deg from the target"))
         except BaseException:
             try:
-                await self._link.call(self._link.client.mount.stop,
-                                      what="stop after failed " + what)
+                await self._link.abort_call(lambda c: c.mount.stop,
+                                            what="stop after failed " + what)
             except Exception:  # noqa: BLE001 — halt is best-effort
                 pass
             raise
@@ -1076,8 +1143,8 @@ class AsiairFocuser(_AsiairDevice, Focuser):
 
     async def halt(self) -> None:
         """Stop the focuser. NEVER gated on idleness."""
-        await self._link.call(self._link.client.focuser.stop,
-                              what="halt focuser")
+        await self._link.abort_call(lambda c: c.focuser.stop,
+                                    what="halt focuser")
 
     async def is_moving(self) -> bool:
         """Same idle test ``move_to`` waits on — one source of truth for
@@ -1218,8 +1285,9 @@ class AsiairCamera(_AsiairDevice, Camera):
 
     THROWAWAY frames (``save=False``: the live-preview loop, focus frames,
     solve frames) would otherwise fill the user's SD card at one file every few
-    seconds, so after a SUCCESSFUL download this backend deletes the one file it
-    just created -- never anything else, never a frame it did not write, and
+    seconds, so once it has named the file it just saved this backend deletes
+    that file on every ending (a decoded frame, an abort, a failed download or
+    decode) -- never anything else, never a frame it did not write, and
     never a ``save=True`` light. Set ``ConnSpec.extra['cleanup_previews'] =
     False`` to keep every frame on the box instead.
 
@@ -1237,6 +1305,7 @@ class AsiairCamera(_AsiairDevice, Camera):
         self._controls: set[str] = set()
         self._target_c: float | None = None
         self._download: asyncio.Future | None = None
+        self._cleanups: set[asyncio.Future] = set()
         self.can_report_cooler_power = False
 
     def configure(self, extra: dict | None) -> None:
@@ -1401,6 +1470,8 @@ class AsiairCamera(_AsiairDevice, Camera):
         started = time.time()
         await self._link.call(cam.start_exposure, frame_type, False, force=True,
                               what="start exposure")
+        path: str | None = None
+        decoded = False
         try:
             try:
                 await self._wait_capture_done(seconds)
@@ -1412,22 +1483,24 @@ class AsiairCamera(_AsiairDevice, Camera):
             await self._link.call(images.save_current, what="save frame")
             path = await self._find_new_file(before)
             raw = await self._download_fits(path)
+            data, hdr = await asyncio.to_thread(_decode_fits, raw)
+            decoded = True
         except asyncio.CancelledError:
             await self.abort_exposure()
             raise
-        data, hdr = await asyncio.to_thread(_decode_fits, raw)
-        # Only AFTER a successful decode: a throwaway frame's file on the box is
-        # the one we just wrote, and keeping it would fill the user's card at
-        # one file per preview tick. Best-effort — a failed delete is logged,
-        # never an exposure failure (we already hold the pixels).
-        if not save and self._cleanup_previews:
-            try:
-                await self._link.call(images.delete, path,
-                                      what="remove downloaded preview")
-                path = None
-            except DeviceError as exc:
-                _log.warning("asiair: could not remove %s from the box: %s",
-                             path, exc)
+        finally:
+            # Any ending after the save but before a decoded frame (an abort, a
+            # cancel, a failed download, a failed decode) leaves our file on the
+            # box. The delete runs after the abort command has gone out and off
+            # this task, so it never holds up the abort or the error (#1193).
+            if path is not None and not decoded and self._wants_cleanup(save):
+                self._discard_preview_later(path)
+        # A throwaway frame's file on the box is the one we just wrote, and
+        # keeping it would fill the user's card at one file per preview tick.
+        # Best-effort: a failed delete is logged, never an exposure failure (we
+        # already hold the pixels).
+        if self._wants_cleanup(save) and await self._remove_preview(path):
+            path = None
         return CameraFrame(
             data=data,
             exposure_s=float(seconds), gain=int(gain), offset=applied_offset,
@@ -1442,6 +1515,34 @@ class AsiairCamera(_AsiairDevice, Camera):
             data_is_linear=True,
             egain_e_per_adu=_maybe_float(hdr.get("EGAIN")),
         )
+
+    def _wants_cleanup(self, save: bool) -> bool:
+        return not save and self._cleanup_previews
+
+    def _discard_preview_later(self, path: str) -> None:
+        """Delete a preview file in a task of its own, kept referenced until it
+        ends. ``_remove_preview`` never raises, so the task has no outcome to
+        retrieve."""
+        task = asyncio.ensure_future(self._remove_preview(path))
+        self._cleanups.add(task)
+        task.add_done_callback(self._cleanups.discard)
+
+    async def _remove_preview(self, path: str) -> bool:
+        """Delete our preview file from the box, bounded. True when it is gone.
+        A failure is logged once, as a warning, naming neither the file nor
+        anything from the frame, and is never raised."""
+        images = self._link.client.images
+        try:
+            await asyncio.wait_for(
+                self._link.call(images.delete, path,
+                                what="remove downloaded preview"),
+                PREVIEW_DELETE_BOUND_S)
+        except (DeviceError, TimeoutError) as exc:
+            _log.warning("asiair: could not remove a preview frame from the "
+                         "box, it stays on the box's SD card (%s)",
+                         exc or "timed out")
+            return False
+        return True
 
     async def _download_fits(self, path: str) -> bytes:
         """Download our frame as a task ``abort_exposure`` can cancel. An abort
@@ -1463,17 +1564,16 @@ class AsiairCamera(_AsiairDevice, Camera):
     async def abort_exposure(self) -> None:
         """Stop the exposure and drop the frame. NEVER gated on idleness.
 
-        A FITS download in flight is cancelled FIRST, so the abort does not
-        wait for it: the download runs outside the link lock (``_Link.download``)
-        and its cancel returns at once, leaving the abandoned libasi thread to
-        finish and be discarded. ``stop_exposure`` then takes the lock as any
-        RPC does, and waits only behind a cancelled command RPC, which libasi's
-        socket timeout bounds."""
+        A FITS download in flight is cancelled FIRST: the download runs outside
+        the link lock (``_Link.download``) and its cancel returns at once,
+        leaving the abandoned libasi thread to finish and be discarded.
+        ``stop_exposure`` then goes out on the abort client
+        (``_Link.abort_call``), not behind a cancelled command RPC."""
         if self._download is not None:
             self._download.cancel()
         try:
-            await self._link.call(self._link.client.camera.stop_exposure, False,
-                                  what="abort exposure")
+            await self._link.abort_call(lambda c: c.camera.stop_exposure, False,
+                                        what="abort exposure")
         except DeviceError:
             pass
 
@@ -1706,7 +1806,8 @@ class AsiairBackend:
                 "connection screen).")
         timeout = float((getattr(conn, "extra", None) or {}).get(
             "timeout_s", DEFAULT_TIMEOUT_S))
-        link = _Link(make_client(host, timeout), host)
+        link = _Link(make_client(host, timeout), host,
+                     abort_client=_make_abort_client(host, timeout))
         await link.connect()
         return AsiairSession(link)
 
