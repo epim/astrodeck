@@ -49,20 +49,69 @@ inspection; the existing reports state which were and were not available.
 
 ## Updating evidence
 
-Review artifact-registry.json when a binary, dataset, font, raster or application
-source changes. It records exact input hashes and a normalized UTF-8 source
-manifest so a new ASCII table in a Python file cannot be silently treated as
-original code. Do not automatically regenerate this manifest just to turn the
-gate green. The two PWA icons are attributed to their project commits; the
+Review artifact-registry.json when a binary, dataset, font or raster changes. It
+records exact input hashes, and what each application source file is, so a new
+ASCII table in a Python file cannot be silently treated as original code; whether
+a changed source file was reviewed is the ledger's question, below. Do not
+automatically regenerate the registry just to turn the gate green. The two PWA icons are attributed to their project commits; the
 nebula artwork is owner-made and registered as Apache-2.0 on the owner's
 ruling of 2026-10-20 (#637).
 
+### The reviewed-inputs ledger
+
+`release-reviewed-inputs.json` is the one place a changed file is recorded as
+reviewed. The release gate reads nothing else for that question, and
+`artifact-registry.json` `reviewed_sources` only says what a file is (its
+component and credit); its recorded hash approves nothing. The ledger names its
+`base`, a commit of this history whose files count as reviewed. A file is
+approved when its row's digest equals the file, or, with no row, when it equals
+its copy at `base`. A row that contradicts the file approves nothing, even when
+the file equals the base, so a stale record fails instead of hiding. A new
+application module needs a ledger row and nothing else.
+
+The digest is the SHA-256 of the file's text with a BOM removed and CRLF folded
+to LF. A CRLF checkout and `git show HEAD:path` give the same digest.
+
+Three commands keep it, all in `release_evidence.py`:
+
+- `status` reads and reports, and exits 1 while work remains. It lists the
+  changed files that have no row, the rows whose file is back to the base and
+  can go, and the rows whose file changed since they were written.
+
+      python tools/licence/release_evidence.py status
+
+  Add `--json` for a list of paths, and `--ui-inventory` and
+  `--frozen-provenance` to check the paths a UI build and a frozen build read.
+
+- `sync` removes the rows that say nothing the base does not. It never adds a
+  row and never changes a digest.
+
+      python tools/licence/release_evidence.py sync
+
+- `approve` records a digest for the changed bytes of the files named on its
+  command line, with a review sentence.
+
+      python tools/licence/release_evidence.py approve --path server/astrodeck/hub.py --review "Read the whole diff from the base: one new route, no dependency or data."
+
+  `approve` is a statement by a person that they read the changed bytes of
+  that file. It refuses without a named path (no patterns, no "all"), with a
+  review under 40 characters, for a file equal to the base, and for a changed
+  file when the review repeats the old row's text. Do not run it to turn the
+  gate green.
+
 A release commit changes the version line in two reviewed sources,
 server/astrodeck/__init__.py and server/pyproject.toml. Run
-`python tools/licence/version_bump_evidence.py X.Y.Z` in that commit. It
-refreshes those two reviewed hashes only when each file is the reviewed base's
-copy with its version line changed and nothing else. Any other difference is
-refused and needs a review.
+`python tools/licence/version_bump_evidence.py X.Y.Z` in that commit. It writes
+their ledger rows, and only when each file is HEAD's approved copy with its
+single version line changed and nothing else; any other difference is refused
+and needs `approve`. It then runs `sync` and prints `status`. It also checks
+that README.md, tools/docs/setup-claims.json, ui/package.json and
+ui/src/credits.generated.json carry X.Y.Z, naming the fix for any that does
+not, and exits 1 if one lags or work remains.
+
+`tools/licence/test_release_gate.py` runs in the release workflow's selftest
+job, not on pull requests, so the ledger may trail the tree between releases;
+it has to be current at the tag.
 
 A registered credit must match the reviewed licence and resolve to intact full
 texts where required. Remote survey data are recorded separately from bundled

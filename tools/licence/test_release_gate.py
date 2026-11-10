@@ -3,6 +3,7 @@
 """Release gates: real archive/RECORD mutations; no application execution."""
 from __future__ import annotations
 import base64
+import contextlib
 import copy
 import csv
 import hashlib
@@ -22,9 +23,43 @@ import zlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import audit_release as gate
+import release_evidence as evidence
 import release_provenance as proof
 
 ROOT = Path(__file__).resolve().parents[2]
+#: A stand-in commit for fixtures that need one; the real ledger base is not used here.
+FIXTURE_COMMIT = 'b3ce0f1b8f3e2ce68fd7baa740d61c3848165837'
+
+def git_in(root, *args, autocrlf='false'):
+    command = ['git', '-c', 'user.name=release-test', '-c', 'user.email=test@example.invalid', '-c', 'core.autocrlf=' + autocrlf, *args]
+    return subprocess.run(command, cwd=root, check=True, capture_output=True)
+
+def commit_all(root, message='fixture'):
+    git_in(root, 'add', '-A')
+    git_in(root, 'commit', '-q', '-m', message)
+    return git_in(root, 'rev-parse', 'HEAD').stdout.decode().strip()
+
+def write_files(root, files):
+    for name, raw in files.items():
+        path = Path(root) / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+
+def ledger_row(path, data, review='Read the complete change against the reviewed base; nothing else moved.', **more):
+    return {'path': path, 'sha256': evidence.digest(data), 'review': review, **more}
+
+def write_ledger_file(root, base, rows):
+    path = Path(root) / evidence.LEDGER
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ledger = {'schema_version': 2, 'base': base, 'digest': evidence.DIGEST_NAME, 'files': rows}
+    path.write_text(json.dumps(ledger, indent=2) + '\n', encoding='utf-8')
+
+def load_version_bump():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('version_bump_evidence', Path(__file__).with_name('version_bump_evidence.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 def record(files):
     name = next(p for p in files if p.endswith('.dist-info/METADATA')).rsplit('/', 1)[0] + '/RECORD'
@@ -81,7 +116,7 @@ class NativeFixture(unittest.TestCase):
         notices = {'MPL-2.0.txt': mpl,
                    'THIRD-PARTY-NOTICES.md': b'Root notices for fixture.\n' * 20,
                    'CARGO-NOTICES.txt': ('fixture-dependency 1.2.3\n' + copyright_text).encode(),
-                   'NATIVE-SOURCE.txt': ('Exact fixture source commit: ' + gate.BASE + '\n' + 'Source included. ' * 10).encode(),
+                   'NATIVE-SOURCE.txt': ('Exact fixture source commit: ' + FIXTURE_COMMIT + '\n' + 'Source included. ' * 10).encode(),
                    'native-source.tar.gz': source.getvalue()}
         engine=bytearray(b'MZ'+b'\0'*126)
         struct.pack_into('<I',engine,60,64)
@@ -111,11 +146,11 @@ class NativeFixture(unittest.TestCase):
         self.base_patch = patch.object(gate, 'warm_base', return_value=None)
         self.base_patch.start()
         self.addCleanup(self.base_patch.stop)
-        self.git_patch = patch.object(gate.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, stdout=gate.BASE + '\n'))
+        self.git_patch = patch.object(gate.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, stdout=FIXTURE_COMMIT + '\n'))
         self.git_patch.start()
         self.addCleanup(self.git_patch.stop)
     def reseal(self):
-        seal = {'schema_version': 1, 'source_commit': gate.BASE, 'native_source_sha256': self.source_digest.hexdigest(),
+        seal = {'schema_version': 1, 'source_commit': FIXTURE_COMMIT, 'native_source_sha256': self.source_digest.hexdigest(),
                 'native_version': '0.1.0', 'app_version': '0.3.39',
                 'extension_sha256': {self.engine: proof.sha(self.files[self.engine])},
                 'source_archive_sha256': {p: proof.sha(b) for p,b in self.files.items() if p.startswith(self.stem + '/source/')},
@@ -312,6 +347,7 @@ class ArchiveAndPolicyTests(unittest.TestCase):
     def test_fresh_source_is_not_automatically_a_reviewed_delta(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            write_ledger_file(root, FIXTURE_COMMIT, [])
             result = subprocess.CompletedProcess([], 1, stdout=b'', stderr=b'absent')
             with patch.object(gate.subprocess, 'run', return_value=result):
                 self.assertFalse(gate.approved_source('server/astrodeck/new_table.py', b'DATA="new"', root))
@@ -699,6 +735,395 @@ class VersionBumpEvidenceTests(unittest.TestCase):
     def test_two_version_lines_are_refused(self):
         base = self.base + '__version__ = "0.3.45"\n'
         self.assertFalse(self.vb.version_only_delta("server/astrodeck/__init__.py", base, base.replace("0.3.45", "0.3.46"), "0.3.46"))
+
+class LedgerFixture(unittest.TestCase):
+    """A real git repository: a base commit, then a commit that changes one file and adds one."""
+    SAME = 'server/astrodeck/same.py'
+    CHANGED = 'server/astrodeck/changed.py'
+    FRESH = 'server/astrodeck/fresh.py'
+    REVIEW = 'Read the whole diff from the base: one constant changed from 1 to 2, nothing else.'
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        git_in(self.root, 'init', '-q')
+        write_files(self.root, {self.SAME: b'SAME = 1\n', self.CHANGED: b'CHANGED = 1\n'})
+        self.base = commit_all(self.root, 'base')
+        self.changed, self.fresh = b'CHANGED = 2\n', b'FRESH = 1\n'
+        write_files(self.root, {self.CHANGED: self.changed, self.FRESH: self.fresh})
+        self.head = commit_all(self.root, 'change')
+
+    def put(self, rows):
+        write_ledger_file(self.root, self.base, rows)
+
+    def ledger_bytes(self):
+        return (self.root / evidence.LEDGER).read_bytes()
+
+    def rows(self):
+        return {row['path']: row for row in json.loads(self.ledger_bytes())['files']}
+
+    def approved(self, path):
+        return gate.approved_source(path, (self.root / path).read_bytes(), self.root)
+
+
+class LedgerTests(LedgerFixture):
+    """The ledger is the one place a changed file is approved, and a stale row cannot hide (#1160, #1186)."""
+    def test_a_stale_ledger_digest_is_not_approval(self):
+        self.put([ledger_row(self.CHANGED, b'CHANGED = 99\n')])
+        self.assertFalse(self.approved(self.CHANGED))
+
+    def test_a_matching_row_approves(self):
+        self.put([ledger_row(self.CHANGED, self.changed)])
+        self.assertTrue(self.approved(self.CHANGED))
+
+    def test_a_stale_row_poisons_a_path_equal_to_the_base(self):
+        self.put([ledger_row(self.SAME, b'SAME = 0\n')])
+        self.assertFalse(self.approved(self.SAME))
+        evidence.sync(self.root)
+        self.assertTrue(self.approved(self.SAME))
+
+    def test_without_a_row_the_base_copy_decides(self):
+        self.put([])
+        self.assertTrue(self.approved(self.SAME))
+        self.assertFalse(self.approved(self.CHANGED))
+        self.assertFalse(self.approved(self.FRESH))
+
+    def test_a_row_without_review_text_approves_nothing(self):
+        self.put([ledger_row(self.CHANGED, self.changed, review=' ')])
+        _, problems = evidence.read_ledger(self.root)
+        self.assertTrue(problems)
+        self.assertFalse(self.approved(self.CHANGED))
+
+    def test_the_base_comes_from_the_ledger_not_a_constant(self):
+        self.assertFalse(hasattr(gate, 'BASE'))
+        self.put([])
+        self.assertEqual(evidence.read_ledger(self.root)[0]['base'], self.base)
+
+    def test_a_missing_ledger_is_a_blocker(self):
+        codes = {e['code'] for e in gate.ledger_findings(self.root)}
+        self.assertEqual(codes, {'LEDGER_INVALID'})
+        self.assertIn('LEDGER_INVALID', gate.UNACCOUNTED)
+
+    def test_a_schema_one_ledger_is_a_blocker(self):
+        (self.root / 'tools/licence').mkdir(parents=True)
+        (self.root / evidence.LEDGER).write_text(json.dumps({'schema_version': 1, 'base': self.base, 'files': []}), encoding='utf-8')
+        self.assertEqual({e['code'] for e in gate.ledger_findings(self.root)}, {'LEDGER_INVALID'})
+
+    def test_two_rows_for_one_path_are_a_blocker(self):
+        self.put([ledger_row(self.CHANGED, self.changed), ledger_row(self.CHANGED, b'other\n')])
+        self.assertTrue(gate.ledger_findings(self.root))
+
+    def test_a_base_that_is_not_an_ancestor_of_head_is_a_blocker(self):
+        self.put([])
+        self.assertEqual(gate.ledger_findings(self.root), [])
+        git_in(self.root, 'checkout', '-q', '--orphan', 'elsewhere')
+        git_in(self.root, 'commit', '-q', '--allow-empty', '-m', 'unrelated')
+        orphan = git_in(self.root, 'rev-parse', 'HEAD').stdout.decode().strip()
+        git_in(self.root, 'checkout', '-q', '-f', '--detach', self.head)
+        write_ledger_file(self.root, orphan, [])
+        errors = gate.ledger_findings(self.root)
+        self.assertEqual([e['code'] for e in errors], ['LEDGER_INVALID'])
+        self.assertIn('ancestor', errors[0]['message'])
+
+    def review_archive(self, files, reviewed_sources=()):
+        (self.root / 'tools/licence').mkdir(parents=True, exist_ok=True)
+        (self.root / 'tools/licence/artifact-registry.json').write_text(
+            json.dumps({'assets': [], 'reviewed_sources': list(reviewed_sources)}), encoding='utf-8')
+        (self.root / 'ui').mkdir(exist_ok=True)
+        (self.root / 'ui/package-lock.json').write_bytes(b'{}')
+        credits_bytes = b'{"groups":[],"licenses":{}}'
+        ui = {'schema_version': 2, 'npm_lock_sha256': proof.sha(b'{}'), 'source_inputs': [], 'files': [],
+              'credits_sha256': proof.sha(credits_bytes)}
+        return gate.source_review(files, json.loads(credits_bytes), credits_bytes, ui, self.root)[0]
+
+    def unaccounted(self, errors, path):
+        return [e for e in errors if e['code'] == 'UNACCOUNTED' and e['path'] == path]
+
+    def test_a_new_server_module_needs_only_a_ledger_row(self):
+        self.put([])
+        found = self.unaccounted(self.review_archive({self.FRESH: self.fresh}), self.FRESH)
+        self.assertEqual(len(found), 1)
+        self.assertIn('release_evidence.py approve --path ' + self.FRESH, found[0]['message'])
+        self.put([ledger_row(self.FRESH, self.fresh)])
+        self.assertEqual(self.unaccounted(self.review_archive({self.FRESH: self.fresh}), self.FRESH), [])
+
+    def test_a_registry_digest_is_not_approval(self):
+        self.put([])
+        rule = {'path': self.CHANGED, 'sha256': evidence.digest(self.changed), 'component': 'AstroDeck application source'}
+        self.assertEqual(len(self.unaccounted(self.review_archive({self.CHANGED: self.changed}, [rule]), self.CHANGED)), 1)
+
+    def test_a_stale_row_names_itself_in_the_message(self):
+        self.put([ledger_row(self.CHANGED, b'CHANGED = 99\n')])
+        found = self.unaccounted(self.review_archive({self.CHANGED: self.changed}), self.CHANGED)
+        self.assertEqual(len(found), 1)
+        self.assertIn('ledger row is stale', found[0]['message'])
+
+    def test_the_registry_route_matches_audit_artifact(self):
+        table = ['server/astrodeck/x.py', 'server/astrodeck/sub/x.py', 'server/astrodeck/vendor/z/x.py', 'server/astrodeck/data.json',
+                 'server/pyproject.toml', 'packaging/x.py', 'server/tests/x.py']
+        credits_bytes = b'{"groups":[],"licenses":{}}'
+        ui = {'credits_sha256': proof.sha(credits_bytes), 'files': []}
+        for name in table:
+            _, records = gate.audit_artifact.review({name: b'X = 1\n'}, {'assets': [], 'reviewed_sources': []},
+                                                     json.loads(credits_bytes), ui, credits_bytes, {})
+            routed = records[0]['component'] == 'UNREVIEWED source'
+            self.assertEqual(evidence.is_registry_source(name), routed, name)
+
+
+class LedgerCommandTests(LedgerFixture):
+    """sync only removes claims; approve writes a digest only for the files it is told to name."""
+    def test_sync_never_writes_a_digest(self):
+        stale = ledger_row(self.CHANGED, b'CHANGED = 99\n')
+        current = ledger_row(self.FRESH, self.fresh)
+        self.put([stale, current, ledger_row(self.SAME, b'SAME = 0\n')])
+        dropped = evidence.sync(self.root)
+        self.assertEqual(dropped, [self.SAME])
+        self.assertEqual(self.rows(), {self.CHANGED: stale, self.FRESH: current})
+
+    def test_sync_drops_a_row_for_a_file_that_is_gone(self):
+        self.put([ledger_row('server/astrodeck/gone.py', b'GONE = 1\n')])
+        self.assertEqual(evidence.sync(self.root), ['server/astrodeck/gone.py'])
+        self.assertEqual(self.rows(), {})
+
+    def test_approve_refuses_without_naming_what_it_approves(self):
+        self.put([ledger_row(self.CHANGED, b'CHANGED = 0\n', review=self.REVIEW)])
+        write_files(self.root, {'server/astrodeck/untracked.py': b'U = 1\n'})
+        before = self.ledger_bytes()
+        cases = {
+            'no path': ([], self.REVIEW),
+            'a pattern': (['server/astrodeck/*.py'], self.REVIEW),
+            'an untracked file': (['server/astrodeck/untracked.py'], self.REVIEW),
+            'a short review': ([self.FRESH], 'looks fine'),
+            'a file equal to the base': ([self.SAME], self.REVIEW),
+            'the old review text on new bytes': ([self.CHANGED], self.REVIEW),
+        }
+        for label, (paths, review) in cases.items():
+            with self.subTest(label):
+                with self.assertRaises(SystemExit):
+                    evidence.approve(self.root, paths, review)
+                self.assertEqual(self.ledger_bytes(), before)
+
+    def test_approve_writes_the_current_digest_and_the_head_revision(self):
+        self.put([])
+        written = evidence.approve(self.root, [self.CHANGED, self.FRESH], self.REVIEW)
+        self.assertEqual({path for path, _, _ in written}, {self.CHANGED, self.FRESH})
+        rows = self.rows()
+        self.assertEqual(rows[self.CHANGED]['sha256'], evidence.digest(self.changed))
+        self.assertEqual(rows[self.FRESH]['reviewed_revision'], self.head)
+        self.assertEqual(rows[self.FRESH]['review'], self.REVIEW)
+        self.assertTrue(self.approved(self.CHANGED) and self.approved(self.FRESH))
+        self.assertEqual(evidence.approve(self.root, [self.CHANGED], self.REVIEW), [])
+
+    def test_approve_leaves_unnamed_rows_alone(self):
+        stale = ledger_row(self.CHANGED, b'CHANGED = 99\n')
+        self.put([stale])
+        evidence.approve(self.root, [self.FRESH], self.REVIEW)
+        self.assertEqual(self.rows()[self.CHANGED], stale)
+        self.assertFalse(self.approved(self.CHANGED))
+
+    def run_cli(self, *argv):
+        out = io.StringIO()
+        with patch.object(evidence, 'ROOT', self.root), contextlib.redirect_stdout(out):
+            code = evidence.main(list(argv))
+        return code, out.getvalue()
+
+    def test_status_lists_each_class_and_exits_nonzero(self):
+        self.put([ledger_row(self.SAME, b'SAME = 0\n'), ledger_row(self.CHANGED, b'CHANGED = 99\n')])
+        code, text = self.run_cli('status', '--json')
+        report = json.loads(text)
+        self.assertEqual(code, 1)
+        self.assertEqual(report['unapproved'], [self.FRESH])
+        self.assertEqual(report['stale_droppable'], [self.SAME])
+        self.assertEqual(report['stale_changed'], [self.CHANGED])
+
+    def test_status_is_clean_once_everything_is_approved(self):
+        self.put([])
+        self.assertEqual(self.run_cli('approve', '--path', self.CHANGED, '--path', self.FRESH, '--review', self.REVIEW)[0], 0)
+        code, text = self.run_cli('status')
+        self.assertEqual((code, text.splitlines()[-1]), (0, 'clean'))
+
+    def test_status_reports_a_gated_file_committed_with_crlf(self):
+        write_files(self.root, {'server/astrodeck/crlf.py': b'A = 1\r\nB = 2\r\n'})
+        commit_all(self.root, 'crlf')
+        self.put([])
+        self.assertTrue(evidence.survey(self.root)['hazards'])
+
+
+class DigestTests(unittest.TestCase):
+    def test_digest_agrees_for_lf_crlf_and_bom(self):
+        text = b'A = 1\nB = 2\n'
+        self.assertEqual(evidence.digest(text), evidence.digest(text.replace(b'\n', b'\r\n')))
+        self.assertEqual(evidence.digest(text), evidence.digest(b'\xef\xbb\xbf' + text))
+        self.assertNotEqual(evidence.digest(text), evidence.digest(text.replace(b'2', b'3')))
+
+    def test_digest_of_a_crlf_checkout_equals_the_digest_of_the_committed_blob(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git_in(root, 'init', '-q', autocrlf='true')
+            write_files(root, {'mod.py': b'A = 1\nB = 2\n'})
+            git_in(root, 'add', '-A', autocrlf='true')
+            git_in(root, 'commit', '-q', '-m', 'lf blob', autocrlf='true')
+            (root / 'mod.py').unlink()
+            git_in(root, 'checkout', '--', 'mod.py', autocrlf='true')
+            working = (root / 'mod.py').read_bytes()
+            committed = evidence.copy_at(root, 'HEAD', 'mod.py')
+            self.assertIn(b'\r\n', working)
+            self.assertNotIn(b'\r\n', committed)
+            self.assertEqual(evidence.digest(working), evidence.digest(committed))
+
+
+class VersionCarryTests(unittest.TestCase):
+    """version_bump_evidence writes the one ledger, from HEAD's approved copy, and checks the other carriers."""
+    INIT = 'server/astrodeck/__init__.py'
+    TOML = 'server/pyproject.toml'
+    REGISTRY = b'{"reviewed_sources": [{"path": "server/pyproject.toml", "sha256": "0000"}]}\n'
+
+    def setUp(self):
+        self.vb = load_version_bump()
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        git_in(self.root, 'init', '-q')
+        self.carriers = {
+            'README.md': b'![version](https://img.shields.io/badge/version-0.3.45-4DD9E8)\n',
+            'tools/docs/setup-claims.json': b'{"claim": "![version](https://img.shields.io/badge/version-0.3.45-4DD9E8)"}\n',
+            'ui/package.json': b'{\n  "name": "ui",\n  "version": "0.3.45"\n}\n',
+            'ui/src/credits.generated.json': b'{\n  "version": "0.3.45"\n}\n'}
+        write_files(self.root, {self.INIT: b'"""AstroDeck."""\n__version__ = "0.3.45"\n',
+                                self.TOML: b'[project]\nname = "astrodeck"\nversion = "0.3.45"\n',
+                                'tools/licence/artifact-registry.json': self.REGISTRY, **self.carriers})
+        self.base = commit_all(self.root, 'base')
+        write_ledger_file(self.root, self.base, [])
+
+    def bump(self, names, extra=b''):
+        for name in names:
+            path = self.root / name
+            path.write_bytes(path.read_bytes().replace(b'0.3.45', b'0.3.46') + (extra if name == self.INIT else b''))
+
+    def approved(self, path):
+        return gate.approved_source(path, (self.root / path).read_bytes(), self.root)
+
+    def test_carry_writes_the_ledger_rows_and_not_the_registry(self):
+        self.bump([self.INIT, self.TOML])
+        self.assertFalse(self.approved(self.INIT))
+        self.vb.carry_ledger(self.root, '0.3.46')
+        rows = {r['path']: r for r in json.loads((self.root / evidence.LEDGER).read_bytes())['files']}
+        head = evidence.head_revision(self.root)
+        for path in (self.INIT, self.TOML):
+            self.assertEqual(rows[path]['sha256'], evidence.digest((self.root / path).read_bytes()))
+            self.assertEqual(rows[path]['reviewed_revision'], head)
+            self.assertTrue(self.approved(path))
+        self.assertEqual((self.root / 'tools/licence/artifact-registry.json').read_bytes(), self.REGISTRY)
+
+    def test_a_carried_source_is_accepted_where_the_frozen_leg_asks(self):
+        # frozen_review asks approved_source about the bumped __init__.py; before the ledger row it said no (B4).
+        self.bump([self.INIT, self.TOML])
+        self.assertFalse(self.approved(self.INIT))
+        self.vb.carry_ledger(self.root, '0.3.46')
+        self.assertTrue(self.approved(self.INIT))
+
+    def test_carrying_twice_changes_nothing(self):
+        self.bump([self.INIT, self.TOML])
+        self.vb.carry_ledger(self.root, '0.3.46')
+        first = (self.root / evidence.LEDGER).read_bytes()
+        self.assertTrue(all('already current' in line for line in self.vb.carry_ledger(self.root, '0.3.46')))
+        self.assertEqual((self.root / evidence.LEDGER).read_bytes(), first)
+
+    def test_carry_refuses_when_heads_copy_was_not_approved(self):
+        (self.root / self.INIT).write_bytes(b'"""AstroDeck."""\n__version__ = "0.3.45"\nEXTRA = 1\n')
+        commit_all(self.root, 'an unreviewed edit')
+        self.bump([self.INIT, self.TOML])
+        before = (self.root / evidence.LEDGER).read_bytes()
+        with self.assertRaises(SystemExit) as refused:
+            self.vb.carry_ledger(self.root, '0.3.46')
+        self.assertIn('was not approved', str(refused.exception))
+        self.assertEqual((self.root / evidence.LEDGER).read_bytes(), before)
+
+    def test_carry_refuses_a_change_that_is_more_than_the_version_line(self):
+        self.bump([self.INIT, self.TOML], extra=b'EVIL = 1\n')
+        before = (self.root / evidence.LEDGER).read_bytes()
+        with self.assertRaises(SystemExit) as refused:
+            self.vb.carry_ledger(self.root, '0.3.46')
+        self.assertIn('more than its version line', str(refused.exception))
+        self.assertEqual((self.root / evidence.LEDGER).read_bytes(), before)
+
+    def test_other_version_carriers_are_checked_not_written(self):
+        before = {name: (self.root / name).read_bytes() for name in self.carriers}
+        lagging = self.vb.lagging_carriers(self.root, '0.3.46')
+        self.assertEqual(len(lagging), 4)
+        self.assertIn('run python tools/gen_credits.py', ' '.join(lagging))
+        self.assertEqual({name: (self.root / name).read_bytes() for name in self.carriers}, before)
+        self.bump(list(self.carriers))
+        self.assertEqual(self.vb.lagging_carriers(self.root, '0.3.46'), [])
+
+    def run_main(self):
+        with patch.object(self.vb, 'ROOT', self.root), contextlib.redirect_stdout(io.StringIO()):
+            return self.vb.main(['0.3.46'])
+
+    def test_main_fails_while_a_carrier_lags_and_passes_when_all_carry(self):
+        self.bump([self.INIT, self.TOML])
+        self.assertEqual(self.run_main(), 1)
+        self.assertIn(b'0.3.45', (self.root / 'README.md').read_bytes())
+        self.bump(list(self.carriers))
+        self.assertEqual(self.run_main(), 0)
+
+
+class LedgerMigrationTests(LedgerFixture):
+    """Moving a v1 ledger to v2 approves nothing it did not approve before (#1186, R)."""
+    INIT = 'server/astrodeck/__init__.py'
+    NOROW = 'server/astrodeck/norow.py'
+    CURRENT = 'server/astrodeck/current.py'
+
+    def setUp(self):
+        super().setUp()
+        self.vb = load_version_bump()
+        write_files(self.root, {self.INIT: b'__version__ = "0.3.45"\n', self.NOROW: b'N = 1\n', self.CURRENT: b'C = 1\n'})
+        self.base = commit_all(self.root, 'second base')
+        write_files(self.root, {self.INIT: b'__version__ = "0.3.46"\n', self.NOROW: b'N = 2\n', self.CURRENT: b'C = 2\n',
+                                self.CHANGED: b'CHANGED = 3\n', self.FRESH: b'FRESH = 2\n'})
+        commit_all(self.root, 'work since the base')
+
+    def digest_of(self, path):
+        return evidence.digest((self.root / path).read_bytes())
+
+    def old_rule(self, path, rows, registry):
+        data = (self.root / path).read_bytes()
+        row = next((r for r in rows if r['path'] == path), None)
+        if row and row['sha256'] == evidence.digest(data):
+            return True
+        if evidence.matches_base(self.root, {'base': self.base}, path, data):
+            return True
+        return registry.get(path) == evidence.digest(data)
+
+    def migrate(self):
+        evidence.sync(self.root)
+        ledger, _ = evidence.read_ledger(self.root)
+        for path, line in self.vb.VERSION_LINES.items():
+            if not (self.root / path).is_file():
+                continue
+            data = (self.root / path).read_bytes()
+            if evidence.row_verdict(ledger, path, data):
+                continue
+            original = evidence.copy_at(self.root, self.base, path).decode()
+            new = line.search(self.vb.normalized(data.decode())).group(1)
+            self.assertTrue(self.vb.version_only_delta(path, original, data.decode(), new))
+            ledger['files'].append(ledger_row(path, data, review='Carried from the reviewed base: the version line changed and nothing else.'))
+        evidence.write_ledger(self.root, ledger)
+
+    def test_the_migration_leaves_the_approved_set_identical(self):
+        rows = [ledger_row(self.CURRENT, b'C = 2\n'),                      # current row
+                ledger_row(self.SAME, b'SAME = 0\n'),                      # stale, file equals base: droppable
+                ledger_row(self.CHANGED, b'CHANGED = 2\n')]                # stale, file changed: stays stale
+        self.put(rows)
+        registry = {self.INIT: self.digest_of(self.INIT)}                  # approved only by the registry digest
+        paths = [self.CURRENT, self.SAME, self.CHANGED, self.INIT, self.NOROW, self.FRESH]
+        before = {p: self.old_rule(p, rows, registry) for p in paths}
+        self.migrate()
+        after = {p: self.approved(p) for p in paths}
+        self.assertEqual(after, before)
+        self.assertEqual([p for p, ok in after.items() if not ok], [self.CHANGED, self.NOROW, self.FRESH])
+        self.assertEqual(set(self.rows()), {self.CURRENT, self.CHANGED, self.INIT})
 
 if __name__ == '__main__':
     unittest.main()
