@@ -805,7 +805,8 @@ async def test_disconnect_never_touches_the_boxs_mount(fake):
     fake.calls.clear()
     await session.close()
     assert tel.connected is False and cam.connected is False
-    assert fake.labels == ["disconnect"], fake.labels
+    # The one fake stands in for both libasi clients (command and stop).
+    assert set(fake.labels) == {"disconnect"}, fake.labels
     assert fake.connected is False
 
 
