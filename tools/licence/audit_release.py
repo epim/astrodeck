@@ -27,12 +27,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(ROOT / "tools"))
 import audit_artifact
 import licence_policy
+import release_evidence as evidence
 import release_provenance as provenance
 
 PLATFORMS = {"linux-x86_64", "windows-x86_64", "linux-arm64", "macos-arm64", "source"}
 KINDS = {"source-tar", "frozen", "native-wheel", "server-wheel"}
-BASE = "b3ce0f1b8f3e2ce68fd7baa740d61c3848165837"
-UNACCOUNTED = {"UNACCOUNTED", "PROVENANCE", "SOURCE_CHANGED", "NATIVE_UNREVIEWED", "ARCHIVE", "ENVELOPE_UNREVIEWED", "UI_SOURCE", "UI_PROVENANCE", "NATIVE_SBOM", "NATIVE_SEAL"}
+UNACCOUNTED = {"UNACCOUNTED", "PROVENANCE", "SOURCE_CHANGED", "NATIVE_UNREVIEWED", "ARCHIVE", "ENVELOPE_UNREVIEWED", "UI_SOURCE", "UI_PROVENANCE", "NATIVE_SBOM", "NATIVE_SEAL", "LEDGER_INVALID"}
 BASE_CACHE = {}
 
 def read_json(path):
@@ -115,14 +115,29 @@ def load_decisions(root, kind):
     policy = module.load_policy(root)
     return module.decision_records(policy, kind), []
 
+def ledger_findings(root=ROOT):
+    """The ledger must be readable, schema 2, and anchored on a commit of this history."""
+    ledger, problems = evidence.read_ledger(root)
+    errors = [finding("LEDGER_INVALID", problem) for problem in problems]
+    if ledger is not None and not evidence.base_is_ancestor(root, ledger["base"]):
+        errors.append(finding("LEDGER_INVALID", "Ledger base is not an ancestor of HEAD"))
+    return errors
+
+def ledger_base(root):
+    ledger, _ = evidence.read_ledger(root)
+    return ledger["base"] if ledger else None
+
 def warm_base(root, paths):
     names = sorted(set(paths))
     if any("\n" in n or "\r" in n or ":" in n or ".." in Path(n).parts for n in names):
         raise ValueError("invalid source path")
-    names = [n for n in names if (str(root.resolve()), n) not in BASE_CACHE]
+    base = ledger_base(root)
+    if base is None:
+        return
+    names = [n for n in names if (str(root.resolve()), base, n) not in BASE_CACHE]
     if not names:
         return
-    query = "".join(BASE + ":" + n + "\n" for n in names).encode()
+    query = "".join(base + ":" + n + "\n" for n in names).encode()
     result = subprocess.run(["git", "cat-file", "--batch"], cwd=root, input=query, capture_output=True)
     if result.returncode:
         return
@@ -139,7 +154,7 @@ def warm_base(root, paths):
             data = stream.read(size)
             if len(data) != size or stream.read(1) != b"\n":
                 raise ValueError("truncated Git source object")
-        BASE_CACHE[(str(root.resolve()), name)] = data
+        BASE_CACHE[(str(root.resolve()), base, name)] = data
 
 def review_ui_inputs(ui, credits_bytes, root=ROOT):
     if ui.get("schema_version") != 2 or not ui.get("source_inputs"):
@@ -163,20 +178,24 @@ def review_ui_inputs(ui, credits_bytes, root=ROOT):
         if provenance.sha(comparable) != row.get("sha256"):
             errors.append(finding("UI_SOURCE", "UI source differs from recorded build input", path))
         if path != "ui/src/credits.generated.json" and not approved_source(path, data, root):
-            errors.append(finding("SOURCE_CHANGED", "UI source/data addition needs review", path))
+            errors.append(finding("SOURCE_CHANGED", "UI source/data addition needs review; " + evidence.hint(path, data, root), path))
     return errors
 
 def approved_source(path, data, root=ROOT):
-    """Retain the reviewed base; new packaging inputs need explicit review hashes."""
-    extra_path = root / "tools/licence/release-reviewed-inputs.json"
-    if extra_path.is_file():
-        extra = read_json(extra_path)
-        for row in extra.get("files", []):
-            if row["path"] == path and row.get("review") and row["sha256"] == provenance.sha(provenance.normalized_source(data)):
-                return True
-    key = (str(root.resolve()), path)
+    """One ledger decides: its row for the path when there is one, else the reviewed base.
+
+    A row that contradicts the bytes approves nothing, not even a file equal to
+    the base: the record has to be able to fail (#1160).
+    """
+    ledger, _ = evidence.read_ledger(root)
+    if ledger is None:
+        return False
+    verdict = evidence.row_verdict(ledger, path, data)
+    if verdict is not None:
+        return verdict
+    key = (str(root.resolve()), ledger["base"], path)
     if key not in BASE_CACHE:
-        result = subprocess.run(["git", "show", BASE + ":" + path], cwd=root, capture_output=True)
+        result = subprocess.run(["git", "show", ledger["base"] + ":" + path], cwd=root, capture_output=True)
         BASE_CACHE[key] = result.stdout if result.returncode == 0 else None
     original = BASE_CACHE[key]
     if original is None:
@@ -219,30 +238,43 @@ def resolved_owner_messages(messages, files, rules, decisions):
 def source_review(files, credits, credits_bytes, ui, root=ROOT, decisions=()):
     rules = read_json(root / "tools/licence/artifact-registry.json")
     normal, added, errors = {}, [], review_ui_inputs(ui, credits_bytes, root)
-    warm_base(root, [n for n in files if n.startswith(("native/", "packaging/", "tools/licence_texts/")) or n in {"LICENSE", "THIRD-PARTY-NOTICES.md", "server/setup.py"}])
+    warm_base(root, [n for n in files if evidence.is_source_extra(n)])
     for name, data in files.items():
         # Base tar review accounts the application/assets. Extra source packaging
         # cannot be auto-whitelisted by its file suffix or the current checkout.
-        if name.startswith(("native/", "packaging/", "tools/licence_texts/")) or name in {"LICENSE", "THIRD-PARTY-NOTICES.md", "server/setup.py"}:
+        if evidence.is_source_extra(name):
             okay = approved_source(name, data, root)
             added.append({"path": name, "bytes": len(data), "sha256": provenance.sha(data),
                           "component": "reviewed release source/notice" if okay else "UNREVIEWED source"})
             if not okay:
-                errors.append(finding("SOURCE_CHANGED", "Release source addition differs from reviewed base/delta", name))
+                errors.append(finding("SOURCE_CHANGED", "Release source addition differs from reviewed base/delta; " + evidence.hint(name, data, root), name))
         else:
             normal[name] = data
-    # Update a known source rule only for a separately reviewed exact delta.
-    # This preserves the existing component/data notice obligations.
-    warm_base(root, [rule["path"] for rule in rules.get("reviewed_sources", []) if rule["path"] in normal])
+    # Application source is approved by the ledger alone. A registry row says
+    # what a file is (component, credit); its recorded hash is never approval,
+    # so each rule takes the bytes' digest when the ledger approves them and
+    # is blanked when it does not.
+    warm_base(root, [n for n in normal if evidence.is_registry_source(n)])
+    registered = set()
     for rule in rules.get("reviewed_sources", []):
         name = rule["path"]
-        if name in normal and approved_source(name, normal[name], root):
-            rule["sha256"] = provenance.sha(provenance.normalized_source(normal[name]))
+        registered.add(name)
+        if name in normal:
+            okay = approved_source(name, normal[name], root)
+            rule["sha256"] = evidence.digest(normal[name]) if okay else ""
+    for name in sorted(normal):
+        if evidence.is_registry_source(name) and name not in registered and approved_source(name, normal[name], root):
+            rules.setdefault("reviewed_sources", []).append(
+                {"path": name, "sha256": evidence.digest(normal[name]), "component": "AstroDeck application source"})
     old_errors, records = audit_artifact.review(normal, rules, credits, ui, credits_bytes, read_json(root / "ui/package-lock.json"))
     old_errors = resolved_owner_messages(old_errors, normal, rules, decisions)
     for message in old_errors:
         code = "UNACCOUNTED" if any(x in message for x in ("unaccounted", "unclassified", "not been reviewed", "no matching")) else "ARTIFACT"
-        errors.append(finding(code, message))
+        member = message.split(": ", 1)[0]
+        path = member if member in normal else None
+        if path and "not been reviewed" in message and evidence.is_registry_source(path):
+            message += "; " + evidence.hint(path, normal[path], root)
+        errors.append(finding(code, message, path))
     return errors, records + added
 
 def verify_record(files):
@@ -288,8 +320,9 @@ def native_source_review(data, root):
                     raise ValueError("unsafe native source archive")
                 found.add(name)
                 path = name if name.startswith("native/") else "native/" + name
-                if not approved_source(path, archive.extractfile(item).read(), root):
-                    errors.append(finding("SOURCE_CHANGED", "Native source differs from reviewed base/delta", path))
+                member_bytes = archive.extractfile(item).read()
+                if not approved_source(path, member_bytes, root):
+                    errors.append(finding("SOURCE_CHANGED", "Native source differs from reviewed base/delta; " + evidence.hint(path, member_bytes, root), path))
         expected = {p.relative_to(root).as_posix() for p in (root / "native").rglob("*")
                     if p.is_file() and not any(part in {"target", ".git", "__pycache__", "licenses"} for part in p.relative_to(root / "native").parts)}
         normalized = {n if n.startswith("native/") else "native/" + n for n in found}
@@ -588,7 +621,10 @@ def frozen_review(files, kinds, proof, artifact_sha, credits, credits_bytes, ui,
             local = root / path
             repo_approved = local.is_file() and provenance.sha(local.read_bytes()) == row.get("source_sha256") and approved_source(path, local.read_bytes(), root)
             if not repo_approved:
-                errors.append(finding("SOURCE_CHANGED", "First-party build input is not the reviewed source", name))
+                reason = "First-party build input is not the reviewed source"
+                if local.is_file():
+                    reason += "; " + evidence.hint(path, local.read_bytes(), root)
+                errors.append(finding("SOURCE_CHANGED", reason, name))
         elif component.lower() not in {"namespace", "pyinstaller archive container", "cpython", "unknown", "astrodeck", "astrodeck-native"} and key not in checked_components:
             checked_components.add(key)
             entry = entries.get(key)
@@ -643,6 +679,7 @@ def run(args):
     ui = read_json(args.ui_inventory) if args.ui_inventory else {}
     checksum = provenance.sha(args.artifact.read_bytes())
     decisions, errors = load_decisions(ROOT, args.kind)
+    errors += ledger_findings(ROOT)
     envelope = None
     if args.kind == "source-tar":
         files, bad = audit_artifact.read_archive(args.artifact)
