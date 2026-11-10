@@ -232,23 +232,31 @@ def test_a_superseded_pages_publish_is_cancelled():
 # Each attempt is bounded; the stubs below stand in for pip-audit, so no
 # network is touched.
 
-def _hanging_stub(tmp_path: Path, hang_seconds: float, then: str = "") -> list[str]:
-    """A command that sleeps `hang_seconds`, unless `then` names a transcript
-    file that the second and later calls print instead (the first call hangs)."""
-    script = tmp_path / "hang.py"
-    script.write_text(
-        "import pathlib, sys, time\n"
-        "marker = pathlib.Path(sys.argv[1])\n"
-        "if marker.exists():\n"
-        "    sys.stdout.write(open(sys.argv[2], encoding='utf-8').read())\n"
-        "    sys.exit(int(sys.argv[3]))\n"
-        "marker.write_text('seen')\n"
-        "time.sleep(float(sys.argv[4]))\n",
-        encoding="utf-8")
-    after = tmp_path / "after.txt"
-    after.write_text(then, encoding="utf-8")
-    return [sys.executable, str(script), str(tmp_path / "seen"), str(after),
-            "1" if "Found" in then else "0", str(hang_seconds)]
+#: How long the hung attempt is allowed before it is stopped. It never answers,
+#: so any bound ends it the same way, and it does not matter whether the
+#: interpreter had even started by then.
+HUNG_ATTEMPT_TIMEOUT_S = 0.5
+#: How long the attempt that is meant to answer is allowed: far more than a
+#: Python start-up takes on any machine, because on a loaded one a start-up
+#: that crosses a one-second bound is stopped as a second hang (#1119).
+ANSWERING_ATTEMPT_TIMEOUT_S = 120.0
+
+
+def _a_hang_then(module, tmp_path: Path, transcript: str, code: int):
+    """A runner for `module.run`: its first attempt hangs and is stopped at
+    `HUNG_ATTEMPT_TIMEOUT_S`, its second prints ``transcript`` and exits with
+    ``code``. Each attempt goes through the script's own `_run_command`, so the
+    timeout and the outage it reports are the product's. The attempts are told
+    apart by the runner, not by something the child process finds on disk, so
+    which one hangs does not depend on how fast an interpreter starts."""
+    attempts = [([sys.executable, "-c", "import time; time.sleep(10)"],
+                 HUNG_ATTEMPT_TIMEOUT_S),
+                (_stub(tmp_path, transcript, code), ANSWERING_ATTEMPT_TIMEOUT_S)]
+
+    def runner(_command):
+        command, timeout_s = attempts.pop(0)
+        return module._run_command(command, timeout=timeout_s)
+    return runner
 
 
 def test_a_hung_attempt_ends_at_the_timeout_and_the_outage_passes(tmp_path, capsys):
@@ -268,9 +276,12 @@ def test_a_hung_attempt_ends_at_the_timeout_and_the_outage_passes(tmp_path, caps
 
 
 def test_a_hung_attempt_is_retried_and_a_clean_retry_passes(tmp_path, capsys):
+    """MUTATION: drop `timeout=` from the subprocess call in `_run_command`.
+    Observed: the first attempt sleeps its full 10 s and then reads as a pass,
+    so the retry that answers clean is never made."""
     module = _load()
-    command = _hanging_stub(tmp_path, hang_seconds=10, then=CLEAN)
-    code = module.run(command, attempts=2, delay=0, attempt_timeout=1)
+    runner = _a_hang_then(module, tmp_path, CLEAN, 0)
+    code = module.run(["pip-audit"], attempts=2, delay=0, runner=runner)
     out = capsys.readouterr().out
     assert code == 0
     assert "WARNING" not in out
@@ -279,8 +290,8 @@ def test_a_hung_attempt_is_retried_and_a_clean_retry_passes(tmp_path, capsys):
 
 def test_a_hung_attempt_then_a_finding_still_fails(tmp_path, capsys):
     module = _load()
-    command = _hanging_stub(tmp_path, hang_seconds=10, then=FINDING)
-    code = module.run(command, attempts=2, delay=0, attempt_timeout=1)
+    runner = _a_hang_then(module, tmp_path, FINDING, 1)
+    code = module.run(["pip-audit"], attempts=2, delay=0, runner=runner)
     assert code == 1
     assert "known vulnerability was found" in capsys.readouterr().out
 
