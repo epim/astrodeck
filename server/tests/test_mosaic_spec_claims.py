@@ -282,6 +282,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import functools
 import hashlib
 import inspect
 import json
@@ -6487,6 +6488,34 @@ def test_the_s1_and_s2_build_items_say_what_s2_built_and_where():
                            f"{missing}")
 
 
+@functools.lru_cache(maxsize=4)
+def _defined_names(corpus: str) -> frozenset[str]:
+    """Every word ``_source_names_exist`` accepts as a name in ``corpus``: one
+    after ``def`` or ``class``, one assigned as ``self.<name> =`` (annotated or
+    not), and one assigned at the start of a line, indented or not. Found in
+    one pass per corpus, where each name used to be three regex scans of the
+    whole text (55 ms each, 588 of them in Revision 8's test, 32 of its 36
+    seconds: #1261). The zero-width forms report every position a ``search``
+    could start at, so a ``def`` that follows another keyword is not lost."""
+    names = set(re.findall(r"\b(?:def|class) (?=(\w+))", corpus))
+    names.update(re.findall(r"self\.(?=(\w+)\s*(?::[^=\n]*)?=)", corpus))
+    names.update(re.findall(r"^[ \t]*(?=(\w+)[ \t]*(?::[^=\n]*)?=(?!=))",
+                            corpus, re.MULTILINE))
+    return frozenset(names)
+
+
+@functools.cache
+def _ui_declared_names() -> frozenset[str]:
+    """Every word declared as a function, constant, type, interface or class
+    in a non-test ``.ts`` or ``.tsx`` file of ``ui/src``: read once per
+    process, where it was read again for each row of each revision table."""
+    ui = "\n".join(p.read_text(encoding="utf-8")
+                   for p in UI_SRC.rglob("*.ts*")
+                   if "__tests__" not in p.parts)
+    return frozenset(re.findall(
+        r"\b(?:function|const|let|type|interface|class) (?=(\w+))", ui))
+
+
 def _source_names_exist(cell: str, corpus: str) -> list[str]:
     """The backticked names in a revision row's Source cell that name
     nothing in the tree: a path is a file under ``astrodeck/`` or
@@ -6504,7 +6533,7 @@ def _source_names_exist(cell: str, corpus: str) -> list[str]:
     (``created_as={...}``), so for a name only ever passed that way this
     half says less than the ``def``/``class`` half does."""
     missing = []
-    ui: str | None = None
+    defined = _defined_names(corpus)
     for name in re.findall(r"`([^`]+)`", cell):
         if name.endswith(".py"):
             found = ((_SERVER / "astrodeck" / name).is_file()
@@ -6513,22 +6542,8 @@ def _source_names_exist(cell: str, corpus: str) -> list[str]:
         elif name.endswith((".ts", ".tsx")):
             found = any(UI_SRC.rglob(Path(name).name))
         else:
-            last = re.escape(name.split(".")[-1])
-            found = bool(re.search(rf"\b(?:def|class) {last}\b", corpus)
-                       or re.search(rf"self\.{last}\s*(?::[^=\n]*)?=",
-                                    corpus)
-                       or re.search(
-                           rf"^[ \t]*{last}[ \t]*(?::[^=\n]*)?=(?!=)",
-                           corpus, re.MULTILINE))
-            if not found:
-                if ui is None:
-                    ui = "\n".join(
-                        p.read_text(encoding="utf-8")
-                        for p in UI_SRC.rglob("*.ts*")
-                        if "__tests__" not in p.parts)
-                found = bool(re.search(
-                    rf"\b(?:function|const|let|type|interface|class) "
-                    rf"{last}\b", ui))
+            last = name.split(".")[-1]
+            found = last in defined or last in _ui_declared_names()
         if not found:
             missing.append(name)
     return missing
@@ -25546,16 +25561,28 @@ _H4_ISSUES = ("#520", "#531", "#534", "#526", "#532", "#507", "#506",
               "#502", "#503", "#504", "#508", "#529", "#518", "#536", "#466")
 
 
+def _h4_homes() -> tuple[Path, ...]:
+    return (_SERVER / "astrodeck", _SERVER / "tests", _ROOT / "relay"
+            / "relay", _ROOT / "relay" / "tests", _ROOT / "tools"
+            / "ui_probe")
+
+
+@functools.cache
+def _h4_corpus() -> str:
+    """The text of every ``.py`` file under ``_h4_homes``, read once per
+    process: ``_h4_source_missing`` runs once per row of Revision 11 and read
+    the same 1800 files every time (22 s of that test's 75: #1261)."""
+    return "\n".join(p.read_text(encoding="utf-8") for home in _h4_homes()
+                     for p in home.rglob("*.py"))
+
+
 def _h4_source_missing(cell: str) -> list[str]:
     """`_source_names_exist` over H4's wider tree: H4 built code in the
     relay and the probe too, so a ``.py`` file may be under
     ``relay/relay``, ``relay/tests`` or ``tools/ui_probe`` as well as
     server/, and a name may be defined in any of them."""
-    homes = (_SERVER / "astrodeck", _SERVER / "tests", _ROOT / "relay"
-             / "relay", _ROOT / "relay" / "tests", _ROOT / "tools"
-             / "ui_probe")
-    corpus = "\n".join(p.read_text(encoding="utf-8") for home in homes
-                       for p in home.rglob("*.py"))
+    homes = _h4_homes()
+    corpus = _h4_corpus()
     files = re.findall(r"`([^`]+\.py)`", cell)
     missing = [n for n in files
                if not any((home / n).is_file()

@@ -2388,6 +2388,79 @@ def _native_guiders_are_closed():
         yield
 
 
+#: Seconds one test's call phase may take on CI before it fails the run
+#: (#1261). A test over it is on the allowlist in test_slow_test_ceiling.py,
+#: each entry with its reason, or it is made cheaper.
+SLOW_CEILING_S = 60.0
+
+
+def _slow_allowlist() -> dict[str, str]:
+    """The tests allowed past the ceiling, node id to reason, as
+    test_slow_test_ceiling.py lists them. Read only when a test is over, so a
+    throwaway tree that copies this file alone has an empty list and no import
+    to fail."""
+    if ("test_slow_test_ceiling" not in sys.modules
+            and importlib.util.find_spec("test_slow_test_ceiling") is None):
+        return {}
+    import test_slow_test_ceiling
+    return test_slow_test_ceiling.SLOW_ALLOWLIST
+
+
+class _SlowTestCeiling:
+    """Fail a test whose call phase takes longer than ``ceiling_s``, unless
+    its node id is on the allowlist (#1261).
+
+    Seven tests held 1222 s of one CI run (#1261), and the four PPEC waits of
+    #1256 held a worker for 150 s each asserting nothing. ``--durations`` names
+    the slowest after the fact; nothing stopped the next one. The ceiling does:
+    on CI (``CI`` is ``true``) a test over it fails with its name and its time.
+    Elsewhere it only records: the run's summary lists every test over it, so
+    a slow test is seen on the machine it is written on before CI sees it.
+
+    The failure is made in ``pytest_runtest_makereport``, so it is the test's
+    own report, forwarded by xdist like any other; a test that already failed
+    keeps its own failure. A fixture's setup or teardown is not the call
+    phase and is not counted."""
+
+    def __init__(self, ceiling_s: float, enforce: bool,
+                 allowlist=_slow_allowlist) -> None:
+        self.ceiling_s = ceiling_s
+        self.enforce = enforce
+        self._allowlist = allowlist
+        self.over: dict[str, float] = {}
+
+    @pytest.hookimpl(wrapper=True)
+    def pytest_runtest_makereport(self, item, call):
+        report = yield
+        if (call.when == "call" and call.duration > self.ceiling_s
+                and self.enforce and report.outcome == "passed"
+                and item.nodeid not in self._allowlist()):
+            report.outcome = "failed"
+            report.longrepr = (
+                f"{item.nodeid} took {call.duration:.1f} s in its call "
+                f"phase, over the {self.ceiling_s:g} s ceiling on CI. Make "
+                f"the test cheaper, or add its node id to SLOW_ALLOWLIST in "
+                f"tests/test_slow_test_ceiling.py with the reason it must "
+                f"take this long.")
+        return report
+
+    def pytest_runtest_logreport(self, report) -> None:
+        if report.when == "call" and report.duration > self.ceiling_s:
+            self.over[report.nodeid] = report.duration
+
+    def pytest_terminal_summary(self, terminalreporter) -> None:
+        if not self.over:
+            return
+        allowed = self._allowlist()
+        terminalreporter.write_sep(
+            "=", f"tests over the {self.ceiling_s:g} s ceiling "
+                 f"({'enforced' if self.enforce else 'recorded only'})")
+        for nodeid, took in sorted(self.over.items(), key=lambda kv: -kv[1]):
+            note = (f"allowed: {allowed[nodeid]}" if nodeid in allowed
+                    else "NOT on the allowlist")
+            terminalreporter.write_line(f"{took:8.1f} s  {nodeid}  [{note}]")
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_configure(config):
     # FIRST, before anything below reads a file's age: under a replay the
@@ -2444,3 +2517,7 @@ def pytest_configure(config):
         guard = _SunConeGuard()
         guard.install()
         config.pluginmanager.register(guard, "astrodeck-sun-cone-guard")
+    config.pluginmanager.register(
+        _SlowTestCeiling(SLOW_CEILING_S,
+                         enforce=os.environ.get("CI") == "true"),
+        "astrodeck-slow-ceiling")

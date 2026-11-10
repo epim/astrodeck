@@ -102,7 +102,22 @@ jobs:
       # no test finishing for 16-22 minutes. A test still running after 300 s
       # dumps every thread's stack into this log, so the next hang names its
       # test and the line it is stuck on. It only dumps; it fails nothing.
-      - run: pytest -q -n auto --durations=30 -o faulthandler_timeout=300
+      # The whole duration list is kept on main (#1261): the top 30 hide
+      # where the rest of the time sits. A pull request prints the top 30.
+      - name: pytest
+        env:
+          DURATIONS: ${{ github.ref == 'refs/heads/main' && '0' || '30' }}
+        run: |
+          set -o pipefail
+          pytest -q -n auto --durations="$DURATIONS" -o faulthandler_timeout=300 2>&1 | tee pytest-output.txt
+      - name: Keep the whole duration list (main only)
+        if: ${{ always() && github.ref == 'refs/heads/main' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-durations
+          path: server/pytest-output.txt
+          if-no-files-found: ignore
+          retention-days: 90
       # Dependency vulnerability gate (OPEN-006). pip-audit fails the build on a
       # known-vulnerable installed dependency; local editable packages
       # (astrodeck, astrodeck-native) are skipped, not failed. Runs AFTER the
