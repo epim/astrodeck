@@ -261,7 +261,7 @@ jobs:
         shell: bash
         run: python -c "import os,re,tomllib; from pathlib import Path; v=tomllib.loads(Path('server/pyproject.toml').read_text())['project']['version']; assert re.fullmatch(r'[0-9]+[.][0-9]+[.][0-9]+', v), 'package version must be plain X.Y.Z'; Path(os.environ['GITHUB_ENV']).open('a').write('RELEASE_VERSION='+v+chr(10))"
       - name: Download only accepted payloads
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: accepted-*
           merge-multiple: true
@@ -323,7 +323,7 @@ jobs:
       # Outside the workspace on purpose: this folder also receives the two frozen
       # binaries, which must not be sent to the build as part of its context.
       - name: Download the accepted linux payloads
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: accepted-linux-*
           merge-multiple: true
