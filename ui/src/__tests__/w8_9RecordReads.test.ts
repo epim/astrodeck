@@ -194,7 +194,10 @@ try {
   });
 
   test("a read written with backslashes or as a file: URL is the same read", () => {
-    const raw = [abs("server/a.py").split("/").join("\\"), pathToFileURL(abs("server/b.py")).href];
+    // A backslash separates path parts on Windows only; elsewhere it is an
+    // ordinary character in a file name, so that spelling is tried there alone.
+    const a = process.platform === "win32" ? abs("server/a.py").split("/").join("\\") : abs("server/a.py");
+    const raw = [a, pathToFileURL(abs("server/b.py")).href];
     same(rec.readsOutsideImports(raw, { repoRoot: tree, closure }), ["server/a.py", "server/b.py"], "kept reads");
   });
 
