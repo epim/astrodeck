@@ -1,0 +1,66 @@
+{
+  "always_all": [
+    ".github/**",
+    "tools/ci/areas.json",
+    "tools/ci/changed_areas.py"
+  ],
+  "inert": [
+    ".claude/**",
+    ".design-sync/**",
+    ".githooks/**",
+    "artifacts/**",
+    "CLAUDE.md",
+    "SECURITY_REVIEW_FINDINGS.md",
+    "mockup.html",
+    "nina-live-screenshot.mjs",
+    "nina-screenshot.mjs",
+    "probe_capture_dial.py",
+    "screenshot.mjs"
+  ],
+  "areas": {
+    "server": [
+      "server/**",
+      "ui/**",
+      "tools/**",
+      "docs/**",
+      "scripts/**",
+      "native/**",
+      "native-wheels/**",
+      "relay/**",
+      "packaging/**",
+      "deploy/**",
+      "supervisor/**",
+      "site/**",
+      "orangepi5/**",
+      "design_handoff_astrodeck_flows/**",
+      "Dockerfile",
+      "docker-compose*.yml",
+      ".dockerignore",
+      ".gitattributes",
+      ".gitignore",
+      "LICENSE",
+      "NOTICE",
+      "README.md",
+      "THIRD-PARTY-NOTICES.md"
+    ],
+    "windows-private-state": ["server/**", "security_acceptance/**"],
+    "orangepi-security": ["orangepi5/**", "security_acceptance/**"],
+    "relay": ["relay/**"],
+    "container-security": [
+      "Dockerfile",
+      "docker-compose*.yml",
+      ".dockerignore",
+      "deploy/**",
+      "security_acceptance/**",
+      "server/**",
+      "ui/**",
+      "native/**",
+      "native-wheels/**",
+      "packaging/**",
+      "relay/**",
+      "docs/**"
+    ],
+    "ui": ["ui/**", "server/**", "tools/**", "docs/**", "native/**"],
+    "native": ["native/**", "server/**"]
+  }
+}
