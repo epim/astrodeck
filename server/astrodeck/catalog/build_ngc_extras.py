@@ -54,14 +54,16 @@ raw-CSV lookup key for any id in ngc.tsv is simply ``alias or id`` — no need
 to reimplement Messier-number bookkeeping or import anything from
 server/tools/, which this task does not own.
 
-Run from the ``server/`` directory, pointing at a fresh OpenNGC checkout
-(same source as build_ngc_catalog.py):
+Run from the ``server/`` directory, pointing at the OpenNGC CSVs that
+build_ngc_catalog.py used:
 
     python -m astrodeck.catalog.build_ngc_extras <path-to-NGC.csv> [<path-to-addendum.csv>]
 
-Fetch a fresh copy first:
-    curl -LO https://raw.githubusercontent.com/mattiaverga/OpenNGC/master/database_files/NGC.csv
-    curl -LO https://raw.githubusercontent.com/mattiaverga/OpenNGC/master/database_files/addendum.csv
+Get those CSVs by running ``python tools/build_ngc_catalog.py <download-dir>``:
+it downloads them pinned to one OpenNGC commit and checks their sha256, and
+keeps them in the directory given. Do not fetch them by hand from the moving
+``master`` branch: ngc_extras.tsv would then describe a different catalogue
+snapshot than the pinned ngc.tsv beside it.
 
 No network in this script itself — same convention as build_ngc_catalog.py.
 Output is deterministic (sorted by id), so a rebuild diffs cleanly.

@@ -703,7 +703,7 @@ class TestTheCampaignBlockIsNotDroppedInSilence:
         assert "comes back the next night" in detail, detail
         assert "session log" in detail, detail
         assert "skipped rather than reshot" in detail, detail
-        assert hits[0]["level"] == "warn", hits[0]
+        assert hits[0]["level"] == "note", hits[0]
 
     @pytest.mark.parametrize("has_ledger", [True, False])
     def test_the_dawn_sentence_matches_the_PLAN_not_the_design(self, has_ledger):
