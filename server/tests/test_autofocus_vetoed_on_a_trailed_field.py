@@ -52,17 +52,11 @@ from astrodeck.focus.autofocus import (AutofocusResult, FieldTrailing,
                                        run_autofocus)
 from astrodeck.guide.base import GuideStats, Guider
 from astrodeck.hub import Hub
-from astrodeck.providers import NATIVE_AVAILABLE
 from astrodeck.sequence import Instruction, SequenceEngine, SequencePlan
 from astrodeck.sequence.engine import (MAX_REARM_AFTER_FAILURE,
                                        SPARSE_RESWEEP_EVERY_S,
                                        TRAIL_VETO_LOG_EVERY_S)
 from astrodeck.sequence.models import ExposureStep, Target
-
-native_only = pytest.mark.skipif(
-    not NATIVE_AVAILABLE,
-    reason="native wheel absent: the sequence autofocus sweep is the native engine",
-)
 
 HEALTHY = 1.45          # this rig's measured healthy guide RMS, arcsec
 
@@ -364,7 +358,7 @@ async def test_calibration_work_is_not_vetoed(sim_hub, monkeypatch, kind):
 
 # ------------------------------------------------- abandoned mid-sweep
 
-@native_only
+@pytest.mark.native
 async def test_a_runaway_mid_sweep_abandons_and_stores_nothing(sim_hub,
                                                                monkeypatch):
     """THE PATH THE RIG RUNS: the real native sweep on the sim focuser and
@@ -776,7 +770,7 @@ def _wrap(monkeypatch, cam, module, c: _Counter):
     return probe
 
 
-@native_only
+@pytest.mark.native
 async def test_the_native_sweep_asks_once_more_before_storing(sim_hub,
                                                               monkeypatch):
     """The native probe runs before each MOVE, so without the last ask the

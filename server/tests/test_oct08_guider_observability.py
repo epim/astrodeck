@@ -51,7 +51,6 @@ from astrodeck.guide import native
 from astrodeck.guide.base import GuideStats
 from astrodeck.guide.native import GuidingStopped, NativeGuider
 from astrodeck.hub import Hub
-from astrodeck.providers import NATIVE_AVAILABLE
 from astrodeck.sequence.engine import SequenceEngine
 from astrodeck.sequence.models import ExposureStep, SequencePlan, Target
 from astrodeck.sequence.report import FrameRecord
@@ -59,9 +58,6 @@ from astrodeck.sequence.report import FrameRecord
 from _oct08_guider_harness import (
     CAP_MS, Camera, Logs, Mount, ScriptedEngine, make_guider, pair, profile_id,
     pulse)
-
-native_only = pytest.mark.skipif(not NATIVE_AVAILABLE,
-                                 reason="native wheel absent")
 
 
 @pytest.fixture(autouse=True)
@@ -74,7 +70,7 @@ def _isolated_config_dir(tmp_path, monkeypatch):
 # ------------------------------------------------------- settle before walk
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_the_walk_waits_for_the_mount_to_settle(monkeypatch):
     """T18. The walk's first exposure comes at least ``_CAL_SETTLE_S`` after
@@ -115,7 +111,7 @@ async def test_stop_during_the_settle_is_prompt(monkeypatch):
 # ------------------------------------------------------------ the geometry
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_every_completed_walk_logs_its_geometry(monkeypatch):
     """T20 (the real engine on the sim). One geometry line per completed walk,
@@ -155,7 +151,7 @@ async def test_every_completed_walk_logs_its_geometry(monkeypatch):
         await g.disconnect()
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_a_failed_walk_logs_its_legs(monkeypatch):
     """T21g. A walk whose star goes for good fails as before, and first says
@@ -226,7 +222,7 @@ async def test_corrections_at_the_limit_are_counted_by_direction():
     assert g.saturated_pulses()["west"] == 0
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_counts_survive_a_restart(monkeypatch):
     """T22. The counters live for the guider's lifetime: the engine diffs two

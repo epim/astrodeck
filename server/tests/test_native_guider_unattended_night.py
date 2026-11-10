@@ -55,9 +55,8 @@ import astrodeck.devices.sim as simmod
 import astrodeck.guide.native as nativemod
 from astrodeck.devices.sim import build_sim_rig
 from astrodeck.guide.native import NativeGuider
-from astrodeck.providers import NATIVE_AVAILABLE
 
-pytestmark = pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+pytestmark = pytest.mark.native
 
 # --- gate constants ---------------------------------------------------------
 _LOGICAL_DT_S = 5.0        # PE-phase advance per frame == engine `process` dt

@@ -32,12 +32,8 @@ import astrodeck.guide.native as nativemod
 from astrodeck.guide.native import (GP_DARK_VARIANCE,
                                     RELOCK_UNCONFIRMED_FRAMES, NativeGuider,
                                     _ENGINE_SEARCH_REGION_PX)
-from astrodeck.providers import NATIVE_AVAILABLE
 
 pytestmark = pytest.mark.asyncio
-
-needs_wheel = pytest.mark.skipif(not NATIVE_AVAILABLE,
-                                 reason="native wheel absent")
 
 
 # ------------------------------------------------ a real start, on the reuse path
@@ -159,7 +155,7 @@ async def _start(g, clock, frames) -> None:
 # ------------------------------------------------------------ start_guiding
 
 
-@needs_wheel
+@pytest.mark.native
 async def test_a_start_clears_the_unconfirmed_relock_count(rig):
     """``start_guiding``: ``self._relock_unconfirmed = 0``.
 
@@ -189,7 +185,7 @@ async def test_a_start_clears_the_unconfirmed_relock_count(rig):
         await g.stop_guiding()
 
 
-@needs_wheel
+@pytest.mark.native
 async def test_a_start_clears_the_dither_widening_of_the_relock_radius(rig):
     """``start_guiding``: ``self._lock_moved_px = 0.0``.
 
@@ -216,7 +212,7 @@ async def test_a_start_clears_the_dither_widening_of_the_relock_radius(rig):
         await g.stop_guiding()
 
 
-@needs_wheel
+@pytest.mark.native
 async def test_a_start_does_not_file_the_last_sessions_feed_time(rig, tmp_path):
     """``start_guiding``: ``self._gp_fed_at = None``.
 
@@ -260,7 +256,7 @@ async def test_a_start_does_not_file_the_last_sessions_feed_time(rig, tmp_path):
 # ------------------------------------------------------------- stop_guiding
 
 
-@needs_wheel
+@pytest.mark.native
 async def test_a_stop_leaves_no_feed_time_behind(rig, tmp_path):
     """``stop_guiding``: the final ``self._gp_fed_at = None``.
 

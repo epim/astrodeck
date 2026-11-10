@@ -562,9 +562,7 @@ def test_guide_config_declares_the_relock_thresholds(tmp_path, monkeypatch):
     was read from the config dict for months with nothing declaring it)."""
     import astrodeck.config as config
     from astrodeck.config import ConfigStore, GuideConfig
-    from astrodeck.devices.sim import build_sim_rig
-    from astrodeck.guide.native import build_native_guider, guide_algo_config
-    from astrodeck.providers import NATIVE_AVAILABLE
+    from astrodeck.guide.native import guide_algo_config
 
     assert GuideConfig().relock_limit == 3
     assert GuideConfig().relock_window_min == 10.0
@@ -583,8 +581,20 @@ def test_guide_config_declares_the_relock_thresholds(tmp_path, monkeypatch):
     assert guide_algo_config()["relock_limit"] == 5
     assert guide_algo_config()["relock_window_min"] == 20.0
 
-    if not NATIVE_AVAILABLE:                      # pragma: no cover
-        pytest.skip("native wheel absent")
+
+@pytest.mark.native
+def test_the_guider_the_factory_builds_carries_the_relock_thresholds(
+        tmp_path, monkeypatch):
+    """The other half of the wire above: the guider ``build_native_guider``
+    returns over the sim rig holds the thresholds the stored config names."""
+    import astrodeck.config as config
+    from astrodeck.config import ConfigStore, GuideConfig
+    from astrodeck.devices.sim import build_sim_rig
+    from astrodeck.guide.native import build_native_guider
+
+    store = ConfigStore(path=tmp_path / "astrodeck.json")
+    monkeypatch.setattr(config, "config_store", store)
+    store.set_guide(GuideConfig(relock_limit=5, relock_window_min=20.0))
     rig = build_sim_rig()
     g = build_native_guider(rig["guide_camera"], rig["telescope"])
     assert g is not None

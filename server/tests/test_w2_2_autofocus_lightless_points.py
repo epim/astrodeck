@@ -49,7 +49,6 @@ from pathlib import Path
 import pytest
 
 import astrodeck.focus.native as N
-from astrodeck import providers
 from astrodeck.config import load_focus_calibration, save_focus_calibration
 from astrodeck.devices.base import CameraFrame
 from astrodeck.devices.sim import build_sim_rig
@@ -65,8 +64,7 @@ if str(_FIXTURES) not in sys.path:
     sys.path.append(str(_FIXTURES))
 import synth_frames as synth  # noqa: E402
 
-pytestmark = pytest.mark.skipif(
-    not providers.NATIVE_AVAILABLE, reason="astrodeck_native wheel not installed")
+pytestmark = pytest.mark.native
 
 #: The no-light reference the synthetic black level stands for.
 CONTEXT = FrameContext(reference=Reference(level=synth.BLACK_LEVEL,

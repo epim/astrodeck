@@ -46,6 +46,8 @@ _CONFTEST = Path(__file__).resolve().parent / "conftest.py"
 #: Node ids, relative to server/, of tests allowed to take longer than the
 #: ceiling on CI, each with the reason on the same line.
 SLOW_ALLOWLIST: dict[str, str] = {
+    "tests/test_native_guider_e2e.py::test_native_guider_converges_on_sim": "the native guider's timing anchor: the sim drifts at wall-clock rate and the loop must converge on it in real time (34 s alone on a dev PC; the native job, #1255)",
+    "tests/test_native_guider_recovery.py::test_flip_calibration_mid_session_keeps_guiding_bounded": "a real-time calibration in mid session, then guiding to bounded residuals, on the same wall-clock sim (30 s alone on a dev PC; the native job, #1255)",
 }
 
 

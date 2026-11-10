@@ -18,7 +18,6 @@ import pytest
 
 import astrodeck.config as configmod
 from astrodeck.guide.native import GP_MIN_MEASURED_POINTS, NativeGuider
-from astrodeck.providers import NATIVE_AVAILABLE
 
 
 def _trained(n: int = GP_MIN_MEASURED_POINTS) -> list[list[float]]:
@@ -237,7 +236,7 @@ def _real_guider(tmp_path, engine):
     return g
 
 
-@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+@pytest.mark.native
 def test_real_wheel_roundtrip_engine_dump_file_restore_engine(
         tmp_path, monkeypatch):
     """engine -> dump -> file -> restore -> engine through the REAL wheel —
@@ -419,7 +418,7 @@ def _gp_file(tmp_path) -> dict:
     return json.loads((tmp_path / "guider" / "prof1-gp.json").read_text())
 
 
-@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_a_second_stop_does_not_restamp_the_model(_reuse_rig, tmp_path):
     """The #210 scenario. Guide, stop, wait past the retain window, stop
@@ -451,7 +450,7 @@ async def test_a_second_stop_does_not_restamp_the_model(_reuse_rig, tmp_path):
         f"{clock.wall - first['dumped_at']:.0f} s old was restored as fresh")
 
 
-@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_dumped_at_is_the_last_fed_frame_not_the_stop(_reuse_rig, tmp_path):
     """A loop starved of frames (a hung exposure) stops feeding the model the
@@ -485,7 +484,7 @@ async def test_dumped_at_is_the_last_fed_frame_not_the_stop(_reuse_rig, tmp_path
         "a model starved for 500 s was restored as if it had just been fed")
 
 
-@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_control_one_live_stop_persists_and_restores(_reuse_rig, tmp_path):
     """CONTROL, green under both mutants above: one stop after live guiding
@@ -507,7 +506,7 @@ async def test_control_one_live_stop_persists_and_restores(_reuse_rig, tmp_path)
         "a model 35 s old was not restored"
 
 
-@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_a_restored_model_keeps_its_feed_time_until_fed(_reuse_rig, tmp_path):
     """The same defect by the other door. A start on the reuse path restores
@@ -739,7 +738,7 @@ def _frames(script):
             for f in script]
 
 
-@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_the_lock_frame_does_not_stamp_but_an_idle_accept_does(monkeypatch):
     """Frame 0 establishes the lock: ``idle``, and nothing measured. Frame 1
@@ -772,7 +771,7 @@ async def test_the_lock_frame_does_not_stamp_but_an_idle_accept_does(monkeypatch
         f"time ({cam.fed[1]}, frame at {cam.times[1]})")
 
 
-@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+@pytest.mark.native
 @pytest.mark.asyncio
 @pytest.mark.parametrize("amp, rejected", [(12_000.0, True), (4_000.0, False)],
                          ids=["mass_reject", "control_same_mass"])
@@ -808,7 +807,7 @@ async def test_a_mass_reject_does_not_stamp_the_feed_time(monkeypatch, amp,
             f"frame at {expected})")
 
 
-@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+@pytest.mark.native
 @pytest.mark.asyncio
 @pytest.mark.parametrize("x, rejected", [(35.0, True), (32.0, False)],
                          ids=["distance_reject", "control_back_on_lock"])
@@ -860,7 +859,7 @@ async def test_a_distance_reject_does_not_stamp_the_feed_time(monkeypatch, x,
             f"({cam.fed[-1]}, frame at {cam.times[-1]})")
 
 
-@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_a_dead_reckoned_ppec_pulse_does_not_stamp_the_feed_time(
         monkeypatch):
@@ -904,7 +903,7 @@ async def test_a_dead_reckoned_ppec_pulse_does_not_stamp_the_feed_time(
         f"last measured frame was {last_accepted}")
 
 
-@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_frames_sharing_one_timestamp_are_still_told_apart(monkeypatch):
     """A camera clock coarser than the frame rate stamps several frames alike
@@ -963,7 +962,7 @@ class _StarThenBlankCam(_StarCam):
                                timestamp=self.clock.wall)
 
 
-@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_a_stop_after_the_loops_own_death_persists(_reuse_rig, tmp_path):
     """The other arm of "ended a live session": a loop task EXISTED on entry.

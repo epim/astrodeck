@@ -46,11 +46,12 @@ def test_report_prefers_the_engines_own_folded_value():
     assert rep["dec_axis_reversed"] is True
 
 
+@pytest.mark.native
 def test_real_engine_dumps_the_folded_error_and_loads_without_it():
     """The wheel's dump_calibration carries ortho_error (folded, radians) and
     dec_axis_reversed; load_calibration neither needs nor reads them, so a
     calibration persisted before GN-06 still loads."""
-    native = pytest.importorskip("astrodeck_native")
+    import astrodeck_native as native
     x_angle = 0.3
     y_angle = x_angle - math.pi / 2 + 0.05          # reversed Dec, 0.05 rad off square
     raw = math.atan2(math.sin(x_angle - y_angle + math.pi / 2),

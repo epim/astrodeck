@@ -40,19 +40,16 @@ from astrodeck.devices.sim import build_sim_rig
 from astrodeck.guide.native import (
     RUNAWAY_PULSES, STAR_FLUX_TOLERANCE, STAR_HFD_TOLERANCE,
     STAR_IDENTITY_FRAMES, STAR_IDENTITY_MIN_FRAMES, NativeGuider, StarIdentity)
-from astrodeck.providers import NATIVE_AVAILABLE
 
 from _oct08_guider_harness import (
     IDLE, Logs, Mount, ScriptedEngine, arm_loop, cal_dict, make_guider,
     profile_id, pulse, stop_loop, wait_until)
 
-def _star_stats_skip_reason() -> str:
+def _wheel_lacks_star_stats() -> str:
     """Why the real-engine tests cannot run on the installed wheel, or "".
     A wheel built before #1083 has no ``star_flux`` in ``stats()``; the
     guider then falls back to its earlier behaviour (see the old-wheel test),
     and a real-engine run proves nothing about the identity check."""
-    if not NATIVE_AVAILABLE:
-        return "native wheel absent"
     import astrodeck_native
     if "star_flux" not in astrodeck_native.GuideEngine({}).stats():
         return ("the installed astrodeck_native wheel predates #1083: "
@@ -60,8 +57,7 @@ def _star_stats_skip_reason() -> str:
     return ""
 
 
-NEEDS_STAR_STATS = pytest.mark.skipif(
-    bool(_star_stats_skip_reason()), reason=_star_stats_skip_reason())
+NEEDS_STAR_STATS = pytest.mark.native(lacks=_wheel_lacks_star_stats)
 
 #: The lock star of the scripted tests: where the engine's lock is, and its
 #: flux and half-flux diameter (px).

@@ -25,7 +25,6 @@ import types
 import pytest
 
 import astrodeck.focus.native as native_mod
-from astrodeck import providers
 from astrodeck.devices.sim import build_sim_rig
 from astrodeck.events import bus
 from astrodeck.focus import run_autofocus
@@ -84,8 +83,7 @@ async def test_a_wheel_a_cancel_could_not_send_back_does_not_promise_a_correctio
     assert "turns it back" in line and "out of focus" in line, line
 
 
-@pytest.mark.skipif(not providers.NATIVE_AVAILABLE,
-                    reason="astrodeck_native wheel not installed")
+@pytest.mark.native
 async def test_run_autofocus_forwards_its_frame_context_to_the_native_sweep(
         monkeypatch):
     parts = build_sim_rig()

@@ -60,6 +60,7 @@ def test_the_oiii_curve_the_r_squared_gate_threw_away_is_accepted():
     assert "43.03" in v.reason and "321 stars" in v.reason, v.reason
 
 
+@pytest.mark.native
 def test_the_engine_really_does_reject_the_curve_this_accepts():
     """The fixture is only worth anything if the shipped engine refuses it.
 
@@ -70,8 +71,8 @@ def test_the_engine_really_does_reject_the_curve_this_accepts():
     whole finding, reproduced with no telescope: the fit knows the answer and
     the gate throws it away.
 
-    Skipped without the Rust wheel; the criterion itself never needs it."""
-    nat = pytest.importorskip("astrodeck_native")
+    Needs the Rust wheel; the criterion itself never does."""
+    import astrodeck_native as nat
     by_pos = dict(OIII_2026_08_08)
 
     # The fit, first: right answer, unacceptable score.

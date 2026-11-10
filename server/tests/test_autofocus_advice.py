@@ -22,16 +22,12 @@ import re
 import numpy as np
 import pytest
 
-from astrodeck import providers
 from astrodeck.devices.sim import build_sim_rig
 from astrodeck.events import bus
 from astrodeck.focus import run_autofocus
 from astrodeck.focus.autofocus import MIN_STARS_PER_POINT
 import astrodeck.focus.autofocus as A
 import astrodeck.focus.native as N
-
-native_only = pytest.mark.skipif(
-    not providers.NATIVE_AVAILABLE, reason="astrodeck_native wheel not installed")
 
 
 async def _connected_sim():
@@ -53,7 +49,7 @@ def _focus_events(q):
 
 # --------------------------------------------------------------- native engine
 
-@native_only
+@pytest.mark.native
 async def test_a_sparse_field_run_carries_its_own_advice_out_on_the_result(monkeypatch):
     """A field rich enough to start but not to sweep: the failure must name the
     exposure and binning that would fix it, on the result and on the event.
@@ -94,7 +90,7 @@ async def test_a_sparse_field_run_carries_its_own_advice_out_on_the_result(monke
     assert events[-1].get("advice") == res.advice
 
 
-@native_only
+@pytest.mark.native
 async def test_near_empty_points_never_reach_the_fit(monkeypatch):
     """One frame in the sweep yields two detections. A "median" over two
     detections is a hot pixel's opinion; before this it entered the fit weighted
@@ -154,7 +150,7 @@ async def test_near_empty_points_never_reach_the_fit(monkeypatch):
     assert f"fewer than {MIN_STARS_PER_POINT}" in res.advice, res.advice
 
 
-@native_only
+@pytest.mark.native
 async def test_a_measured_failure_is_not_blamed_on_the_star_count(monkeypatch):
     """Twelve stars at every point, every point measured, nothing dropped, and a
     curve too flat to fit. That is a step-size or focuser fault and the engine
@@ -196,7 +192,7 @@ async def test_a_measured_failure_is_not_blamed_on_the_star_count(monkeypatch):
     assert sparse.message == rich.message
 
 
-@native_only
+@pytest.mark.native
 async def test_a_frame_full_of_stars_never_earns_expose_longer(monkeypatch):
     """A point can also vanish because the detector found stars and could not
     size them — our fault, not the sky's. That must not be filed as "too few
@@ -233,7 +229,7 @@ async def test_a_frame_full_of_stars_never_earns_expose_longer(monkeypatch):
     assert "fewer than" not in res.advice, res.advice
 
 
-@native_only
+@pytest.mark.native
 def test_a_thin_median_is_weighted_like_the_guess_it_is():
     """σ is the standard error of the point's median, so star count — not just
     scatter — decides how hard a point pulls on the curve.
@@ -450,7 +446,7 @@ async def test_legacy_fit_lets_the_richest_frames_decide(monkeypatch):
     assert abs(res.best_position - true_focus) <= 100, res.best_position
 
 
-@native_only
+@pytest.mark.native
 async def test_a_sweep_that_wanders_out_of_its_window_is_stopped(monkeypatch):
     """A BOUNDED SWEEP MUST NOT BECOME AN UNBOUNDED WALK.
 

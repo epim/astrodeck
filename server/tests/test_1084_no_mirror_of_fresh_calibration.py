@@ -17,7 +17,6 @@ import contextlib
 
 import pytest
 from astrodeck.devices.base import DeviceError
-from astrodeck.providers import NATIVE_AVAILABLE
 
 from test_native_guider_pier_change import (  # noqa: F401  (fixture re-export)
     _guider,
@@ -26,7 +25,7 @@ from test_native_guider_pier_change import (  # noqa: F401  (fixture re-export)
 )
 
 pytestmark = [
-    pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent"),
+    pytest.mark.native,
 ]
 
 _WARN = "pier side read changed during the calibration walk"

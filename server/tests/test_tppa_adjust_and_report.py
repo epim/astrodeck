@@ -58,16 +58,9 @@ from astrodeck.polar import native as nat
 from astrodeck.polar.native import (MAX_PLAUSIBLE_ERROR_DEG,
                                     MIN_POLE_DISTANCE_DEG, _DONE_THRESHOLD_ARCMIN,
                                     _publish_error, _reject_implausible_fit)
+from _native_gate import optional_native
 
-try:
-    import astrodeck_native as an
-    _HAS_NATIVE = True
-except ImportError:  # pragma: no cover - the wheel is built in this venv
-    an = None
-    _HAS_NATIVE = False
-
-needs_engine = pytest.mark.skipif(not _HAS_NATIVE,
-                                  reason="astrodeck_native wheel not installed")
+an = optional_native()
 
 # Two invented sites, one per hemisphere. Nothing here is anybody's back garden.
 _NORTH = (45.0, -116.0)
@@ -169,7 +162,7 @@ def _fit(solves: list[dict], lat: float, lon: float, opts: dict | None = None):
 
 # ------------------------------------------------------- the model's own honesty
 
-@needs_engine
+@pytest.mark.native
 def test_the_forward_model_is_honest() -> None:
     """A forward model nobody checks makes every test built on it vacuous.
 
@@ -218,7 +211,7 @@ def test_the_forward_model_is_honest() -> None:
 _FRACTIONS = (0.0, 0.25, 0.5, 0.75, 1.0)
 
 
-@needs_engine
+@pytest.mark.native
 def test_the_live_error_falls_to_zero_as_the_mount_is_adjusted() -> None:
     """The headline claim of the adjusting phase: turn the knobs the right way
     and the number goes down, all the way to zero.
@@ -260,7 +253,7 @@ def test_the_live_error_falls_to_zero_as_the_mount_is_adjusted() -> None:
     assert reported[0] == pytest.approx(err0["total_arcmin"], abs=0.05)
 
 
-@needs_engine
+@pytest.mark.native
 def test_the_first_update_reproduces_the_frozen_fit_exactly() -> None:
     """At the moment of freezing, the two entirely different computations — a
     plane through three vectors, and a pixel-space rescale — must agree. A drift
@@ -278,7 +271,7 @@ def test_the_first_update_reproduces_the_frozen_fit_exactly() -> None:
     assert live["az_direction"] == out["error"]["az_direction"]
 
 
-@needs_engine
+@pytest.mark.native
 def test_a_tracking_mount_nobody_touches_reports_a_steady_error() -> None:
     """The adjusting phase runs for minutes while the sky turns. A mount that is
     tracking holds its RA/Dec, so the reading must not drift on the clock alone —
@@ -295,7 +288,7 @@ def test_a_tracking_mount_nobody_touches_reports_a_steady_error() -> None:
         assert later["total_arcmin"] == pytest.approx(base, abs=1e-6), dt
 
 
-@needs_engine
+@pytest.mark.native
 def test_overshooting_reverses_the_instruction() -> None:
     """Turn the bolt too far and the routine has to say so. Past the destination
     the signed errors flip and BOTH knob directions must reverse — otherwise the
@@ -345,7 +338,7 @@ _SIGN_CASES = [(lat, alt_e, az_e)
                for az_e in (0.4, -0.4)]
 
 
-@needs_engine
+@pytest.mark.native
 @pytest.mark.parametrize("lat,alt_err,az_err", _SIGN_CASES)
 def test_the_knob_directions_are_right_in_both_hemispheres(lat, alt_err, az_err) -> None:
     """A polar routine that names the wrong bolt direction is worse than one that
@@ -372,7 +365,7 @@ def test_the_knob_directions_are_right_in_both_hemispheres(lat, alt_err, az_err)
         f"{err['az_direction']}, should be {want_az}")
 
 
-@needs_engine
+@pytest.mark.native
 def test_the_sign_cases_cover_every_combination() -> None:
     """A parametrisation that silently loses a case passes forever."""
     assert len(_SIGN_CASES) == 8
@@ -385,7 +378,7 @@ def test_the_sign_cases_cover_every_combination() -> None:
 
 # --------------------------------------------------------------- plate scale
 
-@needs_engine
+@pytest.mark.native
 def test_the_live_error_does_not_depend_on_the_assumed_plate_scale() -> None:
     """``_capture_and_solve`` falls back to a hard-coded 1.55 arcsec/pixel when
     the solver reports no scale and optics are unset, which looks like a silent
@@ -432,7 +425,7 @@ def test_the_live_error_does_not_depend_on_the_assumed_plate_scale() -> None:
         _fit(solves, lat, lon)["error"]["total_arcmin"], abs=1e-9)
 
 
-@needs_engine
+@pytest.mark.native
 def test_no_image_geometry_refuses_instead_of_guessing_inside_the_engine() -> None:
     """The engine will not invent a scale of its own: with none supplied the
     update raises rather than dividing by zero. That refusal is what the driver's
@@ -448,7 +441,7 @@ def test_no_image_geometry_refuses_instead_of_guessing_inside_the_engine() -> No
 
 # ------------------------------------------------------- units: ARCMINUTES
 
-@needs_engine
+@pytest.mark.native
 def test_the_engine_reports_arcminutes_not_degrees() -> None:
     """Hop 1. One degree of altitude error must come back as 60, not 1. The whole
     chain below is arcminutes by convention and nothing carries a unit label, so
@@ -526,7 +519,7 @@ def test_publish_error_forwards_the_untrustworthy_fit_caveat() -> None:
     assert bare.published[0]["position_angle_spread_deg"] is None
 
 
-@needs_engine
+@pytest.mark.native
 def test_the_spread_caveat_is_frozen_into_every_live_update() -> None:
     """The spread is a property of the three MEASUREMENT frames, so it cannot be
     recomputed later — and it must not quietly vanish when the phase changes.

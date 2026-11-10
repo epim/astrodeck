@@ -28,10 +28,8 @@ import pytest
 from astrodeck.devices.base import DeviceError
 from astrodeck.devices.sim import build_sim_rig
 from astrodeck.events import bus
-from astrodeck.providers import NATIVE_AVAILABLE
 
-pytest.importorskip("astrodeck_native")  # skip cleanly when the wheel is absent
-pytestmark = pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+pytestmark = pytest.mark.native
 
 
 @pytest.fixture(autouse=True)

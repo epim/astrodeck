@@ -21,10 +21,6 @@ from _simhub import sim_hub  # noqa: F401 (fixture import)
 from astrodeck.devices.base import DeviceError
 from astrodeck.devices.sim import build_sim_rig
 from astrodeck.events import bus
-from astrodeck.providers import NATIVE_AVAILABLE
-
-native_only = pytest.mark.skipif(not NATIVE_AVAILABLE,
-                                 reason="native wheel absent")
 
 
 def _drain(q, ev_type):
@@ -97,7 +93,7 @@ async def _sim_guider():
     return g
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_the_calibration_walk_is_narrated_step_by_step():
     g = await _sim_guider()
@@ -132,7 +128,7 @@ async def test_the_calibration_walk_is_narrated_step_by_step():
 
 # --------------------------------------------------- guide camera settings
 
-@native_only
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_guide_camera_settings_apply_to_the_next_frame():
     g = await _sim_guider()
@@ -146,7 +142,7 @@ async def test_guide_camera_settings_apply_to_the_next_frame():
         await g.disconnect()
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_binning_is_refused_while_the_guider_is_active():
     """The calibration measured px/ms in the CURRENT binning's pixels; changing
@@ -163,7 +159,7 @@ async def test_binning_is_refused_while_the_guider_is_active():
         await g.disconnect()
 
 
-@native_only
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_build_native_guider_reads_the_persisted_camera_settings(
         monkeypatch, tmp_path):
@@ -200,7 +196,7 @@ async def test_build_native_guider_reads_the_persisted_camera_settings(
 
 # ------------------------------------------------------- autofocus points
 
-@native_only
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_the_af_sweep_narrates_each_point(monkeypatch):
     import astrodeck.focus.native as N

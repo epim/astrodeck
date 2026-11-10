@@ -30,7 +30,6 @@ import time
 
 import pytest
 
-from astrodeck import providers
 from astrodeck.devices.sim import build_sim_rig
 from astrodeck.focus.pipeline import Prefetch, SweepPredictor
 
@@ -228,9 +227,6 @@ async def test_a_speculative_failure_is_not_the_runs_failure():
 
 # ------------------------------------------------------ the overlap, for real
 
-pytestmark_native = pytest.mark.skipif(
-    not providers.NATIVE_AVAILABLE, reason="astrodeck_native wheel not installed")
-
 
 async def _connected_sim():
     parts = build_sim_rig()
@@ -239,7 +235,7 @@ async def _connected_sim():
     return parts["_rig"], parts["camera"], parts["focuser"]
 
 
-@pytestmark_native
+@pytest.mark.native
 async def test_the_config_the_host_sends_names_the_key_the_engine_reads():
     """ONE INERT KEY, pinned. The host described the focuser's travel ceiling as
     `max_position`; `build_focus_config` (native/crates/astrodeck-native/src/
@@ -273,7 +269,7 @@ async def test_the_config_the_host_sends_names_the_key_the_engine_reads():
         assert key not in seen, key
 
 
-@pytestmark_native
+@pytest.mark.native
 async def test_the_next_point_starts_while_this_one_is_being_measured(monkeypatch):
     """END TO END: the property the whole module exists for.
 
@@ -325,7 +321,7 @@ async def test_the_next_point_starts_while_this_one_is_being_measured(monkeypatc
         f"times — the camera is still waiting for the CPU\n{log}")
 
 
-@pytestmark_native
+@pytest.mark.native
 async def test_the_first_sweep_move_starts_under_the_probes_measurement(monkeypatch):
     """THE PROBE'S OWN 27 SECONDS. The probe frame pays the run's only
     full-frame Rust pass, and until 2026-09-08 the focuser and the camera sat
@@ -389,7 +385,7 @@ def _count_frames(monkeypatch, cam, N):
     return counts
 
 
-@pytestmark_native
+@pytest.mark.native
 async def test_a_sweep_that_runs_its_nominal_shape_wastes_nothing(monkeypatch):
     """Focus AT the start position, which is what a sweep sized from the
     measured span and started from last night's focus actually looks like. The
@@ -407,7 +403,7 @@ async def test_a_sweep_that_runs_its_nominal_shape_wastes_nothing(monkeypatch):
     assert counts["expose"] - counts["measure"] == 1, counts
 
 
-@pytestmark_native
+@pytest.mark.native
 async def test_a_sweep_that_turns_round_wastes_nothing_either(monkeypatch):
     """THE FRAME THE OLD RULE PAID FOR, no longer paid.
 
@@ -429,7 +425,7 @@ async def test_a_sweep_that_turns_round_wastes_nothing_either(monkeypatch):
         f"{counts} — the probe should be the only frame nothing measures")
 
 
-@pytestmark_native
+@pytest.mark.native
 async def test_the_validation_frame_is_never_a_guess(monkeypatch):
     """The last move of a healthy run goes UP to the fitted vertex, and it is
     the one frame that MUST be taken after the fit rather than before it. The
@@ -463,7 +459,7 @@ async def test_the_validation_frame_is_never_a_guess(monkeypatch):
         f"{validation} — one of them was speculative\n{at}")
 
 
-@pytestmark_native
+@pytest.mark.native
 async def test_a_refusal_settles_the_speculative_move_before_restoring(monkeypatch):
     """THE OTHER END OF THE PROBE'S OVERLAP. The first sweep move is now in
     flight while the probe is being measured — so the path that reads the probe
@@ -516,7 +512,7 @@ async def test_a_refusal_settles_the_speculative_move_before_restoring(monkeypat
         "a speculative move outlived the run that started it")
 
 
-@pytestmark_native
+@pytest.mark.native
 async def test_a_halt_does_not_leave_an_exposure_driving_the_focuser(monkeypatch):
     """THE TEARDOWN RULE. A speculative task owns the focuser while it runs, so
     the restore-to-start on the way out must not race it — two moves on one

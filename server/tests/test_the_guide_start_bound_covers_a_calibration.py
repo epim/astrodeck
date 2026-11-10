@@ -44,7 +44,6 @@ import astrodeck.hub as hub_module
 import astrodeck.sequence.engine as engine_mod
 from astrodeck.guide.base import Guider
 from astrodeck.hub import Hub
-from astrodeck.providers import NATIVE_AVAILABLE
 from astrodeck.sequence import SequenceEngine, SequencePlan
 from astrodeck.sequence.engine import SafetyAbort
 from astrodeck.sequence.models import ExposureStep, Target
@@ -155,7 +154,7 @@ def _engine(hub, guider) -> SequenceEngine:
 # ------------------------------------------------- the constant, against the
 # ------------------------------------------------- guider's OWN walk backstop
 
-@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+@pytest.mark.native
 def test_the_guide_start_bound_outlasts_the_walk():
     """The engine's bound must be BIGGER than the walk's own backstop.
 
@@ -297,9 +296,6 @@ async def test_the_recovery_restart_makes_the_same_choice(sim_hub,
 
 # --------------------------------- what the native guider answers, and why
 
-pytestmark_native = pytest.mark.skipif(not NATIVE_AVAILABLE,
-                                       reason="native wheel absent")
-
 
 @pytest.fixture
 def cal_dir(tmp_path, monkeypatch):
@@ -349,14 +345,14 @@ async def _native(pier: str = "east", profile: str | None = None):
     return g
 
 
-@pytestmark_native
+@pytest.mark.native
 async def test_no_persisted_calibration_means_a_walk(cal_dir):
     g = await _native()
     assert await g.needs_calibration() is True
     await g.disconnect()
 
 
-@pytestmark_native
+@pytest.mark.native
 async def test_a_usable_persisted_calibration_means_no_walk(cal_dir):
     profile = f"needs-cal-{uuid.uuid4().hex[:8]}"
     _plant(cal_dir, profile, "east")
@@ -365,7 +361,7 @@ async def test_a_usable_persisted_calibration_means_no_walk(cal_dir):
     await g.disconnect()
 
 
-@pytestmark_native
+@pytest.mark.native
 async def test_a_pier_change_means_a_walk_and_says_nothing_yet(cal_dir,
                                                                monkeypatch):
     """GN-01's refusal is what made the 2026-09-07 restart a walk in the first
@@ -387,7 +383,7 @@ async def test_a_pier_change_means_a_walk_and_says_nothing_yet(cal_dir,
     await g.disconnect()
 
 
-@pytestmark_native
+@pytest.mark.native
 async def test_a_cleared_calibration_means_a_walk(cal_dir):
     """The GN-01 discard latch. This is the state the 2026-09-07 restart was in.
 
@@ -411,7 +407,7 @@ async def test_a_cleared_calibration_means_a_walk(cal_dir):
     await g.disconnect()
 
 
-@pytestmark_native
+@pytest.mark.native
 async def test_a_calibration_at_the_wrong_binning_means_a_walk(cal_dir):
     """``_cal_reusable`` is the third gate ``start_guiding`` applies, so the
     probe has to apply it too or the two would disagree on exactly the nights
@@ -426,7 +422,7 @@ async def test_a_calibration_at_the_wrong_binning_means_a_walk(cal_dir):
 
 # ----------------------------- (c) what a CUT start leaves behind
 
-@pytestmark_native
+@pytest.mark.native
 async def test_a_cut_start_leaves_the_guider_startable_again(cal_dir):
     """A cancelled ``start_guiding`` must leave nothing that blocks the next one.
 

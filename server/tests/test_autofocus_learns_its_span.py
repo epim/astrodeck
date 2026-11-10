@@ -14,15 +14,13 @@ away.
 """
 import pytest
 
-from astrodeck import providers
 from astrodeck.config import load_focus_calibration
 from astrodeck.devices.sim import build_sim_rig
 from astrodeck.events import bus
 from astrodeck.focus.autofocus import (record_measured_span, resolve_sweep)
 from astrodeck.focus.span import DEFAULT_STEP, FocusCalibration
 
-pytestmark = pytest.mark.skipif(
-    not providers.NATIVE_AVAILABLE, reason="astrodeck_native wheel not installed")
+pytestmark = pytest.mark.native
 
 
 async def _connected_sim():

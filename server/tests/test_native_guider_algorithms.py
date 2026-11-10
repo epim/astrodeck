@@ -22,9 +22,8 @@ import asyncio
 
 import pytest
 from astrodeck.devices.sim import build_sim_rig
-from astrodeck.providers import NATIVE_AVAILABLE
 
-pytestmark = pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+pytestmark = pytest.mark.native
 
 #: The sim's drift is WALL-CLOCK-rate, not frame-rate (devices/sim.py drives
 #: it off elapsed real seconds, so ASTRODECK_FAST_TEST collapsing the

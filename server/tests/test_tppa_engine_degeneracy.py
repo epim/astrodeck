@@ -36,15 +36,16 @@ from types import SimpleNamespace
 
 import pytest
 
-astrodeck_native = pytest.importorskip(
-    "astrodeck_native", reason="Rust wheel not installed")
-
-from astrodeck.devices.base import DeviceError  # noqa: E402 (after importorskip)
-from astrodeck.polar.native import (  # noqa: E402
+from _native_gate import optional_native
+from astrodeck.devices.base import DeviceError
+from astrodeck.polar.native import (
     _DONE_THRESHOLD_ARCMIN,
     _refuse_if_it_did_not_arrive,
     _reject_implausible_fit,
 )
+
+astrodeck_native = optional_native()
+pytestmark = pytest.mark.native
 
 
 # --------------------------------------------------------------------------

@@ -19,8 +19,7 @@ from astrodeck.focus import run_autofocus
 from astrodeck.focus.autofocus import MAX_DROPS_PER_POSITION
 from astrodeck.focus.native import run_native_autofocus
 
-pytestmark = pytest.mark.skipif(
-    not providers.NATIVE_AVAILABLE, reason="astrodeck_native wheel not installed")
+pytestmark = pytest.mark.native
 
 
 class _StubHub:

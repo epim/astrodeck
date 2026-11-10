@@ -29,10 +29,8 @@ import pytest
 
 from _native_fixtures import native_guiders_closed
 from astrodeck.devices.sim import build_sim_rig
-from astrodeck.providers import NATIVE_AVAILABLE
 
-pytest.importorskip("astrodeck_native")  # skip cleanly when the wheel is absent
-pytestmark = pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+pytestmark = pytest.mark.native
 
 
 @pytest.fixture(autouse=True)

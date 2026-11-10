@@ -27,7 +27,6 @@ import math
 import numpy as np
 import pytest
 
-from astrodeck import providers
 from astrodeck.devices.sim import build_sim_rig
 from astrodeck.events import bus
 from astrodeck.focus.autofocus import MIN_STARS_PER_POINT
@@ -35,9 +34,6 @@ from astrodeck.focus.window import (MEASURE_WINDOW_FLOOR, MEASURE_WINDOW_KEEP,
                                     centre_slice, measure_window, window_frame)
 from astrodeck.imaging.stars import SourceSize, focus_size, star_size
 import astrodeck.focus.native as N
-
-native_only = pytest.mark.skipif(
-    not providers.NATIVE_AVAILABLE, reason="astrodeck_native wheel not installed")
 
 
 # ------------------------------------------------------------ how big a window
@@ -118,7 +114,7 @@ def test_the_window_is_a_view_and_copies_nothing():
     assert a[ys, xs].base is a
 
 
-@native_only
+@pytest.mark.native
 async def test_the_windowed_frame_keeps_everything_but_the_pixels():
     """The measurement seam is handed a FRAME, not an array — substitutes read
     ``frame.focuser_position`` off it to know which point they are looking at
@@ -279,7 +275,7 @@ def _count_detects(monkeypatch):
     return calls
 
 
-@native_only
+@pytest.mark.native
 async def test_the_rust_detector_runs_once_a_run_not_once_a_point(monkeypatch):
     """THE COST, DELETED. ``detect_and_measure`` is 27 s a point on the rig's
     26 MP frames (60-67 s on a rich light) and everything the sweep used it for
@@ -304,7 +300,7 @@ async def test_the_rust_detector_runs_once_a_run_not_once_a_point(monkeypatch):
         f"shut")
 
 
-@native_only
+@pytest.mark.native
 async def test_the_probe_still_gets_its_full_frame_rust_pass(monkeypatch):
     """The other half: the pass that was deleted from the loop must NOT have
     been deleted from the probe. Its count is the sparse-field gate AND the
@@ -348,7 +344,7 @@ def _flat(n_sources=25, radius=3.4, mad=0.2, n_found=400):
     return (radius, n_sources, size)
 
 
-@native_only
+@pytest.mark.native
 async def test_a_rich_field_is_measured_on_the_centre_at_every_point(monkeypatch):
     """1148 stars at the probe, so every sweep point is measured on 16% of the
     pixels — and on the SAME 16% at every point, because the window is sized
@@ -368,7 +364,7 @@ async def test_a_rich_field_is_measured_on_the_centre_at_every_point(monkeypatch
     assert (912, 1216) not in seen, "a point paid for the whole frame"
 
 
-@native_only
+@pytest.mark.native
 async def test_a_sparse_field_is_measured_whole_at_every_point(monkeypatch):
     """34 stars: cropping would leave five in the window, so it does not crop.
     The whole point of sizing the window from the probe is that this decision is
@@ -384,7 +380,7 @@ async def test_a_sparse_field_is_measured_whole_at_every_point(monkeypatch):
     assert set(seen) == {(912, 1216)}, seen
 
 
-@native_only
+@pytest.mark.native
 async def test_a_window_that_comes_back_thin_falls_back_to_the_whole_frame(
         monkeypatch):
     """The wings are where a window can genuinely run out of sources, and there
@@ -428,7 +424,7 @@ def _drain(q):
     return out
 
 
-@native_only
+@pytest.mark.native
 async def test_the_window_it_chose_is_in_the_log(monkeypatch):
     """A sweep whose points are measured on a fraction of the frame has to SAY
     which fraction: a morning log that cannot tell a 16%-of-pixels sweep from a
@@ -451,7 +447,7 @@ async def test_the_window_it_chose_is_in_the_log(monkeypatch):
     assert "1148" in line, line
 
 
-@native_only
+@pytest.mark.native
 async def test_a_whole_frame_sweep_says_why_it_did_not_crop(monkeypatch):
     _rig, cam, foc = await _connected_sim()
     _probe(monkeypatch, 34)
@@ -471,7 +467,7 @@ async def test_a_whole_frame_sweep_says_why_it_did_not_crop(monkeypatch):
 
 # ------------------------------------------------------ the scatter, in the loop
 
-@native_only
+@pytest.mark.native
 @pytest.mark.parametrize("mad,other", [(1.5, 0.02)])
 async def test_the_measured_scatter_reaches_the_points_own_sigma(
         monkeypatch, mad, other):
@@ -503,7 +499,7 @@ async def test_the_measured_scatter_reaches_the_points_own_sigma(
     assert wide / tight > 5, sigmas
 
 
-@native_only
+@pytest.mark.native
 async def test_a_point_is_weighted_by_its_voters_and_judged_by_its_stars(
         monkeypatch):
     """THE TWO COUNTS, kept apart.
@@ -548,7 +544,7 @@ async def test_a_point_is_weighted_by_its_voters_and_judged_by_its_stars(
     assert curve and "/400" in curve, curve
 
 
-@native_only
+@pytest.mark.native
 async def test_a_metric_that_reports_no_scatter_still_gets_a_sigma(monkeypatch):
     """A substitute (and the pyramid path's single-source answer) supplies no
     MAD. The documented 5% fallback has to still apply — a missing scatter must
