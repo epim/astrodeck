@@ -588,8 +588,11 @@ const pick = (m: RegExpMatchArray): string => (m[1] ?? m[2] ?? m[3]) as string;
 /** `import <clause> from <spec>` - group 1 is the clause, groups 2-4 are the
  *  three quote-style alternatives of `QUOTED` (see `pick`, applied at
  *  offset 1 by the caller). Hoisted so the vacuity probe below exercises the
- *  exact pattern the scan uses, not a hand-copied stand-in. */
-const IMPORT_FROM_RE = new RegExp(`import\\s+([\\s\\S]*?)\\s+from\\s+(?:${QUOTED})`, "g");
+ *  exact pattern the scan uses, not a hand-copied stand-in. The clause cannot
+ *  contain a quote or `;` (#1150): a side-effect import (`import "./a.css";`)
+ *  has no `from`, and a clause that could cross its closing quote would run on
+ *  into the next statement and take that statement's binding as its own. */
+const IMPORT_FROM_RE = new RegExp(`import\\s+([^"'\\x60;]*?)\\s+from\\s+(?:${QUOTED})`, "g");
 /** `import(<spec>)` - a dynamic import. */
 const IMPORT_DYN_RE = new RegExp(`import\\(\\s*(?:${QUOTED})\\s*\\)`, "g");
 // #198: a re-export is a live dependency on the named module too, and the
@@ -835,6 +838,17 @@ test("the import scan sees a single-quoted, double-quoted and template-literal s
   const substituted = probeImport("`", "../../${area}/Foo", "`");
   assert([...substituted.matchAll(IMPORT_FROM_RE)].length === 0,
     "the scan treated a substituted template literal as if it were static");
+});
+
+test("a side-effect import ahead of a named import is not read as one clause (#1150)", () => {
+  const sideEffect = ["im" + "port", '"./a.css";'].join(" ");
+  const named = probeImport('"', "../../components/Foo", '"');
+  const hits = [...`${sideEffect}\n${named}`.matchAll(IMPORT_FROM_RE)];
+  assert(hits.length === 1, `expected the one real import, the scan found ${hits.length}`);
+  assert(hits[0][1] === "Foo", `the binding clause was ${JSON.stringify(hits[0][1])}, not "Foo"`);
+  assert(hits[0][2] === "../../components/Foo", "the specifier is not the named import's");
+  const names = bindingsOf(hits[0][1]).map((b) => b.name);
+  assert(names.length === 1 && names[0] === "Foo", `the binding names were ${JSON.stringify(names)}`);
 });
 
 // ============================================== 1c. export re-exports (#198)
