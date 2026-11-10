@@ -67,6 +67,10 @@
 // cases, not thirteen. Case 8's nine cases arrived in H4 (scratchpad
 // H4-ULOG-mut), so every count before case 8's is of thirteen cases or
 // fewer, and case 8's own are of twenty-two.
+//
+// disk-reads: server/tests/fixtures/flow_progress_continue.json
+// disk-reads: server/tests/fixtures/sequence_state_mosaic.json, ui/src/api.ts, ui/src/api/, ui/src/components/
+// disk-reads: ui/src/help.ts, ui/src/lib/, ui/src/next/, ui/src/store.ts, ui/src/ws.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

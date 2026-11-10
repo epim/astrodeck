@@ -29,6 +29,9 @@
 // drawn as covered). Observed, 6/11 passed (5 red):
 //   x a flagged panel is tinted on the sky and says how many frames fall short and how bad
 //     (the clean, unchecked and empty panels say what they should): 2-1 has no tint: expected "short", got null
+//
+// disk-reads: server/tests/fixtures/flow_progress_continue.json
+// disk-reads: server/tests/fixtures/sequence_state_mosaic.json
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

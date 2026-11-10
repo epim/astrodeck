@@ -30,6 +30,11 @@
 // produced is quoted verbatim. After the limit reset every one was run
 // again against the current tree in s4-umodal-r2-mut (2026-09-27), and
 // each was red with the failure quoted.
+//
+// disk-reads: server/tests/fixtures/flow_readouts_m31.json, server/tests/fixtures/flow_readouts_single.json
+// disk-reads: ui/src/api.ts, ui/src/components/flows/, ui/src/lib/apiError.ts, ui/src/lib/base.ts
+// disk-reads: ui/src/lib/flowsApi.ts, ui/src/lib/frameView.ts, ui/src/lib/framing.ts, ui/src/lib/humanize.ts
+// disk-reads: ui/src/lib/lastSessionFrame.ts, ui/src/lib/objectShape.ts, ui/src/lib/optics.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

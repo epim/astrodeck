@@ -42,6 +42,8 @@
 //   THE COPY OF `waitForProfileActive` CANNOT DRIFT. The helper lives inside
 //   the 929-line legacy panel, so `next` owns its own copy (section 2.1's
 //   finding). Both are imported here and driven against the same server.
+//
+// disk-reads: ui/src/api.ts, ui/src/api/, ui/src/components/, ui/src/lib/, ui/src/next/, ui/src/store.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

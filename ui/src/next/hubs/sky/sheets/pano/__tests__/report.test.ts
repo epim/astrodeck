@@ -1,5 +1,7 @@
 // Copyright (c) 2026 James Penick
 // SPDX-License-Identifier: Apache-2.0
+//
+// disk-reads: ui/src/next/hubs/sky/sheets/pano/recorder.ts, ui/src/next/hubs/sky/sheets/pano/report.ts
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { buildReport, reportJson, statsOf } from '../report';

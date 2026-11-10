@@ -40,6 +40,11 @@
 //   - 467-470 "Manual review can retain obstructions all the way to 90 degrees": `altFromY` and `movePoint`, the
 //     editor, which is not touched and keeps its own test.
 // The two mutants named by SPEC-v2 7.2 are held in horizonTraceRules.test.ts.
+//
+// disk-reads: ui/src/next/hubs/sky/sheets/pano/horizon/__tests__/rasterAdapter.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/pano/horizon/horizonTrace.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/pano/horizon/noise.ts, ui/src/next/hubs/sky/sheets/pano/types.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereGeometry.ts
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { AZ_DEPARTURE, RE_EXPOSURE_BAND_PCT, RE_EXPOSURE_PCT, TRACE, robustSpread } from '../horizonTrace';

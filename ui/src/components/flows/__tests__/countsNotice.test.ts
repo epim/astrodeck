@@ -29,6 +29,12 @@
 //
 // Every mutant below was run in a private scratch copy of ui/ (#254), and the
 // failure it produced is quoted verbatim.
+//
+// disk-reads: server/astrodeck/api/app.py, server/astrodeck/flows/save_rules.py
+// disk-reads: server/astrodeck/flows/store.py, ui/src/api.ts, ui/src/components/flows/, ui/src/lib/apiError.ts
+// disk-reads: ui/src/lib/base.ts, ui/src/lib/flowsApi.ts, ui/src/lib/frameView.ts, ui/src/lib/framing.ts
+// disk-reads: ui/src/lib/humanize.ts, ui/src/lib/lastSessionFrame.ts, ui/src/lib/optics.ts
+// disk-reads: ui/src/lib/retryLoad.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

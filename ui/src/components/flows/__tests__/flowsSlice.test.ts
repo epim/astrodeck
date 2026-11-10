@@ -16,6 +16,11 @@
 // Nothing about that is visible in behaviour — a slice that rebuilt the whole
 // `flows` object on every write would pass every functional test in this file
 // and silently re-render everything. Identity is the only way to see it.
+//
+// disk-reads: server/astrodeck/flows/examples.py, server/tests/fixtures/panel_lane_cases.json, ui/src/api.ts
+// disk-reads: ui/src/components/flows/, ui/src/lib/apiError.ts, ui/src/lib/base.ts, ui/src/lib/flowsApi.ts
+// disk-reads: ui/src/lib/frameView.ts, ui/src/lib/framing.ts, ui/src/lib/humanize.ts
+// disk-reads: ui/src/lib/lastSessionFrame.ts, ui/src/lib/optics.ts, ui/src/lib/retryLoad.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 // node:fs reads examples.py for the campaign fixture below. It needs no window,

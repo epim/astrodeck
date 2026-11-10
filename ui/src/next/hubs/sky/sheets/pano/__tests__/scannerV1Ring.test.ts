@@ -10,6 +10,9 @@
 //     finds the result open and `partial`;
 //   * the latency feed reading chord rates (the `omegaGyro` test of `feedLatency` dropped, tracker.ts): 'the latency estimator is
 //     fed from gyro rates only' finds a pair counted on a mapping that never confirmed.
+//
+// disk-reads: ui/src/lib/horizon.ts, ui/src/next/hubs/sky/sheets/__sim__/, ui/src/next/hubs/sky/sheets/pano/
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereGeometry.ts, ui/src/next/lib/horizonModel.ts
 import assert from 'node:assert/strict';
 import { tracer } from '../horizon/horizonTrace';
 import { BinState, ColState, PANO_W } from '../types';

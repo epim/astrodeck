@@ -37,6 +37,11 @@
 // shared tree (#254), and the failure it produced is quoted verbatim,
 // wrapped at spaces, with each non-ASCII character written <U+XXXX> so this
 // file stays ASCII.
+//
+// disk-reads: server/tests/fixtures/typed_coordinates_cases.json, ui/src/components/flows/flowRunState.ts
+// disk-reads: ui/src/components/flows/framing/framingModel.ts, ui/src/components/flows/nodeDefs.ts
+// disk-reads: ui/src/lib/frameView.ts, ui/src/lib/framing.ts, ui/src/lib/lastSessionFrame.ts
+// disk-reads: ui/src/lib/objectShape.ts, ui/src/lib/optics.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

@@ -34,6 +34,8 @@
 // every file that exits 0 — which is all 291 of them today.
 //
 //   Run directly:  npx tsx src/__tests__/runTests.test.ts
+//
+// disk-reads: ui/run-tests.mjs, ui/tools/selectTests.mjs
 
 // run-tests.mjs is a plain untyped .mjs script outside tsconfig's `include`
 // (it is the test RUNNER, not UI source) - a static `import` of it fails

@@ -20,6 +20,8 @@
 // written in this repo's UI at all — it reads the server's own `_spawn("…")`
 // call sites out of app.py and requires an entry for each. Adding a lane
 // server-side without a sentence for it is a red test, not a 2 a.m. surprise.
+//
+// disk-reads: server/astrodeck/api/app.py, ui/src/lib/apiError.ts, ui/src/lib/humanize.ts
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";

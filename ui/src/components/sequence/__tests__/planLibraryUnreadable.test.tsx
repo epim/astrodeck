@@ -51,6 +51,9 @@
 // scratchpad S5-PLANS-UI-verify-mut, which re-measured every tally below
 // against these 14 cases. F1 and M3's second quote were run for S7's two
 // deliberate pin changes, in scratchpad S7-STORE-mut.)
+//
+// disk-reads: server/tests/fixtures/plan_list_unreadable.json, ui/src/api.ts, ui/src/api/, ui/src/components/
+// disk-reads: ui/src/lib/, ui/src/store.ts, ui/src/types.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

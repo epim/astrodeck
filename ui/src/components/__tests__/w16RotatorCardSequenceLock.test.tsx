@@ -88,6 +88,9 @@
 //
 // The card as it stood before this change (`git show HEAD:` of the file, put in
 // place from a byte backup and restored) read 8/14: the same cases as Z1.
+//
+// disk-reads: server/astrodeck/api/app.py, ui/src/api.ts, ui/src/api/, ui/src/components/, ui/src/lib/
+// disk-reads: ui/src/store.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

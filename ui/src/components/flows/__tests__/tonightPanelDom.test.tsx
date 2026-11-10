@@ -27,6 +27,9 @@
 //    reviewers found four dialogs off the bottom of the viewport. Overlay's
 //    body-level host is the fix; a surface rendered inline in the view tree
 //    measures fine in a DOM dump and lands somewhere nobody can reach.
+//
+// disk-reads: ui/src/api.ts, ui/src/api/, ui/src/components/, ui/src/lib/, ui/src/next/, ui/src/store.ts
+// disk-reads: ui/src/testing/
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

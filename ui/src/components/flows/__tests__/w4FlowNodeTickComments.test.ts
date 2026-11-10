@@ -27,6 +27,9 @@
 // Every mutant below was run in a private scratch copy of ui/ under the
 // session scratchpad, restored byte-identically (sha256 checked) afterwards,
 // never in the shared tree. The failure it produced is quoted verbatim.
+//
+// disk-reads: ui/src/components/flows/FlowCanvas.tsx
+// disk-reads: ui/src/next/hubs/session/flows/canvas/FlowCanvasSurface.tsx, ui/src/store.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

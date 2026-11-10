@@ -28,6 +28,8 @@
 //     COMPLETE session was warned about starting in bad weather
 //   x a live row is not warned about: a LIVE session was warned about starting
 //     in bad weather
+//
+// disk-reads: ui/src/api.ts, ui/src/api/, ui/src/components/, ui/src/lib/, ui/src/store.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

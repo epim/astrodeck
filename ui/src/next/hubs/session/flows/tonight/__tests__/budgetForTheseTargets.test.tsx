@@ -37,6 +37,8 @@
 //   budgetForTheseTargets.test: 0/2 passed
 //     x control: the sheet drew the server's two BUDGET rows, stamped BUDGET,
 //       numbers and all: STORY drew 0 BUDGET rows, not the server's 2
+//
+// disk-reads: ui/src/api.ts, ui/src/api/, ui/src/components/, ui/src/lib/, ui/src/next/, ui/src/store.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

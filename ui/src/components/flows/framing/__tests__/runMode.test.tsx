@@ -77,6 +77,9 @@
 // their "got" and "expected" lines, which is what the engine served then.
 // w7SetAsideForNow.test.ts grades the two wordings themselves, against
 // `forNow` alone, with its own mutant.
+//
+// disk-reads: server/tests/fixtures/flow_progress_continue.json
+// disk-reads: server/tests/fixtures/sequence_state_mosaic.json
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

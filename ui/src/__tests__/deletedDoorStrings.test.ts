@@ -149,6 +149,8 @@
 //
 // Convention: inline test()/eq() helpers, printed tally plus the
 // { passed, failed, total } export (shell-and-tests.md section 4).
+//
+// disk-reads: ui/src/
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

@@ -40,6 +40,8 @@
 // SABOTAGE (run, red, restored - see the task report): add `disabled={busy}`
 // to any button under `next/` and "no native disabled attribute" goes red with
 // the file and line.
+//
+// disk-reads: ui/src/next/
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

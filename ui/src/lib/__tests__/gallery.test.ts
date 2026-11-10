@@ -24,6 +24,8 @@
 //     of them takes the download away.
 //   * DESTRUCTIVE COPY. Count and size in the words, and the ledger-orphan
 //     consequence stated where the decision is made.
+//
+// disk-reads: ui/src/components/gallery/FrameTile.tsx, ui/src/lib/gallery.ts, ui/src/views/GalleryView.tsx
 
 import {
   LEDGER_ORPHAN_NOTE, PICKED_URL_BUDGET, TRASH_BATCH_CAP,

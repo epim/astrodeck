@@ -25,6 +25,8 @@
 // of ui/ under the session scratchpad, restored byte-identically (sha256
 // checked) afterwards, never in the shared tree. The failure it produced is
 // quoted verbatim in the case below.
+//
+// disk-reads: ui/src/components/flows/flowsSlice.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

@@ -4,6 +4,8 @@
 // Inline-assert harness (no vitest); runs via `npx tsx`. Reads the committed
 // astropy-healpix vectors via Node fs at runtime (resolveJsonModule is off and
 // MUST NOT be added; @ts-ignore keeps `tsc -b` clean without @types/node).
+//
+// disk-reads: ui/src/lib/__tests__/healpix.vectors.json, ui/src/lib/healpix.ts
 import { ang2pixNested, pixUV2ang, parentOf, childUVRect } from "../healpix";
 // @ts-ignore  no @types/node in this browser-targeted UI project; tsx supplies fs at runtime
 import { readFileSync } from "node:fs";

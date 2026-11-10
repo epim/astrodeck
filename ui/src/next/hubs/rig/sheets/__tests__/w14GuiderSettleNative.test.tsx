@@ -69,6 +69,10 @@
 //         is locked on the native guider, but it is the one box the native
 //         dither honours
 // The same text is in the work package's return, the durable record.
+//
+// disk-reads: native/crates/astro-guide/src/engine.rs, server/astrodeck/api/app.py
+// disk-reads: server/astrodeck/guide/phd2.py, ui/src/api.ts, ui/src/api/, ui/src/components/, ui/src/lib/
+// disk-reads: ui/src/next/, ui/src/store.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

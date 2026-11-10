@@ -58,6 +58,10 @@
 // The panelStateOf mutants were run again for #451, once the reader took the
 // run's state, in scratchpad S7-URUNHOLD-mut the same way (2026-09-28), and
 // are quoted as that run saw them, beside #451's own.
+//
+// disk-reads: server/tests/fixtures/flow_progress_continue.json
+// disk-reads: server/tests/fixtures/sequence_state_mosaic.json, ui/src/components/flows/flowRunState.ts
+// disk-reads: ui/src/lib/frameView.ts, ui/src/lib/lastSessionFrame.ts
 
 // @ts-ignore  no @types/node guaranteed; tsx supplies fs at runtime
 import { readFileSync } from "node:fs";

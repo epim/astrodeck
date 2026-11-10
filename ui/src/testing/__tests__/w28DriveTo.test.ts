@@ -16,6 +16,8 @@
 //     on resume (passed framing, filters, guiding, night, resume)
 //   x a step the wizard does not have ... is bounded: an endless wizard was
 //     not cut off at the bound (expected 12, got 5)
+//
+// disk-reads: ui/src/
 
 const { driveTo, domWizardDriver, MAX_PRESSES } = await import("../driveTo");
 const { readFileSync, readdirSync, statSync } = await import("node:fs");

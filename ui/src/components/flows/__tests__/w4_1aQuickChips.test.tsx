@@ -26,6 +26,9 @@
 // NAMED MUTANT (run from a byte backup, restored byte-identically with sha256
 // compared): the lens cap offered again, `nodeDefs.ts` `DUSK_FLATS_METHODS`
 // marking "cap" engineCapable: the mirror case and the creation case go red.
+//
+// disk-reads: server/astrodeck/flows/nodes.py, ui/src/api.ts, ui/src/api/, ui/src/components/, ui/src/lib/
+// disk-reads: ui/src/next/, ui/src/store.ts, ui/src/testing/
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

@@ -18,6 +18,9 @@
 // live phases and a redraw on the first live frame (the gate dropped; the gate on `noteMeshDraw` alone; `drawnFrame`
 // not reset), the whole new raster copied on the first frame after a scanner swap (the effect's `w.full` reset
 // dropped), the bar head at mod(heading, 360) / 360 of the bar (the mirrored head), and amber cells at half height.
+//
+// disk-reads: ui/src/next/hubs/sky/sheets/pano/ScanView.tsx, ui/src/next/hubs/sky/sheets/pano/types.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/sheets.css
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { PANO_H, PANO_W, PROFILE_BINS, PixClass } from '../types';

@@ -17,6 +17,10 @@
 // NAMED MUTANT "owes_more ignored": runCopy.ts's `continues` made to read
 // `s.status === "dormant"` alone (the pre-#778 rule). RED, observed below the
 // test that grades it.
+//
+// disk-reads: server/tests/fixtures/flow_progress_continue.json, ui/src/components/flows/flowRunState.ts
+// disk-reads: ui/src/components/flows/nodeDefs.ts, ui/src/components/flows/runCopy.ts, ui/src/lib/frameView.ts
+// disk-reads: ui/src/lib/framing.ts, ui/src/lib/lastSessionFrame.ts, ui/src/lib/optics.ts
 
 // @ts-ignore  no @types/node guaranteed; tsx supplies fs at runtime
 import { readFileSync } from "node:fs";

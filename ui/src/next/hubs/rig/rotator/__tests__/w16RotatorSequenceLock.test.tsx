@@ -120,6 +120,9 @@
 //
 // Before the change the file read 8/16 (the cases that assert nothing is locked
 // without a run, HALT, the capability order and the reader guard passed).
+//
+// disk-reads: server/astrodeck/api/app.py, ui/src/api.ts, ui/src/api/, ui/src/components/, ui/src/lib/
+// disk-reads: ui/src/next/, ui/src/store.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

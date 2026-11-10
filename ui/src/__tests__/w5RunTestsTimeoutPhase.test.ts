@@ -119,6 +119,8 @@
 //   straddled two chunks and was missed: 0
 //
 //   Run directly:  npx tsx src/__tests__/w5RunTestsTimeoutPhase.test.ts
+//
+// disk-reads: ui/run-tests.mjs, ui/tools/selectTests.mjs
 
 interface Phase {
   id: "no-tally" | "import-pending" | "import-resolved" | "exit-hung";

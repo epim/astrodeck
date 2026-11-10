@@ -48,6 +48,9 @@
 //
 // Convention: shell-and-tests.md section 4 - jsdom by hand, createRoot + act,
 // printed tally plus the `{ passed, failed, total }` export.
+//
+// disk-reads: server/tests/fixtures/tonight_mosaic_2x3.json, ui/src/api.ts, ui/src/api/, ui/src/components/
+// disk-reads: ui/src/lib/, ui/src/next/, ui/src/store.ts, ui/src/testing/
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

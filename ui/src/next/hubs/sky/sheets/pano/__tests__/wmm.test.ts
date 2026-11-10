@@ -1,5 +1,7 @@
 // Copyright (c) 2026 James Penick
 // SPDX-License-Identifier: Apache-2.0
+//
+// disk-reads: ui/src/next/hubs/sky/sheets/pano/wmm.ts, ui/src/next/hubs/sky/sheets/pano/wmm2025.ts
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';

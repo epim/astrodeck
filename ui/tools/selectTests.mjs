@@ -21,8 +21,8 @@
 //
 //     (repo-root-relative paths, comma separated, a trailing "/" meaning every
 //     file under that directory; the line may repeat). A declaring file runs
-//     when a changed file is one of the paths it names, or by import like any
-//     other. A declaration is a promise the test file's author keeps; the
+//     when a changed or deleted file is one of the paths it names, or by import
+//     like any other. A declaration is a promise the test file's author keeps; the
 //     ratchet in selectTests.test.ts fails when a new undeclared reader
 //     appears, and when a declared path does not exist.
 //   * Anything the graph cannot account for runs everything: see failOpen.
@@ -337,8 +337,9 @@ export function selectTests(graph, { changed, deleted = [] }) {
   const reached = reachedFrom(graph.reverse, changed.filter((p) => graph.files.has(p)));
   const byImport = graph.tests.filter((t) => reached.has(t));
   const taken = new Set(byImport);
+  const touched = [...changed, ...deleted];
   const byDeclared = graph.tests.filter((t) => !taken.has(t) && graph.declared.has(t)
-    && changed.some((c) => declares(graph.declared.get(t), c)));
+    && touched.some((c) => declares(graph.declared.get(t), c)));
   byDeclared.forEach((t) => taken.add(t));
   const byReader = undeclaredReaders(graph).filter((t) => !taken.has(t));
   const tests = [...byImport, ...byDeclared, ...byReader].sort();

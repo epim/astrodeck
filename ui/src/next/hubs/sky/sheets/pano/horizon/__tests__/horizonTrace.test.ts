@@ -21,6 +21,12 @@
 //   - 'extraction ends on painted runs that are not numbers ...': D1.
 // Every case below opens with a 'Mutation:' note naming the mutants it was seen to turn red, as the old suites did
 // (the ids are those of the T10 report's mutant run, which lists the edit of each).
+//
+// disk-reads: ui/src/next/hubs/sky/sheets/pano/horizon/__tests__/rasterAdapter.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/pano/horizon/__tests__/traceScenes.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/pano/horizon/horizonTrace.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/pano/horizon/noise.ts, ui/src/next/hubs/sky/sheets/pano/types.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereGeometry.ts
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { noiseSigma } from '../noise';

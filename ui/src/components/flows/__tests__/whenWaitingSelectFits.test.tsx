@@ -42,6 +42,9 @@
 // harness's leading marker. Each mutant turned its own case red and left the
 // other two green (every run passed 2/3), which is the control: no case here
 // grades another place's control.
+//
+// disk-reads: ui/src/api.ts, ui/src/api/, ui/src/components/, ui/src/index.css, ui/src/lib/, ui/src/next/
+// disk-reads: ui/src/store.ts, ui/src/testing/
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

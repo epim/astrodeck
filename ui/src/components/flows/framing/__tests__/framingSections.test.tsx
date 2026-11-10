@@ -36,6 +36,9 @@
 // again against the current tree in s4-umodal-r2-mut (2026-09-27), and
 // each was red with the failure quoted. S5's mutants were run the same way
 // in s5-modal-mut (2026-09-28).
+//
+// disk-reads: server/tests/fixtures/flow_readouts_m31.json, server/tests/fixtures/flow_readouts_single.json
+// disk-reads: server/tests/fixtures/sequence_state_mosaic.json
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

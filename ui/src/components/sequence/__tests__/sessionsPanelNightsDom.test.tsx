@@ -35,6 +35,8 @@
 //                                   on the same number
 //   U2 "one night is plural"        SessionsPanel.tsx's `r.nights === 1 ? ""
 //                                   : "s"` made `"s"`
+//
+// disk-reads: ui/src/api.ts, ui/src/api/, ui/src/components/, ui/src/lib/, ui/src/store.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

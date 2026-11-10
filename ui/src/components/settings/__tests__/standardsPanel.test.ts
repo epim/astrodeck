@@ -14,6 +14,8 @@
 // catch a transcription error.
 //
 // Run alone:  npx tsx src/components/settings/__tests__/standardsPanel.test.ts
+//
+// disk-reads: server/astrodeck/config.py, ui/src/lib/standards.ts
 import { readFileSync } from "node:fs";
 import {
   STANDARDS_ALL_FIELDS, STANDARDS_DEFAULTS, standardsOrDefault,

@@ -16,6 +16,9 @@
 // a ring that would still match closes by gyro, trackerClosure.test.ts); `closeLoop` called on an unlocked focal ('unlocked'
 // finds a call); a RangeError rethrown or treated as an aborted closure ('range' finds an exception or a ring still open); the
 // RangeError path applying the correction anyway ('range' finds the poses moved and the raster cleared).
+//
+// disk-reads: ui/src/next/hubs/sky/sheets/__sim__/, ui/src/next/hubs/sky/sheets/pano/
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereGeometry.ts
 import assert from 'node:assert/strict';
 import { PRIOR_SD_PCT } from '../focal';
 import { makeSynthScene } from './synth/synth';

@@ -25,6 +25,8 @@
 //     dvh value made the @supports fallback invalid at computed-value time,
 //     which drops max-height to `none` (#354). jsdom computes no CSS lengths,
 //     so the tests for that carry a small evaluator of their own.
+//
+// disk-reads: ui/src/
 
 interface NodeFsLike {
   readFileSync(path: string, encoding: string): string;

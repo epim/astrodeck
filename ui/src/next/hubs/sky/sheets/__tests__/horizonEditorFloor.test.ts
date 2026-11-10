@@ -7,6 +7,8 @@
 // formula and the editor's own constants, and fails when either moves alone.
 // Mutation: REVIEW_HIT_PX = 12 in horizonStrip.ts. Observed red: 'the editor's
 // floor is 1.0385 degrees and the scorer's is 1.5577'.
+//
+// disk-reads: tools/photosphere_sim/sim/score.py, ui/src/next/hubs/sky/sheets/horizonStrip.ts
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";

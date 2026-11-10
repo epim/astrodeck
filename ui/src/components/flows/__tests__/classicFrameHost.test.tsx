@@ -44,6 +44,9 @@
 // reset every one was run again on the finished S4 tree (scratchpad
 // s4-uhostc-r2-mut, 2026-09-27) and failed exactly as quoted; those marked
 // "(r2)" were first recorded then.
+//
+// disk-reads: server/tests/fixtures/flow_progress_continue.json
+// disk-reads: server/tests/fixtures/sequence_state_mosaic.json, ui/src/
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

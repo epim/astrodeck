@@ -41,6 +41,8 @@
 // second override rule for the panel case), and that the panel also narrows
 // its slot with `min-width: 0` so a wide sheet body cannot stretch the 420 px
 // panel out past its own width.
+//
+// disk-reads: ui/src/next/next.css, ui/src/next/shell/boundary.css, ui/src/next/shell/shell.css
 
 interface NodeFsLike {
   readFileSync(path: string, encoding: string): string;

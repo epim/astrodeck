@@ -37,6 +37,9 @@
 //       character 10
 //       server: "this flow loops back on itself at {src} -> {dst}; a flow lane runs once"
 //       ui:     "this flow doubles back on itself at {src} -> {dst}; a flow lane runs once"
+//
+// disk-reads: server/astrodeck/flows/models.py, ui/src/components/flows/flowLoop.ts
+// disk-reads: ui/src/components/flows/nodeDefs.ts, ui/src/lib/framing.ts, ui/src/lib/optics.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

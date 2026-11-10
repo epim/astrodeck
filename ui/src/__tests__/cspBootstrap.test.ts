@@ -4,6 +4,8 @@
 // the server CSP can drop script-src 'unsafe-inline'. The pre-paint anti-flash
 // code lives in public/bootstrap.js and is loaded as an external blocking
 // <script>. Inline-assert harness (mirrors base.test.ts); cwd is ui/.
+//
+// disk-reads: ui/index.html, ui/public/bootstrap.js
 import { readFileSync, existsSync } from "node:fs";
 
 let passed = 0;

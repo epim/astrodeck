@@ -28,6 +28,9 @@
 // humanizeSeqError holds to the same rule (#998), and the server tests' Python
 // mirror of humanizeLog is held to this function by a shared corpus (#997); both
 // are at the end of the file.
+//
+// disk-reads: server/astrodeck/hub.py, server/astrodeck/solve/light.py
+// disk-reads: server/tests/fixtures/humanizer_mirror_cases.json, ui/src/lib/humanize.ts
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";

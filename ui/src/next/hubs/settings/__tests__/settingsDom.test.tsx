@@ -93,6 +93,9 @@
 //     still compiled and ran. A file assertion is the only thing that catches
 //     that, because a module resolution that picks the wrong file looks like a
 //     working build.
+//
+// disk-reads: ui/src/api.ts, ui/src/api/, ui/src/components/, ui/src/lib/, ui/src/next/, ui/src/store.ts
+// disk-reads: ui/src/ws.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

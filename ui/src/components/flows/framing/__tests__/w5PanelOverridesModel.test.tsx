@@ -13,6 +13,11 @@
 //
 // Each mutant below was run in a private copy of the file in the WP scratch
 // directory, and the failure it produced is quoted.
+//
+// disk-reads: server/tests/fixtures/w5_panel_exposure_cases.json, ui/src/components/flows/flowRunState.ts
+// disk-reads: ui/src/components/flows/framing/framingModel.ts, ui/src/components/flows/nodeDefs.ts
+// disk-reads: ui/src/lib/frameView.ts, ui/src/lib/framing.ts, ui/src/lib/lastSessionFrame.ts
+// disk-reads: ui/src/lib/objectShape.ts, ui/src/lib/optics.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

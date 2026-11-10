@@ -37,6 +37,11 @@
 //                                ignored (added by the S4-UARC verifier)
 //   "avoid ignored"            - a surface's `avoid` cards never push the run
 //                                (#360, S5-LOOP)
+//
+// disk-reads: server/astrodeck/flows/examples.py, ui/src/components/flows/autoLayout.ts
+// disk-reads: ui/src/components/flows/geometry.ts, ui/src/components/flows/nodeDefs.ts
+// disk-reads: ui/src/components/flows/panelLane.ts, ui/src/components/flows/targetSummary.ts
+// disk-reads: ui/src/lib/framing.ts, ui/src/lib/optics.ts
 
 import { readFileSync } from "node:fs";
 

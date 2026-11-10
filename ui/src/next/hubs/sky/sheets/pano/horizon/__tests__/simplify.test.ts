@@ -8,6 +8,12 @@
 //
 // G1 and G2 are checked here from the returned points alone, with `horizonAltAt` (the reader the engine uses) and, in
 // one test, against a second interpolation written below, so the guarantees are stated against the line a caller gets.
+//
+// disk-reads: tools/photosphere_sim/fixtures/chartyard-shortpan-60/truth/reference-horizon.json
+// disk-reads: ui/src/lib/horizon.ts
+// disk-reads: ui/src/next/hubs/sky/sheets/pano/horizon/__tests__/fixtures/chartyard-reference-720.json
+// disk-reads: ui/src/next/hubs/sky/sheets/pano/horizon/simplify.ts, ui/src/next/hubs/sky/sheets/pano/types.ts
+// disk-reads: ui/src/next/lib/horizonModel.ts
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { horizonAltAt } from '../../../../../../lib/horizonModel';

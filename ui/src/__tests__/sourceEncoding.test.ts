@@ -1,5 +1,7 @@
 // Copyright (c) 2026 James Penick
 // SPDX-License-Identifier: Apache-2.0
+//
+// disk-reads: ui/src/
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join, relative } from "node:path";

@@ -26,6 +26,9 @@
 // run from a byte backup of the file named, restored and sha256-compared
 // after each, the mutant's marker grepped absent (#254); the failure it
 // produced is quoted verbatim.
+//
+// disk-reads: server/tests/fixtures/flow_progress_continue.json
+// disk-reads: server/tests/fixtures/sequence_state_mosaic.json
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

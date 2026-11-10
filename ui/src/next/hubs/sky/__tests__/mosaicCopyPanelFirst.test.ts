@@ -76,6 +76,10 @@
 //
 // Convention: inline test()/eq() helpers, printed tally plus the
 // { passed, failed, total } export (shell-and-tests.md section 4).
+//
+// disk-reads: ui/src/api.ts, ui/src/lib/apiError.ts, ui/src/lib/base.ts, ui/src/lib/framing.ts
+// disk-reads: ui/src/lib/humanize.ts, ui/src/lib/optics.ts, ui/src/lib/rotation.ts, ui/src/next/hubs/
+// disk-reads: ui/src/next/lib/, ui/src/next/ui/
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

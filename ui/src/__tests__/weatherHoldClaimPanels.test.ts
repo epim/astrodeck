@@ -34,6 +34,9 @@
 // Same dependency-free node access as weatherHoldClaim.test.ts.
 //
 //   Run directly:  npx tsx src/__tests__/weatherHoldClaimPanels.test.ts
+//
+// disk-reads: ui/src/components/sequence/SessionsPanel.tsx, ui/src/components/weather/SkyConditionsPanel.tsx
+// disk-reads: ui/src/next/hubs/session/now/NowBanners.tsx
 
 interface NodeFsLike { readFileSync(path: string, encoding: string): string }
 const nodeImport = (s: string): Promise<unknown> =>

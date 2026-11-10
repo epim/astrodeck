@@ -18,6 +18,10 @@
 // "every NON-legacy node type", and a legacy type in the rail is a failure.
 //
 // Run directly:  npx tsx src/components/flows/__tests__/palette.test.ts
+//
+// disk-reads: server/astrodeck/flows/nodes.py, ui/src/components/flows/flowsTypes.ts
+// disk-reads: ui/src/components/flows/nodeDefs.ts, ui/src/components/flows/palette.ts, ui/src/lib/framing.ts
+// disk-reads: ui/src/lib/optics.ts
 import { readFileSync } from "node:fs";
 import {
   PALETTE_GROUPS, PALETTE_ITEM_ORDER_DISPUTED, PALETTE_ITEM_ORDER_SOURCES,

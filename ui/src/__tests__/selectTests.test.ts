@@ -178,6 +178,13 @@ try {
       "a directory declaration must not match a longer sibling name");
   });
 
+  test("a declared path that was deleted selects the declaring test", () => {
+    same(selectTests(graph, { changed: [], deleted: ["server/notes.md"] }).byDeclared, [T("declaresDir")],
+      "a deleted file the test declares");
+    same(selectTests(graph, { changed: [], deleted: ["docs/unrelated.md"] }).byDeclared, [],
+      "a deleted file nothing declares");
+  });
+
   test("a word in a comment is not a disk read", () => {
     assert(!graph.diskReaders.has(T("commentOnly")), "commentOnly only mentions readFileSync in a comment");
   });

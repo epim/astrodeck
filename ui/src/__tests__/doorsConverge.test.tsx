@@ -133,6 +133,8 @@
 //   and "the modal keeps its own missing-key 25" write the same value as
 //   DEFAULT_OVERLAP, so no behaviour here can tell them apart; a second constant
 //   with an equal value is a text fact, which that test reads.
+//
+// disk-reads: server/tests/fixtures/wizard_mosaic_answer.json
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

@@ -5,6 +5,7 @@
 //   npm test                          every test file
 //   npm test -- <file-or-filter> ...  exactly those files
 //   npm test -- --changed <base>      the files a change against <base> can affect
+//   npm test -- --record-reads <out>  also write the read map of the run (#1268)
 //
 // A test file is named by its path (from here, from the current directory or
 // absolute) or by a substring of its path under ui/; each argument must match
@@ -12,6 +13,10 @@
 // never reads as a clean run (#1152). `--changed` selects by the import graph
 // in tools/selectTests.mjs (#1258) and prints one line saying how many files it
 // chose and why; whenever it cannot be sure it runs everything and says why.
+// `--record-reads <out.json>` runs each child with tools/recordReads.mjs
+// preloaded, writes which files each test read outside its imports to <out.json>,
+// and fails the run when a test read a path its `// disk-reads:` line does not
+// name. Off by default; see tools/recordReads.mjs.
 //
 // Why this exists: the test files are plain tsx scripts. Each runs its own
 // assertions, prints "N/M passed", and exports { passed, failed, total }. That
@@ -55,7 +60,7 @@
 // module for those exports must not itself run the whole suite — see the
 // `isMain` guard at the bottom of the file.
 
-import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { availableParallelism, tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
@@ -63,6 +68,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   buildGraph, changedFiles, describeSelection, selectTests,
 } from "./tools/selectTests.mjs";
+import { RECORD_DIR_ENV, RECORD_TEST_ENV, readMap } from "./tools/recordReads.mjs";
 
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const MAX_CONCURRENCY = 8;
@@ -92,6 +98,11 @@ export const EXIT_GRACE_MS = 5_000;
 // ERR_UNKNOWN_FILE_EXTENSION before a single test runs. See issue #50 and
 // ./test-css-stub.mjs.
 const CSS_STUB_URL = pathToFileURL(join(ROOT, "test-css-stub.mjs")).href;
+// Loaded before the stub and tsx, and only when the read map is being recorded.
+const RECORD_READS_URL = pathToFileURL(join(ROOT, "tools", "recordReads.mjs")).href;
+// The directory the children's read records go to; set once by `main` under
+// --record-reads and null otherwise.
+let recordingReadsTo = null;
 
 function findTests(dir, out = []) {
   for (const name of readdirSync(dir)) {
@@ -107,16 +118,22 @@ function findTests(dir, out = []) {
 
 const toPosix = (p) => p.split("\\").join("/");
 
-/** Split the command line into `--changed <base>` and the file filters.
- *  Throws an Error whose message is the usage problem. */
+/** Split the command line into `--changed <base>`, `--record-reads <out>` and
+ *  the file filters. Throws an Error whose message is the usage problem. */
 export function parseArgs(argv) {
   let changed = null;
+  let recordReads = null;
   const filters = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--changed") {
       changed = argv[++i];
       if (changed === undefined || changed.startsWith("--")) {
         throw new Error("--changed needs a base, for example --changed origin/main");
+      }
+    } else if (argv[i] === "--record-reads") {
+      recordReads = argv[++i];
+      if (recordReads === undefined || recordReads.startsWith("--")) {
+        throw new Error("--record-reads needs a file to write, for example --record-reads reads.json");
       }
     } else if (argv[i].startsWith("--")) {
       throw new Error(`unknown option ${argv[i]}`);
@@ -127,7 +144,7 @@ export function parseArgs(argv) {
   if (changed !== null && filters.length > 0) {
     throw new Error("name files or use --changed <base>, not both");
   }
-  return { changed, filters };
+  return { changed, filters, recordReads };
 }
 
 /** The test files that `filters` name, out of `allFiles` (absolute paths).
@@ -180,7 +197,7 @@ export function chooseFiles(argv, allFiles, { root, cwd }) {
   try {
     args = parseArgs(argv);
   } catch (e) {
-    return { error: `${e.message}\nusage: run-tests.mjs [<file-or-filter> ...] | --changed <base>`, code: 2 };
+    return { error: `${e.message}\nusage: run-tests.mjs [--record-reads <out.json>] [<file-or-filter> ...] | --changed <base>`, code: 2 };
   }
   if (args.filters.length > 0) {
     const named = matchFilters(args.filters, allFiles, { root, cwd });
@@ -386,6 +403,14 @@ export function timeoutPhase({
   return PHASES.exitHung;
 }
 
+/** The environment a child runs in: ours, plus the two variables that switch
+ *  the read recorder on (the test's repo-root-relative path, and where to write). */
+function childEnv(file, readsDir) {
+  if (readsDir === null) return process.env;
+  const test = toPosix(relative(resolve(ROOT, ".."), file));
+  return { ...process.env, [RECORD_DIR_ENV]: readsDir, [RECORD_TEST_ENV]: test };
+}
+
 // `timeoutMs` defaults to the real suite's TIMEOUT_MS but can be overridden
 // per call — issue #664's own regression test (w13CleanTallyTimeoutRetry)
 // needs a real timeout-and-kill to prove runFileWithRetry's wiring, and
@@ -398,7 +423,14 @@ export function timeoutPhase({
 // to. `runFileWithRetry`, the one caller `main` uses, asks for EXIT_GRACE_MS;
 // a test that wants to watch the raw freeze (w14ChildPhaseMarkers) leaves it
 // off and gets the timeout, as before.
-export function runOne(file, timeoutMs = TIMEOUT_MS, { exitGraceMs = 0 } = {}) {
+//
+// `readsDir` (#1268) turns the read recorder on for this child: the directory
+// its record is written to. It defaults to the one `main` sets under
+// --record-reads, and is null otherwise, so the child is then exactly what it
+// always was.
+export function runOne(
+  file, timeoutMs = TIMEOUT_MS, { exitGraceMs = 0, readsDir = recordingReadsTo } = {},
+) {
   // The child imports the file, which runs its assertions, then reports the
   // file's own exported `result` when it has one.
   //
@@ -447,8 +479,9 @@ export function runOne(file, timeoutMs = TIMEOUT_MS, { exitGraceMs = 0 } = {}) {
     let graceTimer = null;
     const child = execFile(
       process.execPath,
-      ["--import", CSS_STUB_URL, "--import", "tsx", "--input-type=module", "--eval", code],
-      { cwd: ROOT, maxBuffer: 8 << 20 },
+      [...(readsDir === null ? [] : ["--import", RECORD_READS_URL]),
+        "--import", CSS_STUB_URL, "--import", "tsx", "--input-type=module", "--eval", code],
+      { cwd: ROOT, maxBuffer: 8 << 20, env: childEnv(file, readsDir) },
       (err, stdout, stderr) => {
         clearTimeout(timer);
         clearTimeout(graceTimer);
@@ -868,6 +901,27 @@ function typecheck() {
   });
 }
 
+/** The reads each test file made outside its imports and did not declare, as
+ *  the lines the run prints; also writes the whole map to `outPath`. A test file
+ *  that ran but left no record (killed at its timeout) is named too: its reads
+ *  are unknown, which is not the same as none. */
+function reportReadMap(readsDir, outPath, files) {
+  const repoRoot = toPosix(resolve(ROOT, ".."));
+  const map = readMap(readsDir, buildGraph(repoRoot), repoRoot);
+  const unrecorded = files
+    .map((f) => toPosix(relative(repoRoot, f)))
+    .filter((test) => map[test] === undefined);
+  writeFileSync(outPath, `${JSON.stringify({ tests: map, unrecorded }, null, 1)}\n`, "utf8");
+  const reading = Object.values(map).filter((m) => m.reads.length > 0).length;
+  const lines = [`read map: ${reading} of ${files.length} test files read outside their imports; written to ${outPath}`];
+  for (const [test, m] of Object.entries(map)) {
+    if (m.undeclared.length > 0) lines.push(`  ${test} reads without declaring: ${m.undeclared.join(", ")}`);
+  }
+  for (const test of unrecorded) lines.push(`  ${test} left no record of its reads`);
+  const clean = lines.length === 1;
+  return { lines, clean };
+}
+
 async function main() {
   const allFiles = findTests(join(ROOT, "src")).sort();
   if (allFiles.length === 0) {
@@ -882,6 +936,9 @@ async function main() {
   }
   if (chosen.line) console.log(chosen.line);
   const files = chosen.files;
+  const recordReads = parseArgs(process.argv.slice(2)).recordReads;
+  const readsDir = recordReads === null ? null : mkdtempSync(join(tmpdir(), "astrodeck-ui-reads-"));
+  recordingReadsTo = readsDir;
   if (!await typecheck()) process.exit(1);
 
   const results = [];
@@ -908,12 +965,20 @@ async function main() {
   if (retriedLine) console.log(retriedLine);
   const gracedLine = gracedSummaryLine(results);
   if (gracedLine) console.log(gracedLine);
+  let readsClean = true;
+  if (readsDir !== null) {
+    const report = reportReadMap(readsDir, resolve(recordReads), files);
+    rmSync(readsDir, { recursive: true, force: true });
+    readsClean = report.clean;
+    for (const line of report.lines) (report.clean ? console.log : console.error)(line);
+  }
   if (broken.length) {
     const outDir = join(tmpdir(), "astrodeck-ui-test-output");
     for (const b of broken) console.error(formatBroken(b, outDir));
     console.error(`\n${broken.length} file(s) not green`);
     process.exit(1);
   }
+  if (!readsClean) process.exit(1);
   console.log("all green");
 }
 

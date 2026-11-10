@@ -50,6 +50,9 @@
 // Every mutant below was run in a private scratch copy of ui/ (scratchpad
 // S7-USLICE-mut, #254, #475), never in the shared tree, and the failure it
 // produced is quoted verbatim.
+//
+// disk-reads: server/tests/fixtures/flow_progress_continue.json
+// disk-reads: server/tests/fixtures/sequence_state_mosaic.json
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

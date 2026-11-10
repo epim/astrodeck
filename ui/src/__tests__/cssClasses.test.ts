@@ -12,6 +12,8 @@
 // Tailwind utilities — those are generated, not authored). Each must appear as a
 // selector token in index.css. The list is deliberately explicit so a newly
 // referenced custom class without a CSS landing fails loudly here.
+//
+// disk-reads: ui/src/index.css
 
 // This test runs via `tsx` (Node), but the project has no @types/node installed
 // and `tsc -b` type-checks every file under src/. To stay dependency-free we reach

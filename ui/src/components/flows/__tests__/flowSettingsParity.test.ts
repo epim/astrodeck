@@ -16,6 +16,8 @@
 // all read as the default; a declared option reads as itself.
 //
 // Run alone:  node --import ./test-css-stub.mjs --import tsx src/components/flows/__tests__/flowSettingsParity.test.ts
+//
+// disk-reads: server/astrodeck/flows/models.py, ui/src/components/flows/flowsTypes.ts
 import { FLOW_SETTINGS, flowSetting } from "../flowsTypes";
 import type { FlowGraphRec } from "../flowsTypes";
 // @ts-ignore  no @types/node guaranteed; tsx supplies fs at runtime

@@ -13,6 +13,8 @@
 // new tab. This test restores that guarantee by checking the two tables union to
 // exactly the ViewName type, and it does so by reading the SOURCE (types.ts and
 // App.tsx) so it cannot drift from what actually ships.
+//
+// disk-reads: ui/src/App.tsx, ui/src/components/, ui/src/lib/, ui/src/types.ts, ui/src/views/
 
 // Same dependency-free node:fs access idiom as src/__tests__/cssClasses.test.ts —
 // the project installs no @types/node, and `tsc -b` type-checks everything under

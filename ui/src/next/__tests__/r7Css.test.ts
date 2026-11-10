@@ -44,6 +44,8 @@
 //     that fix closed - see the FINDING note on that test).
 //   * copy a `.nx-card` rule into any area css
 //     -> "no area stylesheet redefines a class next.css owns" goes red.
+//
+// disk-reads: ui/src/
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

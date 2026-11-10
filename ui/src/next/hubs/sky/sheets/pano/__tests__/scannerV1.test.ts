@@ -16,6 +16,9 @@
 //   * the watchdog's pose test dropped (`stalled` from the image alone): 'the watchdog' finds a turning phone called stalled;
 //   * tau read from the prior and not the estimate (`predictAt(t - priorMs)`): 'tau is applied only after estimation' finds the
 //     live heading moved by the whole turn of the frame interval and none of the change of tau.
+//
+// disk-reads: ui/src/lib/horizon.ts, ui/src/next/hubs/sky/sheets/__sim__/, ui/src/next/hubs/sky/sheets/pano/
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereGeometry.ts, ui/src/next/lib/horizonModel.ts
 import assert from 'node:assert/strict';
 import type { ScanStatus } from '../types';
 import { closeHand, openHand, runHand, tinyPicture } from './synth/scannerRig';

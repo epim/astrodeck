@@ -67,6 +67,9 @@
 // default-display case, which makes 51; that case's own quote is 51-based.
 //
 // Convention: shell-and-tests.md section 4.
+//
+// disk-reads: server/tests/fixtures/flow_progress_continue.json, ui/src/api.ts, ui/src/api/, ui/src/components/
+// disk-reads: ui/src/help.ts, ui/src/lib/, ui/src/next/, ui/src/store.ts, ui/src/ws.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

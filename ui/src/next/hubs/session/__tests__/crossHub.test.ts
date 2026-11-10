@@ -28,6 +28,8 @@
 // The three hooks read the store and the route, so they are exercised through a
 // probe component under `createRoot` + `act` - the same jsdom harness the DOM
 // tests use (shell-and-tests.md section 4), in a `.ts` file via `createElement`.
+//
+// disk-reads: ui/src/api.ts, ui/src/api/, ui/src/components/, ui/src/lib/, ui/src/next/, ui/src/store.ts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

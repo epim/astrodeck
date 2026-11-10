@@ -20,6 +20,9 @@
 // consistent. Do not replace the parser with a literal fixture.
 //
 // Run alone:  npx tsx src/components/flows/__tests__/nodeDefs.test.ts
+//
+// disk-reads: server/astrodeck/flows/nodes.py, ui/src/components/flows/nodeDefs.ts, ui/src/lib/framing.ts
+// disk-reads: ui/src/lib/optics.ts
 import {
   AUTO_RESUME_CHOICES, AUTO_RESUME_HELP, AUTO_RESUME_LABEL,
   COUNT_MODES, LEGACY_TYPES, MAX_TIME_HELP, NODE_DEFS, ROWLESS_PARAMS, TARGET_ANGLES,

@@ -18,6 +18,9 @@
 // Mutants this file must catch (each applied from a byte backup of tracker.ts and run under the normal command):
 //   * `wrapped` false for every link (S43 off): 'past a full turn' finds a keyframe 2.2 degrees off its predecessor's error;
 //   * the secant not taken (`refined` null): 'the closed focal is the root' finds the 1 / f errors, over the bounds.
+//
+// disk-reads: ui/src/next/hubs/sky/sheets/__sim__/, ui/src/next/hubs/sky/sheets/pano/
+// disk-reads: ui/src/next/hubs/sky/sheets/photosphereGeometry.ts
 import assert from 'node:assert/strict';
 import { SCENE, run, yawError } from './synth/closureRig';
 import type { SynthScene } from './synth/synth';

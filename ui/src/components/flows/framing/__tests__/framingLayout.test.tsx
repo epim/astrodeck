@@ -28,6 +28,8 @@
 // produced is quoted verbatim. After the limit reset every one was run
 // again against the current tree in s4-umodal-r2-mut (2026-09-27), and
 // each was red with the failure quoted.
+//
+// disk-reads: ui/src/components/flows/framing/framing.css
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

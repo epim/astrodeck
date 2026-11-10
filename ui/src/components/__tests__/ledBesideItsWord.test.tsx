@@ -51,6 +51,8 @@
 //
 // Every case names the mutant it kills and quotes the failure that mutant
 // produced, run from a byte-for-byte backup of the file it edits.
+//
+// disk-reads: ui/src/
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
