@@ -373,11 +373,30 @@ _IDENT_CAL = {"x_rate": 0.01, "y_rate": 0.01, "x_angle": 0.0,
 
 
 class _WallClock:
-    def __init__(self, wall: float = 50_000.0) -> None:
+    """A virtual ``time.time``; everything else is the real ``time`` module.
+
+    ``monotonic`` is REFUSED unless the test says it knows: a bound the code
+    under test measures in ``monotonic`` runs in real seconds against a
+    virtual ``time()``, and the test then passes by waiting (#1256: four
+    tests held a worker for 150 s each on the guide start's probation, and
+    asserted nothing about it). ``real_monotonic=True`` is that statement."""
+
+    def __init__(self, wall: float = 50_000.0, *,
+                 real_monotonic: bool = False) -> None:
         self.wall = wall
+        self._real_monotonic = real_monotonic
 
     def time(self) -> float:
         return self.wall
+
+    def monotonic(self) -> float:
+        if not self._real_monotonic:
+            raise AssertionError(
+                "the code under test read time.monotonic through a clock "
+                "that virtualises only time(): its bound runs in real "
+                "seconds. Pass real_monotonic=True once that bound is "
+                "zeroed or short")
+        return time.monotonic()
 
     def __getattr__(self, name):
         return getattr(time, name)
@@ -425,9 +444,21 @@ class _Mount:
 @pytest.fixture
 def rig(tmp_path, monkeypatch):
     """A PPEC guider for ``prof1`` with a reusable persisted calibration, on
-    a virtual clock. Returns ``(guider, clock)``."""
+    a virtual clock. Returns ``(guider, clock)``.
+
+    The start's probation budget is zero (#1256). ``_ScriptCam`` serves its
+    frames and then starves, so the probation never reaches a verdict, and
+    the start waited out its whole budget (``_GUIDE_START_BOUND_S`` less
+    ``_START_MARGIN_S``, 150 s) in real seconds, because the budget is
+    measured in ``monotonic`` and the clock here virtualises ``time()``
+    only. These tests are about what the stop saves, not about the
+    probation: a margin as long as the longest bound leaves the budget spent
+    at once, and the start returns with the check still running, as it does
+    on a rig whose guider is slow to settle."""
     monkeypatch.setattr(configmod, "CONFIG_DIR", tmp_path)
-    clock = _WallClock()
+    monkeypatch.setattr(nativemod, "_START_MARGIN_S",
+                        nativemod._GUIDE_CALIBRATE_BOUND_S)
+    clock = _WallClock(real_monotonic=True)
     monkeypatch.setattr(nativemod, "time", clock)
     d = tmp_path / "guider"
     d.mkdir(parents=True, exist_ok=True)
@@ -442,8 +473,30 @@ def rig(tmp_path, monkeypatch):
 
 async def _start(g, clock, frames) -> None:
     g.cam = _ScriptCam(clock, frames)
-    await g.start_guiding()
+    # A start that waits on its probation fails here in 30 s instead of
+    # passing in 150 (#1256).
+    await asyncio.wait_for(g.start_guiding(), timeout=30.0)
     await asyncio.wait_for(g.cam.starved.wait(), timeout=30.0)
+
+
+def test_the_virtual_clock_refuses_monotonic_unless_a_test_opts_in():
+    """``_WallClock`` virtualises ``time()`` and nothing else, so a bound read
+    in ``monotonic`` is real seconds against virtual ones (#1256). It refuses
+    to answer ``monotonic`` until the test passes ``real_monotonic=True``;
+    ``time()`` and the rest of the module answer either way.
+
+    MUTANT "monotonic falls through to the real module" (``monotonic``
+    removed from ``_WallClock``, so ``__getattr__`` serves it) -- RED,
+    observed verbatim:
+
+        Failed: DID NOT RAISE <class 'AssertionError'>
+    """
+    clock = _WallClock(1_000.0)
+    with pytest.raises(AssertionError, match="real_monotonic=True"):
+        clock.monotonic()
+    assert clock.time() == 1_000.0 and clock.sleep is time.sleep
+    opted_in = _WallClock(1_000.0, real_monotonic=True)
+    assert abs(opted_in.monotonic() - time.monotonic()) < 5.0
 
 
 @needs_wheel

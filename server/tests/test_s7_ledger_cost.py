@@ -65,7 +65,7 @@ frame, over frames 500 to 2000:
 
 THE BUDGET, pinned below as deterministic assertions. Per banked frame:
 
-* ONE save, the ledger write (``test_a_2000_frame_mosaic_night...``). A
+* ONE save, the ledger write (``test_a_clocked_mosaic_night...``). A
   camera with pixels pays a second one today, from the thumbnail render
   (#515, an engine.py lever for S7-ENG-SAFE). The harness's frames carry no
   pixels, so it measures the ledger write alone.
@@ -154,15 +154,22 @@ RIG_BYTES_PER_FRAME_MAX = 600.0
 SERIALISER_RATIO_MAX = 0.5
 
 #: The night: a 2x2 mosaic of L and R, ``COUNT`` of each, one pass a visit.
-COUNT = 250
+#: 16 each is 128 frames: the budget is a count per frame (walks, saves,
+#: reads, bytes), which the length of the night does not move, so the night
+#: need only be long enough for the order snapshot's walk, once a pass of 8
+#: frames, to be counted over a dozen passes. The 2000-frame night (250 each)
+#: took 290 s here and 163 s on CI for the same numbers (#1261): 0.125 walks
+#: a frame at both sizes, and at 16 each every mutant below is still over its
+#: budget, the closest being the order snapshot's, at 0.25 against 0.15.
+COUNT = 16
 BANKED = 2 * 2 * 2 * COUNT
 #: The steady part of the night the per-frame numbers are taken over: from
-#: this frame to the last. The first hundreds are left out so that the
+#: this frame to the last. The first quarter is left out so that the
 #: start's one-off saves and walks are not spread over the frames.
-WINDOW_FROM = 500
-#: Real seconds the night may take before the harness calls it hung. It took
-#: 34 s to 44 s on the development box under load; xdist on a busier box can
-#: take a few times that.
+WINDOW_FROM = BANKED // 4
+#: Real seconds the night may take before the harness calls it hung. The
+#: 128-frame night took 9 to 16 s on the development box under load; xdist on a
+#: busier box can take a few times that.
 NIGHT_WALL_S = 900.0
 
 #: Sizes of the direct measurements (the task's 1k, 3k and 10k).
@@ -386,12 +393,21 @@ class _LedgerMeter:
 
 
 @pytest.mark.slow
-async def test_a_2000_frame_mosaic_night_keeps_the_ledger_budget(
+async def test_a_clocked_mosaic_night_keeps_the_ledger_budget(
         group_hub, monkeypatch):
-    """A clocked night banks 2000 frames on a 2x2 mosaic and pays, per
-    banked frame: one save, no re-read, at most ``NIGHT_WALKS_MAX`` full
-    walks of the ledger, and at most ``NIGHT_BYTES_PER_FRAME_MAX`` bytes of
-    file.
+    """A clocked night banks ``BANKED`` frames (128 since #1261; 2000 before,
+    and every figure quoted below was taken on that night) on a 2x2 mosaic
+    and pays, per banked frame: one save, no re-read, at most
+    ``NIGHT_WALKS_MAX`` full walks of the ledger, and at most
+    ``NIGHT_BYTES_PER_FRAME_MAX`` bytes of file.
+
+    THE SHORT NIGHT (#1261). The 2000-frame night took 290 s here and 163 s
+    on CI. At 128 frames, over frames 32 to 128, it takes about 15 s and reads the
+    same counts (0.125 walks, 1.0 saves, 0.0 reads a frame; 360 bytes, against
+    387 over the long night's later frames), and every mutant below, run on
+    the short night from a copy of the tree, is over its budget: the walks
+    mutants read 13.38, 3.12 and 0.25 (the last against 0.15), the second
+    save 2.0, the re-read 1.0, and ``indent=4`` 450.0 bytes against 400.
 
     THE WALK BUDGET since #516 (0.15, against 0.12 measured and 12.75 before
     the one memo, `SequenceEngine._ledger_counts`). The next three mutants

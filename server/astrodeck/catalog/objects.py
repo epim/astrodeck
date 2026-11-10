@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import re
+from bisect import bisect_right
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -226,6 +227,67 @@ _INDEX: list[tuple[DSO, tuple[str, ...], str, str]] = [
      _prose_key(o.name.lower()), _TYPE_NAMES[o.type].lower())
     for o in CATALOG
 ]
+
+
+class _SubstringIndex:
+    """One column of the catalogue's text joined into a single string, so that
+    "which rows contain this needle" is a handful of C-speed ``str.find`` calls
+    and not a Python loop over 13,000 rows (9 ms a search, which is what a
+    typed id used to cost).
+
+    It names CANDIDATES only. A row it returns is ranked by the same functions
+    as ever; a row it leaves out holds no occurrence of the needle in this
+    column, which is what those functions answer ``None`` to. A needle that
+    straddles two entries (it holds the separator) can only add a candidate."""
+
+    def __init__(self, entries: Iterable[tuple[int, str]]) -> None:
+        self._owners: list[int] = []
+        self._starts: list[int] = []
+        parts: list[str] = []
+        at = 0
+        for row, text in entries:
+            self._owners.append(row)
+            self._starts.append(at)
+            parts.append(text)
+            at += len(text) + 1
+        self._text = "\n".join(parts)
+
+    def rows_containing(self, needle: str) -> set[int]:
+        rows: set[int] = set()
+        at = self._text.find(needle)
+        while at >= 0:
+            entry = bisect_right(self._starts, at) - 1
+            rows.add(self._owners[entry])
+            if entry + 1 == len(self._starts):
+                break
+            at = self._text.find(needle, self._starts[entry + 1])
+        return rows
+
+
+#: Built from ``_INDEX`` so a row number means the same thing in all three.
+_KEY_INDEX = _SubstringIndex(
+    (i, k) for i, (_o, keys, _n, _t) in enumerate(_INDEX) for k in keys)
+_NAME_INDEX = _SubstringIndex((i, name) for i, (_o, _k, name, _t) in enumerate(_INDEX))
+_ROWS_OF_TYPE: dict[str, list[int]] = {}
+for _i, _row in enumerate(_INDEX):
+    _ROWS_OF_TYPE.setdefault(_row[3], []).append(_i)
+
+
+def _candidate_rows(q: str, qs: str, qk: str) -> list[int]:
+    """The ``_INDEX`` rows that can rank for the non-empty query ``q`` (``qs``
+    squashed, ``qk`` prose-keyed), in index order: exactly those whose keys
+    contain ``qs``, whose name contains ``qk`` or whose type name contains
+    ``q``, under the same empty-needle guards ``_rank_keys`` and
+    ``_rank_prose_keyed`` apply."""
+    rows: set[int] = set()
+    if qs:
+        rows |= _KEY_INDEX.rows_containing(qs)
+    if qk and any(c.isalnum() for c in qk):
+        rows |= _NAME_INDEX.rows_containing(qk)
+    for type_name, of_type in _ROWS_OF_TYPE.items():
+        if q in type_name:
+            rows.update(of_type)
+    return sorted(rows)
 
 
 # ----------------------------------------------------------------- relevance
@@ -645,7 +707,9 @@ def search(query: str, limit: int = 25, when: float | None = None,
     qs = squash_designation(latinise_greek(q))
     qk = _prose_key(q)                  # keyed ONCE, not per row
     scored: list[tuple[int, float, str, dict]] = []
-    for o, keys, name, type_name in _INDEX:
+    rows_in_play = (_INDEX if not q
+                    else [_INDEX[i] for i in _candidate_rows(q, qs, qk)])
+    for o, keys, name, type_name in rows_in_play:
         rank: int | None
         if not q:
             rank = RANK_SUBSTRING       # browse: every row equal, mag decides
