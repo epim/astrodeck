@@ -28,6 +28,16 @@ Caveats — a single reading is advisory:
     length, sky). Prefer a trend across frames over one frame's verdict.
   * A bright *moonlit* cloud deck is still starless, so it reads cloudy — the
     operationally correct answer for imaging.
+
+A frame is not always one sky (#1145). A tree line, a roof or a wall puts a
+second population in it: a smooth dark region with a sharp edge, the stars on
+the other side only. Every whole-frame statistic (a median, a MAD, a 99.9th
+percentile) then describes neither region, and the frame reads clear or cloudy
+depending on how much of it the foreground covers. ``stars.find_obstruction``
+reads the frame in blocks and says which are behind something; ``cloud_score``
+then judges only the rest and says so
+(``CloudResult.obstructed``). The frame class that names the obstruction
+(``frame_class.OBSTRUCTED``) is that same test.
 """
 from __future__ import annotations
 
@@ -35,7 +45,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .stars import Star, detect_stars
+from .stars import Star, detect_stars, find_obstruction, median_and_mad
 
 
 @dataclass
@@ -52,9 +62,14 @@ class CloudResult:
     bright_density: float     # bright stars per megapixel
     contrast: float           # (bright percentile - background) / noise, "x noise"
     reason: str
+    #: Something in the foreground blocks part of the view (``find_obstruction``).
+    #: Then every figure above describes the lit blocks only, and
+    #: ``lit_fraction`` is the share of the frame they are.
+    obstructed: bool = False
+    lit_fraction: float = 1.0
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "cloudy": self.cloudy,
             "score": round(self.score, 3),
             "bright_stars": int(self.bright_stars),
@@ -62,6 +77,12 @@ class CloudResult:
             "contrast": round(self.contrast, 1),
             "reason": self.reason,
         }
+        if self.obstructed:
+            # Additive, and absent from the payload of an unobstructed frame,
+            # so every reader of the dict as it was reads it unchanged.
+            d["obstructed"] = True
+            d["lit_fraction"] = round(self.lit_fraction, 2)
+        return d
 
 
 def _background(img: np.ndarray) -> tuple[float, float]:
@@ -151,17 +172,40 @@ def cloud_score(
 
     Returns:
         CloudResult with the boolean verdict, blended score and raw metrics.
+        When part of the frame is behind an obstruction (``find_obstruction``)
+        the verdict and every metric describe the rest, ``obstructed`` is True
+        and ``lit_fraction`` says how much of the frame that is.
     """
     img = data.astype(np.float64)
-    bg, noise = _background(img)
 
     if stars is None:
         stars = detect_stars(data)
+    # THE SKY THE CAMERA SEES. Blocks behind a foreground obstruction are
+    # neither clear nor cloudy, and a background, noise, star density and
+    # contrast measured over them and the sky together describe neither
+    # (#1145); so they are left out, and the result says so.
+    obstruction = find_obstruction(data, stars)
+    if obstruction is None:
+        sky = img
+        # ``_background`` of the whole frame, read from the histogram when the
+        # frame is 16-bit: the same two numbers, exactly, in half the time.
+        bg, mad = median_and_mad(data)
+        noise = mad * 1.4826
+        if noise <= 0:
+            noise = max(1.0, float(img.std()))
+    else:
+        sky = obstruction.lit_pixels(img)
+        bg, noise = _background(sky)
+        # The stars handed in, or found, were measured against the whole
+        # frame's median and MAD, which are wrong behind a tree: the faint
+        # stars of the lit side are missing and the edge has false ones.
+        stars = [s for s in detect_stars(data, obstruction=obstruction)
+                 if not obstruction.covers(s)]
     bright = sum(1 for s in stars if (s.peak - bg) / noise >= bright_sigma)
 
-    megapixels = max(data.size / 1_000_000.0, 1e-6)
+    megapixels = max(sky.size / 1_000_000.0, 1e-6)
     bright_density = bright / megapixels
-    p_high = float(np.percentile(img, 99.9))
+    p_high = float(np.percentile(sky, 99.9))
     contrast = (p_high - bg) / noise
 
     # Each sub-signal saturates to 1.0 (fully cloudy) as it drops to zero and to
@@ -180,6 +224,10 @@ def cloud_score(
         reason = "cloudy: " + (", ".join(bits) if bits else f"score {score:.2f}")
     else:
         reason = f"clear ({bright} bright stars, {contrast:.0f}x noise)"
+    lit_fraction = sky.size / img.size
+    if obstruction is not None:
+        reason += (f"; {100 * (1.0 - lit_fraction):.0f}% of the frame is "
+                   f"obstructed and was not measured")
 
     return CloudResult(
         cloudy=cloudy,
@@ -188,4 +236,6 @@ def cloud_score(
         bright_density=bright_density,
         contrast=contrast,
         reason=reason,
+        obstructed=obstruction is not None,
+        lit_fraction=lit_fraction,
     )

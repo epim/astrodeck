@@ -179,6 +179,7 @@ from ..calibration.matcher import (LightNeed, MasterRecord, MatchTolerance,
                                    best_master)
 from ..devices.base import DeviceError
 from ..events import bus, night_key
+from ..imaging.stars import region_stats
 
 #: The three verdicts ``classify`` returns.
 NO_LIGHT = "no_light"
@@ -511,11 +512,63 @@ def frame_stats(data: Any) -> tuple[float, float, int, bool] | None:
     return median, sigma, int(a.size), constant
 
 
+#: The share of a frame's blocks (``imaging.stars.region_stats``) that must
+#: disagree with the frame's verdict for ``classify`` to say so (#1145). Both
+#: come from the grid: 10 % is 6.4 of its 64 blocks, the least that is a region
+#: and not a stray block (``imaging.stars.OBSTRUCTION_MIN_DARK_FRACTION``).
+PARTIAL_SHARE_MIN = 0.10
+
+#: What a ``NO_LIGHT`` verdict adds when part of the view reads lit, and what a
+#: ``CLOUD`` verdict adds when part of it reads at the no-light level (#1145).
+#: Words only, like every ``why``; they ride the evidence line and no message.
+#:
+#: THE BAND IS FOR THE WHOLE FRAME, and a frame is not always one population.
+#: Behind a tree that covers 87 % of the view the median reads at the black
+#: level and the verdict is ``NO_LIGHT``; at 65 % it reads 6.7 ADU above it and
+#: the verdict is ``CLOUD``. Neither is wrong about the median, and neither says
+#: that the view is part blocked, which a person reading the log needs to know
+#: before they send someone to take a cap off. The kind is not changed:
+#: ``NO_LIGHT`` is what ResumeArm acts on, and ``imaging.frame_class`` is what
+#: names an obstruction, from the stars on its lit side.
+PARTLY_LIT_WHY = ("part of the view reads lit, so this may be an obstruction "
+                  "in front of the optic and not a cap")
+PARTLY_DARK_WHY = ("part of the view reads at the no-light level, so "
+                   "something may block it and the light is not all cloud")
+
+
+def _regions_say(data: Any, reference: Reference, kind: str,
+                 pixel_sigma: float) -> str:
+    """``PARTLY_LIT_WHY`` for a ``NO_LIGHT`` frame with a lit region,
+    ``PARTLY_DARK_WHY`` for a ``CLOUD`` frame with a region at the no-light
+    level, else "". Each block is judged against the reference as the whole
+    frame is: ``classify``'s band, with the median error of a block."""
+    img = np.asarray(data)
+    if img.ndim != 2:
+        return ""
+    # Every other row and column: a block median of a quarter of its pixels is
+    # still known to a few hundredths of an ADU, against a band of 3, and the
+    # pass costs a quarter as much.
+    regions = region_stats(img[::2, ::2], noise=False)
+    if regions.grid == 1:
+        return ""
+    se = (MEDIAN_SE_FACTOR * pixel_sigma
+          / math.sqrt(regions.block_h * regions.block_w))
+    band = K_SIGMA * math.hypot(se, reference.sigma)
+    if kind == NO_LIGHT:
+        lit = regions.median - reference.top > band
+        return PARTLY_LIT_WHY if lit.mean() >= PARTIAL_SHARE_MIN else ""
+    dark = np.abs(regions.median - reference.level) <= band
+    return PARTLY_DARK_WHY if dark.mean() >= PARTIAL_SHARE_MIN else ""
+
+
 def classify(data: Any, reference: Reference | None) -> LightVerdict:
     """Judge one failed solve's frame against ``reference``.
 
     Pure: no I/O, no library. ``judge_frame`` finds the reference; the tests
-    hand one in."""
+    hand one in. ``NO_LIGHT`` means the whole frame reads at the no-light
+    level: a cap, or an obstruction over nearly all of the view. A verdict on
+    a frame whose regions disagree with it says so in ``why``
+    (``PARTLY_LIT_WHY``, ``PARTLY_DARK_WHY``)."""
     stats = frame_stats(data)
     if stats is None:
         return LightVerdict(UNKNOWN, reference=reference,
@@ -552,7 +605,9 @@ def classify(data: Any, reference: Reference | None) -> LightVerdict:
         # current the floor left out, and "light is reaching the sensor"
         # would be a claim with nothing under it (see ``Reference``).
         if median - reference.top > band:
-            return LightVerdict(CLOUD, median, pixel_sigma, band, reference)
+            return LightVerdict(CLOUD, median, pixel_sigma, band, reference,
+                                why=_regions_say(data, reference, CLOUD,
+                                                 pixel_sigma))
         return LightVerdict(UNKNOWN, median, pixel_sigma, band, reference,
                             why=BELOW_THE_CEILING_WHY)
     if excess < -band:
@@ -564,7 +619,9 @@ def classify(data: Any, reference: Reference | None) -> LightVerdict:
                             why="the frame reads darker than the no-light "
                                 "reference, so that reference does not "
                                 "describe it")
-    return LightVerdict(NO_LIGHT, median, pixel_sigma, band, reference)
+    return LightVerdict(NO_LIGHT, median, pixel_sigma, band, reference,
+                        why=_regions_say(data, reference, NO_LIGHT,
+                                         pixel_sigma))
 
 
 # ---------------------------------------------------------------- references

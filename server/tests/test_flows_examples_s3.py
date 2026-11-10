@@ -72,8 +72,10 @@ MOSAIC_ID = "example-m31-mosaic"
 #: now carries (``plan.model_dump`` writes every field, not only the ones
 #: ``compile_plan`` chose to write), so all seven move together again, this
 #: time whatever its value: True for example-campaign and example-eaa
-#: (their DUSK WINDOWs are not "Single night"), False for the other five
-#: (#195: "Single night" means auto-resume does not arm across nights).
+#: (their flows arm across nights), False for the other five (#195:
+#: Automatic resume On decides whether a campaign arms, via
+#: compile.campaign_block; DUSK WINDOW's Repeat row and its "Single night"
+#: are retired).
 #: Diffed against the pre-change dump for each of the seven and confirmed
 #: this one key is the only thing that moved. Regenerated from the same
 #: ``_plan_digest`` against the fixed code, with no other change.

@@ -166,24 +166,317 @@ def _ecc_theta(ixx: float, iyy: float, ixy: float) -> tuple[float, float]:
     return float(ecc), float(theta)
 
 
-def detect_stars(data: np.ndarray, k_sigma: float = 5.0,
-                 max_stars: int = DEFAULT_MAX_STARS) -> list[Star]:
-    box = HFR_BOX_PX
-    img = data.astype(np.float64)
-    # Robust background: median + MAD
-    bg = float(np.median(img))
-    noise = float(np.median(np.abs(img - bg))) * 1.4826
-    if noise <= 0:
-        noise = max(1.0, img.std())
-    thresh = bg + k_sigma * noise
+#: Regions per side of the grid a frame is measured in (#1145). 8 x 8 makes a
+#: block 1/64 of the frame: 390 x 261 px on a bin-2 solve frame (3124 x 2088),
+#: 781 x 522 px on a full 26 MP frame. That is wide enough that a block's
+#: median is set by sky and not by the few hundred pixels of its stars, and
+#: fine enough that an obstruction crossing the view covers whole blocks. The
+#: cost is the frame's own: every pixel falls in exactly one block, so the
+#: blocks read the pixels once, as one whole-frame median does.
+REGION_GRID = 8
 
+#: The smallest block, pixels per side: below it a block's median would be
+#: noise, and a thumbnail is no basis for a horizon. A frame too small for
+#: that is one block, which is the whole-frame measurement exactly.
+REGION_MIN_BLOCK_PX = 16
+
+
+@dataclass(frozen=True)
+class RegionStats:
+    """The frame measured block by block: ``median`` and ``noise`` (robust
+    sigma, MAD x 1.4826) of each block of a ``grid`` x ``grid`` tiling, in the
+    frame's own units. A frame is rarely one population: a tree, a roof or a
+    cloud bank puts two in it, and any one number for the whole frame (a
+    median, a MAD) describes neither (#1145).
+
+    The last block row and column take the remainder, so every pixel is in a
+    block. ``block_h`` and ``block_w`` are the nominal block size, which is
+    what ``block_of`` divides by. ``noise`` is None when the blocks were
+    measured for their medians alone (``region_stats(noise=False)``)."""
+    median: np.ndarray
+    noise: np.ndarray | None
+    block_h: int
+    block_w: int
+
+    @property
+    def grid(self) -> int:
+        return self.median.shape[0]
+
+    def bounds(self, row: int, col: int, shape: tuple[int, int]
+               ) -> tuple[int, int, int, int]:
+        """``(top, bottom, left, right)`` of block ``(row, col)`` in a frame of
+        ``shape``."""
+        last = self.grid - 1
+        return (row * self.block_h,
+                shape[0] if row == last else (row + 1) * self.block_h,
+                col * self.block_w,
+                shape[1] if col == last else (col + 1) * self.block_w)
+
+    def block_of(self, y: float, x: float) -> tuple[int, int]:
+        """The ``(row, col)`` of the block holding pixel ``(y, x)``."""
+        last = self.grid - 1
+        return (min(max(int(y // self.block_h), 0), last),
+                min(max(int(x // self.block_w), 0), last))
+
+
+def _histogram_median(counts: np.ndarray, n: int) -> float:
+    """``np.median`` of the ``n`` integers whose histogram is ``counts``: the
+    mean of the two middle order statistics, found on the running total."""
+    running = np.cumsum(counts)
+    low = int(np.searchsorted(running, (n - 1) // 2 + 1))
+    high = int(np.searchsorted(running, n // 2 + 1))
+    return (low + high) / 2.0
+
+
+def frame_median(pixels: np.ndarray) -> float:
+    """``np.median`` of an array's pixels, from the histogram for a 16-bit one
+    (see ``median_and_mad``)."""
+    if pixels.dtype != np.uint16:
+        return float(np.median(np.asarray(pixels, dtype=np.float64)))
+    flat = pixels.ravel()
+    return _histogram_median(np.bincount(flat), flat.size)
+
+
+def median_and_mad(pixels: np.ndarray) -> tuple[float, float]:
+    """``(median, median absolute deviation)`` of an array's pixels.
+
+    A 16-bit array (every camera frame) is read from its histogram, which is
+    exact and 2.4 times faster than ``np.median`` twice (all 64 blocks of a
+    26 MP frame: 278 ms against 680 ms). The deviations are doubled so that
+    a half-integer median stays an integer."""
+    if pixels.dtype != np.uint16:
+        flat = np.asarray(pixels, dtype=np.float64)
+        mid = float(np.median(flat))
+        return mid, float(np.median(np.abs(flat - mid)))
+    flat = pixels.ravel()
+    mid = _histogram_median(np.bincount(flat), flat.size)
+    doubled = np.abs(flat.astype(np.int32) * 2 - int(round(mid * 2)))
+    return mid, _histogram_median(np.bincount(doubled), flat.size) / 2.0
+
+
+def region_stats(img: np.ndarray, *, noise: bool = True) -> RegionStats:
+    """Measure ``img`` (2D) in ``REGION_GRID`` x ``REGION_GRID`` blocks, or as
+    one block when a block would be under ``REGION_MIN_BLOCK_PX`` per side. A
+    block with no spread (a flat buffer) gets ``max(1.0, std)`` as its noise,
+    the floor ``detect_stars`` has always used. ``noise=False`` measures the
+    medians only, which is a third of the work."""
+    h, w = img.shape
+    grid = REGION_GRID if min(h, w) // REGION_GRID >= REGION_MIN_BLOCK_PX else 1
+    stats = RegionStats(np.empty((grid, grid)),
+                        np.empty((grid, grid)) if noise else None,
+                        h // grid, w // grid)
+    for row in range(grid):
+        for col in range(grid):
+            top, bottom, left, right = stats.bounds(row, col, img.shape)
+            block = img[top:bottom, left:right]
+            if not noise:
+                stats.median[row, col] = frame_median(block)
+                continue
+            mid, mad = median_and_mad(block)
+            sigma = mad * 1.4826
+            stats.median[row, col] = mid
+            stats.noise[row, col] = (sigma if sigma > 0
+                                     else max(1.0, float(block.std())))
+    return stats
+
+
+#: THE TWO-POPULATION TEST reads the blocks' medians, which stars (a few pixels
+#: each) cannot move, and asks four things of them: some blocks are DARKER than
+#: the sky by far more than a median's own noise; the dark blocks are SMOOTH
+#: among themselves (a wall of tree is one level, not texture); the drop from
+#: sky to dark happens in ONE block step (a SHARP edge: cloud bank edges,
+#: vignetting and sky glow ramp over many blocks, so they never qualify); and
+#: neither side is a stray block. It was written for ``frame_class`` (#1108)
+#: and lives here so that ``detect_stars`` can use it (#1145); every threshold
+#: says where its number came from. ``find_obstruction`` adds a fifth question,
+#: whether the lit side holds stars and the dark side does not.
+
+#: The block level that stands for "the sky": this percentile of the block
+#: medians. 90 reads the lit side of a frame that is up to 90 % covered, and
+#: it is not a maximum, so one bright block cannot set it.
+OBSTRUCTION_SKY_PERCENTILE = 90.0
+
+#: How far under the sky the DARKEST block must sit for the frame to hold
+#: any structure at all, in standard errors of a block median
+#: (``MEDIAN_SE_FACTOR x pixel sigma / sqrt(block pixels)``, the statistic
+#: ``solve.light`` builds its no-light band from; the pixel sigma is the median
+#: of the blocks' own). Pure noise spreads 64 block medians over about 4
+#: standard errors, so 10 never fires on a flat frame, while a real obstruction
+#: differs from the sky by many ADU against a median that is known to a
+#: fraction of one.
+OBSTRUCTION_SIGNIFICANCE_SE = 10.0
+
+#: The standard error of a sample median in units of sigma / sqrt(N):
+#: sqrt(pi / 2) for Gaussian data. ``solve.light.MEDIAN_SE_FACTOR`` is the same
+#: number; ``imaging`` does not import ``solve`` (a test holds the two equal).
+MEDIAN_SE_FACTOR = math.sqrt(math.pi / 2.0)
+
+#: The smallest fraction of blocks that may be dark, and of blocks that must
+#: stay lit, for the frame to hold a boundary at all. Both come from the grid:
+#: 10 % is 6.4 blocks, the least that is a region and not a stray block.
+OBSTRUCTION_MIN_DARK_FRACTION = 0.10
+OBSTRUCTION_MIN_LIT_FRACTION = 0.10
+
+#: The edge is SHARP when its largest dark-to-lit block step is at least this
+#: fraction of the whole drop from sky to the dark region. A ramp across the
+#: eight-block grid steps about 1/8 of its drop per block (vignetting, sky
+#: glow, a cloud edge); a treeline steps nearly all of it. Half sits between
+#: with room on both sides.
+OBSTRUCTION_EDGE_FRACTION = 0.5
+
+#: The dark blocks are SMOOTH when their levels spread by less than this
+#: fraction of the drop (population standard deviation of the dark block
+#: medians over the drop). An obstruction is one surface; a quarter of the
+#: drop allows a lit edge and a gradient across it, and rejects a frame whose
+#: "dark" blocks are really many levels of cloud.
+OBSTRUCTION_SMOOTH_FRACTION = 0.25
+
+
+def _has_sharp_edge(levels: np.ndarray, dark: np.ndarray,
+                    drop: float) -> bool:
+    """Does the dark region meet the lit one in a single block step of at
+    least ``OBSTRUCTION_EDGE_FRACTION`` of ``drop``? Steps are read between
+    horizontally and vertically adjacent blocks that are on opposite sides."""
+    steps = []
+    for axis in (0, 1):
+        across = np.diff(dark.astype(np.int8), axis=axis) != 0
+        steps.append(np.abs(np.diff(levels, axis=axis))[across])
+    steps = np.concatenate(steps)
+    return bool(steps.size and steps.max() >= OBSTRUCTION_EDGE_FRACTION * drop)
+
+
+def dark_blocks(regions: RegionStats) -> np.ndarray | None:
+    """Which blocks are darker than the rest of the frame by a smooth region
+    with a sharp edge (a bool grid, True for dark), or None when the frame
+    holds one population (see THE TWO-POPULATION TEST above)."""
+    if regions.grid == 1:
+        return None
+    levels = regions.median
+    se = (MEDIAN_SE_FACTOR * float(np.median(regions.noise))
+          / math.sqrt(regions.block_h * regions.block_w))
+    sky = float(np.percentile(levels, OBSTRUCTION_SKY_PERCENTILE))
+    lowest = float(levels.min())
+    if sky - lowest < OBSTRUCTION_SIGNIFICANCE_SE * se:
+        return None
+    # Dark is the lower half of the range, so a block the edge crosses, whose
+    # median sits near the sky, stays lit and does not roughen the dark region.
+    dark = levels < (sky + lowest) / 2.0
+    dark_fraction = float(dark.mean())
+    if (dark_fraction < OBSTRUCTION_MIN_DARK_FRACTION
+            or 1.0 - dark_fraction < OBSTRUCTION_MIN_LIT_FRACTION):
+        return None
+    drop = sky - float(np.median(levels[dark]))
+    if float(np.std(levels[dark])) > OBSTRUCTION_SMOOTH_FRACTION * drop:
+        return None
+    if not _has_sharp_edge(levels, dark, drop):
+        return None
+    return dark
+
+
+#: Detected stars the lit side of an obstruction must hold.
+#: ``autofocus.MIN_STARS_PER_POINT``: three stars is the least this project fits
+#: anything to. A bright region with fewer is cloud lit from the ground, not a
+#: sky.
+OBSTRUCTION_MIN_LIT_STARS = 3
+
+#: How many stars per unit area the core of an obstruction may hold, as a
+#: fraction of the lit side's density. An obstruction hides the sky, so what
+#: stars it holds are the few that show through a gap; a "dark" region that
+#: holds the frame's stars is the SKY, and the bright patch among them a galaxy
+#: or a nebula. Measured on the real NGC 604 night's subs and the focus sweep
+#: fixtures, and on synthetic tree frames at five edge rows: every tree frame
+#: holds none in its core; the real subs that the block geometry alone takes for
+#: an obstruction hold from 0.08 to 1.15 of the lit side's density, eight of
+#: nine above a tenth. A tenth keeps the trees and refuses most of those.
+OBSTRUCTION_MAX_CORE_DENSITY_RATIO = 0.1
+
+@dataclass(frozen=True)
+class Obstruction:
+    """The blocks of a frame that something in the foreground covers.
+    ``dark`` is True for those blocks; ``regions`` is the grid it is on."""
+    dark: np.ndarray
+    regions: RegionStats
+
+    def covers(self, star: Star) -> bool:
+        """Is ``star`` behind the obstruction?"""
+        return bool(self.dark[self.regions.block_of(star.y, star.x)])
+
+    def lit_pixels(self, img: np.ndarray) -> np.ndarray:
+        """The pixels of ``img`` (the frame this was found in) that are not
+        behind the obstruction, flattened."""
+        parts = []
+        for row, col in zip(*np.nonzero(~self.dark)):
+            top, bottom, left, right = self.regions.bounds(row, col, img.shape)
+            parts.append(img[top:bottom, left:right].ravel())
+        return np.concatenate(parts)
+
+
+def find_obstruction(data: np.ndarray, stars: list[Star]) -> Obstruction | None:
+    """The obstruction in ``data`` (a 2D linear frame, ``stars`` its detected
+    stars), or None when it holds none: something in the foreground that blocks
+    part of the view, a smooth dark region with a sharp edge against a lit sky,
+    the stars on the lit side only (a tree line, a roof, a wall; #1093).
+
+    ``dark_blocks`` finds the geometry; the stars say whether it is a
+    foreground or a bright patch in a sky: the lit side holds
+    ``OBSTRUCTION_MIN_LIT_STARS`` and the core of the dark side no more than
+    ``OBSTRUCTION_MAX_CORE_DENSITY_RATIO`` of its density. The core is the dark
+    blocks with no lit neighbour: a star beside the edge sits in a block the
+    edge crosses, which reads dark when most of it is, and a detector mistakes
+    the edge itself for stars."""
+    regions = region_stats(data)
+    dark = dark_blocks(regions)
+    if dark is None:
+        return None
+    found = Obstruction(dark, regions)
+    # The frame's border counts as dark: the foreground comes in from it.
+    padded = np.pad(dark, 1, constant_values=True)
+    core = (dark & padded[:-2, 1:-1] & padded[2:, 1:-1]
+            & padded[1:-1, :-2] & padded[1:-1, 2:])
+    if not core.any():
+        core = dark
+    in_core = sum(1 for star in stars
+                  if core[regions.block_of(star.y, star.x)])
+    lit = sum(1 for star in stars if not found.covers(star))
+    if lit < OBSTRUCTION_MIN_LIT_STARS:
+        return None
+    lit_density = lit / float((~dark).mean())
+    if in_core / float(core.mean()) > (
+            OBSTRUCTION_MAX_CORE_DENSITY_RATIO * lit_density):
+        return None
+    return found
+
+
+def _peaks(img: np.ndarray, k_sigma: float, bg: float, noise: float,
+           obstruction: Obstruction | None) -> tuple[np.ndarray, np.ndarray]:
+    """``(ys, xs)`` of the pixels above the detection threshold: one threshold
+    from the frame's ``bg`` and ``noise``, or, with an ``obstruction``, each
+    block's own."""
+    if obstruction is None:
+        # Candidate peaks: strictly local maxima above threshold (coarse grid
+        # scan keeps this O(pixels) without scipy).
+        return np.where(img > bg + k_sigma * noise)
+    regions = obstruction.regions
+    found_ys, found_xs = [], []
+    for row in range(regions.grid):
+        for col in range(regions.grid):
+            top, bottom, left, right = regions.bounds(row, col, img.shape)
+            thresh = regions.median[row, col] + k_sigma * regions.noise[row, col]
+            ys, xs = np.nonzero(img[top:bottom, left:right] > thresh)
+            found_ys.append(ys + top)
+            found_xs.append(xs + left)
+    return np.concatenate(found_ys), np.concatenate(found_xs)
+
+
+def _stars_above(img: np.ndarray, k_sigma: float, max_stars: int, bg: float,
+                 noise: float, obstruction: Obstruction | None) -> list[Star]:
+    """The stars of ``img``: peaks above the threshold (``_peaks``), each
+    measured against ``bg`` and ``noise``, or against its own block's when
+    there is an ``obstruction``."""
+    box = HFR_BOX_PX
     h, w = img.shape
     half = box // 2
-    sub = img - bg
-
-    # Candidate peaks: strictly local maxima above threshold (coarse grid scan
-    # keeps this O(pixels) without scipy).
-    ys, xs = np.where(img > thresh)
+    ys, xs = _peaks(img, k_sigma, bg, noise, obstruction)
     if len(ys) == 0:
         return []
     order = np.argsort(img[ys, xs])[::-1]
@@ -196,14 +489,22 @@ def detect_stars(data: np.ndarray, k_sigma: float = 5.0,
             break
         if used[y, x] or y < half or x < half or y >= h - half or x >= w - half:
             continue
-        cut = sub[y - half:y + half + 1, x - half:x + half + 1]
+        if obstruction is None:
+            local_bg, local_noise = bg, noise
+        else:
+            regions = obstruction.regions
+            row, col = regions.block_of(y, x)
+            local_bg = float(regions.median[row, col])
+            local_noise = float(regions.noise[row, col])
+        cut = img[y - half:y + half + 1, x - half:x + half + 1] - local_bg
         if cut[half, half] < cut.max() * 0.95:
             continue  # not the local peak
         # Hot-pixel rejection. A resolved source shares flux with its immediate
         # neighbours; a hot pixel is one bright cell surrounded by background.
-        centre = float(sub[y, x])
+        centre = float(cut[half, half])
         if centre > 0.0:
-            ring8 = float(sub[y - 1:y + 2, x - 1:x + 2].sum()) - centre
+            ring8 = (float(cut[half - 1:half + 2, half - 1:half + 2].sum())
+                     - centre)
             if ring8 < MIN_NEIGHBOUR_FLUX_RATIO * centre:
                 continue
         used[max(0, y - half):y + half + 1, max(0, x - half):x + half + 1] = True
@@ -235,7 +536,7 @@ def detect_stars(data: np.ndarray, k_sigma: float = 5.0,
         # Computed BEFORE the clip: clipping keeps the positive half of the
         # noise and would bias the very quantity being tested.
         aper = float((cut - local_bg).sum())
-        if aper < MIN_APERTURE_SNR * noise * math.sqrt(cut.size):
+        if aper < MIN_APERTURE_SNR * local_noise * math.sqrt(cut.size):
             continue
         cut = (cut - local_bg).clip(0)
         total = float(cut.sum())
@@ -285,6 +586,40 @@ def detect_stars(data: np.ndarray, k_sigma: float = 5.0,
             hfr=hfr, peak=float(img[y, x]), ecc=ecc, theta=theta,
         ))
     return stars
+
+
+def detect_stars(data: np.ndarray, k_sigma: float = 5.0,
+                 max_stars: int = DEFAULT_MAX_STARS, *,
+                 obstruction: Obstruction | None = None) -> list[Star]:
+    """The stars of a 2D linear frame, brightest first, from the frame's
+    robust median and MAD.
+
+    THE WHOLE-FRAME MEDIAN AND MAD DESCRIBE A FRAME THAT IS ONE POPULATION, and
+    a frame part behind a tree is two (#1145). With half the view dark, the MAD
+    is the width of the step between them, hundreds of ADU, and a threshold at
+    five of those misses every faint star in the lit half (a synthetic
+    half-tree frame: 19 of 80 stars found, 80 of 80 with the tree removed);
+    with the tree over most of the view the median sits in the dark, the noise
+    is the dark's, and the lit sky's own noise peaks and the cut-outs the edge
+    crosses pass for stars (58 false ones over twelve such frames). A caller
+    that has found the ``obstruction`` (``find_obstruction``, which needs the
+    stars of a first pass) hands it back, and each block is then judged against
+    its own sky.
+
+    It is not done by default, because block geometry alone cannot tell a tree
+    from a bright patch in a sky (a galaxy core, a nebula, the halo of a
+    defocused star), and a block's own MAD is inflated by a galaxy or a
+    gradient across it where the whole frame's is not: on the real focus-sweep
+    frames it lost a third of the detections."""
+    img = data.astype(np.float64)
+    if obstruction is not None:
+        return _stars_above(img, k_sigma, max_stars, 0.0, 0.0, obstruction)
+    # Robust background: median + MAD
+    bg, mad = median_and_mad(data)
+    noise = mad * 1.4826
+    if noise <= 0:
+        noise = max(1.0, img.std())
+    return _stars_above(img, k_sigma, max_stars, bg, noise, None)
 
 
 def _bright_population(stars: list[Star]) -> list[Star]:

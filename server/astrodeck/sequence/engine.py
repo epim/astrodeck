@@ -1101,6 +1101,19 @@ _REJECT_WORDS = {
 #: ceiling past the hold: the group defers the visit (#1096).
 GUIDE_OVER_STOP = ("guiding stayed over the guide-RMS ceiling, and the reject "
                    "refuses frames shot over it")
+#: ...and the same for a guider that is guiding but has sent no sample at all
+#: (#1146): nothing can be judged, so the panel's visit is deferred too.
+GUIDE_SILENT_STOP = (f"the guider sent no sample for {GUIDE_OVER_HOLD_S:.0f} s "
+                     "while guiding, so no frame can be judged")
+GUIDE_SILENT_RETRIES_SPENT = ("the guider sent no sample through the retries "
+                              "tonight, so no frame can be judged")
+#: What a hold that ended past ``GUIDE_OVER_HOLD_S`` says to the operator when
+#: the plan requires guiding with abort or skip (#1146), by the condition that
+#: ended it: not the words of a lost guider.
+GUIDE_OVER_REQUIRED = (f"guiding required but guiding stayed over its ceiling "
+                       f"for {GUIDE_OVER_HOLD_S:.0f} s")
+GUIDE_SILENT_REQUIRED = (f"guiding required but the guider sent no sample for "
+                         f"{GUIDE_OVER_HOLD_S:.0f} s")
 #: The fraction of a frame's stars above this eccentricity is kept in the
 #: ledger beside the median (#1095), a fixed line so nights compare.
 ECC_RECORD_ABOVE = 0.80
@@ -1113,42 +1126,73 @@ class GuideVerdict:
     guider can say so (``exact``) and otherwise the arcsec floor of its
     pixels, how many samples that is, and the ceiling it is read against.
 
-    ``rms`` is None when no sample falls inside the stretch: nothing to judge.
-    A guider that publishes no samples at all is judged on its own figure
-    (``samples`` 0), as the gate always did."""
+    ``rms`` is None when no sample falls inside the stretch and the guider
+    has no figure of its own: nothing to judge. A guider that publishes no
+    sample list at all is judged on its own figure (``samples`` 0), as the
+    gate always did. One or two samples are not a verdict (#1222): the same
+    ``GUIDE_MIN_SAMPLES`` the pre-shutter guard and the settle read."""
     rms: float | None
     exact: bool
     samples: int
     ceiling: float
 
     @property
+    def judged(self) -> bool:
+        """Is this enough to judge a frame on? A figure and either no sample
+        list at all (``samples`` 0) or at least ``GUIDE_MIN_SAMPLES``."""
+        return self.rms is not None and (
+            self.samples == 0 or self.samples >= GUIDE_MIN_SAMPLES)
+
+    @property
+    def silent(self) -> bool:
+        """Did the guider send nothing in the stretch, and have no figure
+        either (#1146)? A guiding guider that is silent is not settled."""
+        return self.rms is None and self.samples == 0
+
+    @property
     def over(self) -> bool:
-        return (self.ceiling > 0 and self.rms is not None
-                and self.rms > self.ceiling)
+        return self.ceiling > 0 and self.judged and self.rms > self.ceiling
+
+    @property
+    def figure(self) -> float | None:
+        """The arcsec RMS a frame's record quotes: the judged exposure figure
+        in arcsec, else None. One reading for the ledger and the report."""
+        return self.rms if self.judged and self.exact else None
 
     @property
     def word(self) -> str:
         """The verdict as the ledger keeps it."""
-        if self.rms is None:
+        if not self.judged:
             return "unjudged"
         return "over_ceiling" if self.over else "within_ceiling"
 
 
-def guide_verdict(stats, lo: float, hi: float, ceiling: float) -> GuideVerdict:
+def guide_verdict(stats, lo: float, hi: float, ceiling: float,
+                  samples: list[dict] | None = None) -> GuideVerdict:
     """The guider's RMS over the samples stamped in ``[lo, hi]``.
 
-    The samples are ``stats.recent`` (``{t, ra, dec}`` in the unit
-    ``stats.is_arcsec`` names), the same list the guider's own ``rms_total``
-    is computed over, so a window is a slice of what the old gate read whole.
-    The unit conversion is `rms_total_arcsec`'s and the pixel floor
+    The samples are the guider's own trace when it keeps one (``samples``,
+    `Guider.guide_samples`, #1146: every sample of an exposure however long),
+    else ``stats.recent`` (``{t, ra, dec}`` in the unit ``stats.is_arcsec``
+    names), the list the guider's own ``rms_total`` is computed over. The unit
+    conversion is `rms_total_arcsec`'s and the pixel floor
     `policy.guide_rms_floor_arcsec`'s, so a verdict is judged exactly as
-    the rolling figure was."""
-    recent = list(getattr(stats, "recent", None) or [])
-    if not recent:
+    the rolling figure was.
+
+    A guider with a trace that holds nothing in the window is silent. A guider
+    with neither a trace nor a sample list is judged on its own figure, when it
+    has one: a figure of nothing (0.0, which is what a guider that has
+    published no sample reports) is no figure."""
+    recent = (list(samples) if samples is not None
+              else list(getattr(stats, "recent", None) or []))
+    if not recent and samples is None:
         rms = rms_total_arcsec(stats)
-        if rms is not None:
+        if rms is not None and rms > 0:
             return GuideVerdict(rms, True, 0, ceiling)
-        return GuideVerdict(guide_rms_floor_arcsec(stats), False, 0, ceiling)
+        floor = guide_rms_floor_arcsec(stats)
+        if floor is not None and floor > 0:
+            return GuideVerdict(floor, False, 0, ceiling)
+        return GuideVerdict(None, True, 0, ceiling)
     window = [s for s in recent if lo <= float(s["t"]) <= hi]
     if not window:
         return GuideVerdict(None, True, 0, ceiling)
@@ -1165,16 +1209,24 @@ def guide_verdict(stats, lo: float, hi: float, ceiling: float) -> GuideVerdict:
 
 
 async def take_guide_retry_spell(engine, target, *,
-                                 over_ceiling: bool = False) -> None:
+                                 over_ceiling: bool = False,
+                                 silent: bool = False) -> None:
     """One retry spell (#873): charged to the target's per-night count and
     the long wait; the target stops when the count is spent. Shared by the
-    stopped-guider hold (`_hold_for_guiding`) and the over-ceiling hold
-    (`_hold_for_over_ceiling`, #1096), which word it for their own cause
-    (``over_ceiling``) and each decide what the wait buys."""
+    stopped-guider hold (`_hold_for_guiding`) and the hold for guiding that
+    is not fit to shoot on (`_hold_for_unfit_guiding`, #1096, #1146), which
+    word it for their own cause (``over_ceiling``, ``silent``) and each
+    decide what the wait buys."""
     name = getattr(target, "name", "this target")
     key = engine._budget_key(target)
     spells = engine._guide_retry_spells.get(key, 0)
     if spells >= MAX_GUIDE_RETRIES_PER_TARGET_NIGHT:
+        if silent:
+            bus.log("warning",
+                    f"Set Reject above (guide RMS) to 0 to stop waiting on "
+                    f"the guider; stopping {name}: it sent no sample "
+                    f"through tonight's {spells} retries", "sequence")
+            raise StopTarget(GUIDE_SILENT_RETRIES_SPENT)
         if over_ceiling:
             bus.log("warning",
                     f"Set Reject above (guide RMS) to 0 to shoot over "
@@ -1192,7 +1244,15 @@ async def take_guide_retry_spell(engine, target, *,
     await engine._probe_tracking("guiding hold")
     wait_min = GUIDE_RETRY_WAIT_S / 60.0
     tally = f"({spells + 1}/{MAX_GUIDE_RETRIES_PER_TARGET_NIGHT})"
-    if over_ceiling:
+    if silent:
+        bus.log("warning",
+                f"To shoot without waiting on the guider, set Reject "
+                f"above (guide RMS) to 0. No frames are shot while it "
+                f"sends no sample; guiding is checked again in "
+                f"{wait_min:.0f} min {tally}", "sequence")
+        engine._set_state(detail=f"holding: the guider sent no sample; "
+                                 f"checking again in {wait_min:.0f} min")
+    elif over_ceiling:
         bus.log("warning",
                 f"To shoot over the ceiling, set Reject above (guide "
                 f"RMS) to 0. No frames are shot while guiding is over "
@@ -2308,6 +2368,13 @@ class SequenceEngine:
         #: (judged then on the guider's own figure, as the gate always was).
         #: Cleared at ``_begin_frame``, so no frame reads another's.
         self._frame_verdict: GuideVerdict | None = None
+        #: The run (its ``_started_at``) that already said a frame went
+        #: unjudged by the guide-RMS reject (#1222), so the line is said once
+        #: per run. Keyed on the run's start, declared here: the run's own
+        #: reset is not this latch's to touch.
+        self._unjudged_said_in: float | None = None
+        #: The same for the guider that sent no sample (#1146).
+        self._silent_said_in: float | None = None
         #: The mark of the stand-down line already said (#737): the sky
         #: read's key, so the line is said once per target per run.
         self._stand_down_said_at: tuple | None = None
@@ -2544,7 +2611,9 @@ class SequenceEngine:
         # tick returns silently when session_store.armed() is None, so there was
         # not even a log line to notice — the whole feature was absent, quietly,
         # on exactly the path it exists for.
-        session.auto_resume = True
+        #
+        # The flag is set by ``_arm_exclusively`` below, the one place a run
+        # is armed (#1176), fresh or resumed.
         # A SESSION THAT STARTS WAITS FOR NOTHING (#598, D-04). Cleared here
         # because every start path reaches this line (CONTINUE, a flow run,
         # /resume, ResumeArm's own tick, the promotion's own start): a marker
@@ -12974,9 +13043,8 @@ class SequenceEngine:
             # into the reject guards. Held here on the guider's last
             # `GUIDE_TRAIL_S` seconds, bounded, then a retry spell or (for a
             # panel) a deferral.
-            if guided_at_top and self._guide_over_ceiling_now(
-                    target.calibration):
-                await self._hold_for_over_ceiling(target)
+            if guided_at_top and self._guide_unfit_now(target.calibration):
+                await self._hold_for_unfit_guiding(target)
                 continue
             await self._enforce_tracking(step, target)
             await self._enforce_cooling()
@@ -13155,7 +13223,7 @@ class SequenceEngine:
                     now_ts=_now,
                     frame_hfr=(info.get("hfr") if isinstance(info, dict) else None),
                     focus_baseline_hfr=self._focus_baseline_hfr,
-                    guide_rms=self._guide_rms(),
+                    guide_rms=self._frame_guide_rms(),
                     frame_rejected=(not accepted),
                     target_complete=False,
                     active_target=target.name,
@@ -13375,12 +13443,7 @@ class SequenceEngine:
             return
         hfr = info.get("hfr") if isinstance(info, dict) else None
         ecc = info.get("ecc") if isinstance(info, dict) else None
-        rms = None
-        try:
-            if self.hub.guider and self.hub.guider.connected:
-                rms = getattr(self.hub.guider.stats(), "rms_total", None)
-        except Exception:
-            rms = None
+        rms = self._frame_guide_rms()
         temp = None
         frame = getattr(self.hub, "last_frame", None)
         if frame is not None:
@@ -17750,9 +17813,10 @@ class SequenceEngine:
             if info.get("stars") is not None:
                 metrics["stars"] = float(info["stars"])
             metrics.update(self._eccentricity_metrics(info))
-        if verdict is not None and verdict.exact and verdict.rms is not None:
-            metrics["guide_rms"] = float(verdict.rms)
+        if verdict is not None:
             metrics["guide_samples"] = float(verdict.samples)
+            if verdict.figure is not None:
+                metrics["guide_rms"] = float(verdict.figure)
         frame = getattr(self.hub, "last_frame", None)
         temp = getattr(frame, "temperature_c", None) if frame is not None else None
         if temp is not None:
@@ -19798,6 +19862,31 @@ class SequenceEngine:
             f"sky has closed in" + (f" ({reason})" if reason else "")
             + ", so no recovery attempt is spent on cloud", target)
         return True
+
+    def _apply_guiding_action(self, target, why: str) -> None:
+        """The answer the operator chose for "guiding is unavailable"
+        (``escalation.require_guiding`` with ``guiding_action``): abort raises
+        `SafetyAbort`, skip raises `StopTarget`, and anything else, or the
+        setting off, returns so the caller takes its own course. ``why`` names
+        the condition, fixed words with no figures (#618). The hold for guiding
+        that is over its ceiling or silent takes the answer here
+        (`_hold_for_unfit_guiding`, #1146), as `_maybe_recover_guiding` takes
+        it for a guider that could not be kept, and the wording of the two
+        matches."""
+        cfg = self._cfg
+        if not (cfg and cfg.escalation.require_guiding):
+            return
+        action = cfg.escalation.guiding_action
+        if action == "abort":
+            bus.log("error", why, "sequence")
+            raise SafetyAbort(why)
+        if action == "skip":
+            # A member of a group sent on unguided is deferred by
+            # `_visit_panel` (#316) and says so in its own line; this one names
+            # the condition.
+            bus.log("warning", f"{why}; skipping "
+                    f"{getattr(target, 'name', 'this target')}", "sequence")
+            raise StopTarget(why)
 
     async def _maybe_recover_guiding(self, target=None) -> None:
         # #849 (RULING R1): a pause stood the guider down (`_checkpoint`), so
@@ -22177,8 +22266,13 @@ class SequenceEngine:
             stats = g.stats()
             if not getattr(stats, "guiding", False):
                 return None
+            # The guider's own trace when it keeps one (#1146); only a list
+            # is one (a test double's attribute may be anything).
+            trace = getattr(g, "guide_samples", None)
+            samples = trace(lo, hi) if callable(trace) else None
             return guide_verdict(stats, lo, hi,
-                                 float(self._policy.max_guide_rms))
+                                 float(self._policy.max_guide_rms),
+                                 samples if isinstance(samples, list) else None)
         except Exception as e:      # noqa: BLE001 - unreadable judges nothing
             self._say_swallowed(
                 "the guide verdict could not be read, so frames go ungated "
@@ -22206,21 +22300,34 @@ class SequenceEngine:
             return verdict.rms if verdict.exact else None
         return self._guide_rms() if self._guiding_now() else None
 
+    def _frame_guide_rms(self) -> float | None:
+        """The guide RMS a frame's records quote (#1144): the figure of the
+        frame's own exposure when it was judged, in arcsec, else None. The
+        report, the ledger and the ``on_guide_rms_above`` trigger read this one
+        number; an idle guider's stale figure, a pixel figure and a window of
+        one or two samples are none of them a measurement of this frame."""
+        verdict = self._frame_verdict
+        return verdict.figure if verdict is not None else None
+
     def _trailing_guide_verdict(self) -> GuideVerdict | None:
         """The guider's last ``GUIDE_TRAIL_S`` seconds, as a verdict."""
         now = time.time()
         return self._guide_verdict(now - GUIDE_TRAIL_S, now)
 
-    def _guide_over_ceiling_now(self, calibration: bool = False) -> bool:
-        """Is guiding RUNNING but over the ceiling (#1096)? Half of the
-        pre-shutter guard, beside `_guide_gate_refuses` (a stopped guider):
-        the guard asks both, so no frame is shot that the guide-RMS reject
-        will refuse. A window with too few samples is no verdict."""
+    def _guide_unfit_now(self, calibration: bool = False) -> bool:
+        """Is guiding RUNNING but not fit to shoot on (#1096, #1146)? Half of
+        the pre-shutter guard, beside `_guide_gate_refuses` (a stopped
+        guider): the guard asks both, so no frame is shot that the guide-RMS
+        reject will refuse or that nothing can judge. Unfit is over the
+        ceiling on at least ``GUIDE_MIN_SAMPLES`` samples, or silent: no
+        sample in the trailing window at all. One or two samples are no
+        verdict either way."""
         if not self._guide_reject_armed(calibration):
             return False
         verdict = self._trailing_guide_verdict()
-        return (verdict is not None and verdict.samples >= GUIDE_MIN_SAMPLES
-                and verdict.over)
+        return verdict is not None and (
+            verdict.silent
+            or (verdict.samples >= GUIDE_MIN_SAMPLES and verdict.over))
 
     async def _settle_guiding(self, target) -> None:
         """Wait for the guide loop to settle after a guiding start, before
@@ -22232,19 +22339,30 @@ class SequenceEngine:
 
         Waits while the guider's last ``GUIDE_TRAIL_S`` seconds hold too few
         samples to judge or are over the ceiling, up to
-        ``GUIDE_SETTLE_MAX_S``, on the engine's hold gates. A guider that
-        publishes no samples cannot be waited on and is not."""
+        ``GUIDE_SETTLE_MAX_S``, on the engine's hold gates. A guider that has
+        sent no sample at all is waited on too (#1146): a start returns when
+        the loop is running, and the guider's first measurement comes after
+        it. Only a guider that reports a figure and no samples cannot be
+        waited on, and is not."""
         if not self._guide_reject_armed(getattr(target, "calibration", False)):
             return
         deadline = time.time() + GUIDE_SETTLE_MAX_S
         said = False
         while True:
             verdict = self._trailing_guide_verdict()
-            if verdict is None or verdict.samples == 0:
+            if verdict is None or (verdict.samples == 0
+                                   and not verdict.silent):
                 return
             if verdict.samples >= GUIDE_MIN_SAMPLES and not verdict.over:
                 return
             if time.time() >= deadline:
+                if verdict.silent:
+                    bus.log("warning",
+                            f"the guider had sent no sample "
+                            f"{GUIDE_SETTLE_MAX_S:.0f} s after guiding "
+                            f"started; the frame loop takes it from here",
+                            "sequence")
+                    return
                 bus.log("warning",
                         f'guiding had not settled under the '
                         f'{verdict.ceiling:.1f}" ceiling after '
@@ -22252,41 +22370,59 @@ class SequenceEngine:
                         f'from here', "sequence")
                 return
             if not said:
-                bus.log("info", "holding the first exposure until the guide "
+                bus.log("info", "holding the first exposure until the guider "
+                                "has sent samples and the guide loop has "
+                                "settled" if verdict.silent else
+                                "holding the first exposure until the guide "
                                 "loop has settled", "sequence")
                 self._set_state(detail="waiting for the guide loop to settle")
                 said = True
             await self._guide_retry_wait(target, GUIDE_SETTLE_POLL_S)
 
-    async def _hold_for_over_ceiling(self, target) -> None:
-        """Hold the frame loop while guiding is running but over the ceiling
-        (#1096). Returns; the caller `continue`s, so its own gates run again.
+    async def _hold_for_unfit_guiding(self, target) -> None:
+        """Hold the frame loop while guiding is running but not fit to shoot
+        on: over the ceiling (#1096) or silent, no sample in the trailing
+        window (#1146). Returns; the caller `continue`s, so its own gates run
+        again.
 
         Re-checks every ``GUIDE_SETTLE_POLL_S``, on the engine's hold gates,
-        and returns the moment the trailing window is under the ceiling. Past
+        and returns the moment the trailing window is fit. Past
         ``GUIDE_OVER_HOLD_S`` a mosaic panel stops for the visit (the group
-        defers it, #303) and any other target takes one of the retry spells
-        `_hold_for_guiding` takes, capped per target per night, so the
-        20-reject night stop is never reached through frames the guard could
-        have refused."""
+        defers it, #303); a plan that requires guiding with abort or skip
+        takes that answer, naming the condition that ended the hold, as it
+        does for a guider that was lost; and any other target takes one of the
+        retry spells `_hold_for_guiding` takes, capped per target per night,
+        so the 20-reject night stop is never reached through frames the guard
+        could have refused."""
         verdict = self._trailing_guide_verdict()
         if verdict is not None and verdict.rms is not None:
             phrase = self._trail_phrase(verdict.rms, verdict.ceiling,
                                         verdict.ceiling, verdict.exact)
             bus.log("warning", f"{phrase}; no frame is shot until it is "
                                f"under it", "sequence")
-        self._set_state(detail="holding: guiding is over the RMS ceiling")
+        elif verdict is not None and verdict.silent:
+            bus.log("warning", f"the guider sent no sample for "
+                               f"{GUIDE_TRAIL_S:.0f} s while guiding; no frame "
+                               f"is shot until it does", "sequence")
+        self._set_state(detail="holding: the guider is sending no samples"
+                        if verdict is not None and verdict.silent else
+                        "holding: guiding is over the RMS ceiling")
         until = time.time() + GUIDE_OVER_HOLD_S
-        while self._guide_over_ceiling_now():
+        while self._guide_unfit_now():
             if time.time() >= until:
                 break
             await self._guide_retry_wait(target, GUIDE_SETTLE_POLL_S)
         else:
             return
+        last = self._trailing_guide_verdict()
+        silent = last is not None and last.silent
         group = self._group_of(target) if target is not None else None
         if group is not None and group.id not in self._group_unguided:
-            raise StopTarget(GUIDE_OVER_STOP)
-        await take_guide_retry_spell(self, target, over_ceiling=True)
+            raise StopTarget(GUIDE_SILENT_STOP if silent else GUIDE_OVER_STOP)
+        self._apply_guiding_action(
+            target, GUIDE_SILENT_REQUIRED if silent else GUIDE_OVER_REQUIRED)
+        await take_guide_retry_spell(self, target, over_ceiling=not silent,
+                                     silent=silent)
 
     def _inactive_guider_words(self) -> str:
         """Why an inactive guider is inactive, in words (#1078): a lost star,
@@ -22358,6 +22494,22 @@ class SequenceEngine:
         if trail is not None:
             raise FieldTrailing(self._trail_phrase(*trail), limit=trail[1])
         return state
+
+    def _say_unjudged(self, verdict: GuideVerdict) -> None:
+        """Say ONCE per run that the guide-RMS reject did not judge a frame
+        (#1222): the ledger keeps the word for every frame, this is the
+        operator's one line, with the action first. Never raises."""
+        if self._unjudged_said_in == self._started_at:
+            return
+        self._unjudged_said_in = self._started_at
+        n = verdict.samples
+        sent = ("no sample" if n == 0 else
+                "1 sample" if n == 1 else f"{n} samples")
+        bus.log("warning",
+                f"The guide-RMS reject did not judge a frame: the guider "
+                f"sent {sent} inside its exposure and {GUIDE_MIN_SAMPLES} are "
+                f"needed; the frame is kept. If guiding keeps going quiet, "
+                f"check the guide camera", "sequence")
 
     def _warn_rms_unit_once(self) -> None:
         """Say ONCE per run why an armed max-guide-RMS gate isn't judging frames,
@@ -22594,9 +22746,22 @@ class SequenceEngine:
                 # own exposures were fine and a good stretch carried a bad
                 # one through. Only a call outside the frame loop, which has
                 # no exposure, falls back to the guider's own figure.
+                #
+                # #1222: AND ON ENOUGH OF IT. One sample is a spike, not a
+                # verdict: a guider that stalled over a short light left one
+                # large post-gap sample and the frame it had guided well was
+                # rejected. Fewer than ``GUIDE_MIN_SAMPLES`` is no verdict
+                # (the pre-shutter guard's rule, one constant): the frame is
+                # kept, its ledger entry says it was not judged, and the
+                # operator is told once.
                 verdict = self._frame_verdict
-                rms, exact = ((verdict.rms, verdict.exact) if verdict
-                              else self._guide_rms_judged())
+                if verdict is None:
+                    rms, exact = self._guide_rms_judged()
+                else:
+                    rms, exact = ((verdict.rms if verdict.judged else None),
+                                  verdict.exact)
+                    if not verdict.judged:
+                        self._say_unjudged(verdict)
                 if not exact and self._guiding_now():
                     self._warn_rms_unit_once()
                 ceiling = self._policy.max_guide_rms

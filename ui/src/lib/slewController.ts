@@ -244,13 +244,15 @@ export const POSITION_UNKNOWN_STEPS_REASON =
   + "home by eye first, then use TRUST POSITION.";
 
 /** The note over the pad. Says what the mount is doing (ordinary after any
- *  power-up), what still works, and what teaches it where it is. */
+ *  power-up) and what teaches it where it is. It does not say what the pad
+ *  still does: in NINA mode a held key moves nothing, and a note that names a
+ *  move would advise one while the position is unknown (#829, #850). */
 export const POSITION_UNKNOWN_NOTE =
   "The mount is reporting its home position, as it does after any power-up or "
   + "reset, so it does not know where the tube points. That is normal at the "
-  + "start of a night. Holding a pad key still moves the tube. With the tube at "
-  + "home, TRUST POSITION tells the mount where it is; after that, the first "
-  + "solve and sync away from the pole measures it.";
+  + "start of a night. With the tube at home, TRUST POSITION tells the mount "
+  + "where it is; after that, the first solve and sync away from the pole "
+  + "measures it.";
 
 /** The second line of a toast that refuses to COPY the mount's RA/Dec into a
  *  view (recentre on the mount, "use mount position", #928): the reading it

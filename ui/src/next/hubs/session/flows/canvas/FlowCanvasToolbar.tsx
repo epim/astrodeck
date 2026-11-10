@@ -143,7 +143,7 @@ export const RUN_ARM_WORD = "CONFIRM";
  *
  *  GATED ON `stopsOnPress`, NEVER ON `copy.verb` (#647). The copy's verb
  *  reads from `running`, which bridges the client's own optimistic latch for
- *  up to `RUN_PHASE_BRIDGE_MS` past a press (`flowRunControls.tsx`) - so a
+ *  up to `RUN_PHASE_BRIDGE_MS` past a press (`flowRunState.ts`) - so a
  *  label can read STOP for a press `act()` would actually START (`ours`
  *  alone decides the action, #162). Skipping the confirm because the LABEL
  *  said STOP let a stale button silently start a brand new run with no

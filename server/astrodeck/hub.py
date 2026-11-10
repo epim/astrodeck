@@ -275,6 +275,14 @@ STATUS_CAMERA_TEMPERATURE_TIMEOUT_S = 2.0
 #: that runs out of it is a probe that got no definite answer.
 STATUS_DEVICE_READ_TIMEOUT_S = 2.0
 
+#: The longest a role's status reads are held off for one ``reconnect_role``
+#: (#1173). The reconnect is two halves, a disconnect and a connect, and a poll
+#: read that lands between them reports a device that is not there and sets
+#: ``connected`` False under the connect that is still running. A reconnect
+#: that has not returned by now no longer blinds the poll: the hold ends and the
+#: poll reads the role again, which is what shows a hung device.
+RECONNECT_STATUS_HOLD_S = 30.0
+
 #: Bound on each filter-wheel command the plate solve's borrow and return send
 #: (#815): the move itself and the reads that follow a move that failed. Also
 #: the read that names the filter a solve frame goes through (#935). The
@@ -2417,6 +2425,30 @@ class Hub:
                 "has_cover": cc.has_cover,
                 "cover_state": (await cc.get_cover_state()).value}
 
+    @contextlib.asynccontextmanager
+    async def _holding_status_reads_off(self, role: str):
+        """Keep the status poll off ``role`` for the span of a reconnect
+        (#1173), for at most ``RECONNECT_STATUS_HOLD_S``. Other roles are read as
+        usual. A read of this role the poll already has in flight is waited for
+        first (for at most ``STATUS_DEVICE_READ_TIMEOUT_S``, the poll's own
+        bound): it began before the hold and can still answer NotConnected in
+        the gap."""
+        held = getattr(self, "_reconnecting", None)
+        if held is None:
+            held = self._reconnecting = {}
+        until = time.monotonic() + RECONNECT_STATUS_HOLD_S
+        held[role] = until
+        try:
+            inflight = {probe for key, (_dev, probe)
+                        in list(getattr(self, "_status_reads", {}).items())
+                        if key.startswith(f"{role}.") and not probe.done()}
+            if inflight:
+                await asyncio.wait(inflight, timeout=STATUS_DEVICE_READ_TIMEOUT_S)
+            yield
+        finally:
+            if held.get(role) == until:
+                del held[role]
+
     async def reconnect_role(self, role: str) -> bool:
         """Best-effort reconnect of one role from the recorded connection intent
         (escalation ``reconnect_resume`` / a dropped link). Never raises —
@@ -2445,6 +2477,11 @@ class Hub:
         the profile and strand the guider (#967; it used to raise ``KeyError:
         'host'`` here, caught below, and return False without trying).
         """
+        async with self._holding_status_reads_off(role):
+            return await self._replay_role_connection(role)
+
+    async def _replay_role_connection(self, role: str) -> bool:
+        """The two replay shapes of ``reconnect_role``."""
         info = self._last_connect.get(role)
         if not info:
             return False
@@ -10615,6 +10652,12 @@ class Hub:
         except Exception:  # noqa: BLE001 - the bus is what failed; the caller goes on
             logging.getLogger(__name__).warning(line)
 
+    def _status_read_held_off(self, role: str) -> bool:
+        """True while ``reconnect_role`` has this role mid-reconnect and the
+        hold (``RECONNECT_STATUS_HOLD_S``) has not run out."""
+        until = getattr(self, "_reconnecting", {}).get(role)
+        return until is not None and time.monotonic() < until
+
     async def _status_read(self, stalled: set[str], role: str, what: str,
                            dev, make):
         """One of the status poll's device reads, BOUNDED (#814, the class of
@@ -10645,6 +10688,10 @@ class Hub:
         A stall is said once when it starts, and again only after an answer
         has ended it."""
         key = f"{role}.{what}"
+        if self._status_read_held_off(role):
+            raise StatusReadStalled(
+                f"the {role} {what} read was not asked: the {role} is "
+                f"being reconnected")
         if role in stalled:
             raise StatusReadStalled(
                 f"the {role} {what} read was not asked: the {role} had not "

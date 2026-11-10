@@ -1146,8 +1146,12 @@ def _automation(compiled: dict, out: list[dict], *,
     # `test_window_dormant_then_resume_exact_remaining` and
     # `test_a_campaign_advances_across_nights` hold those three up.
     #
-    # What is genuinely not honoured is the STOP CONDITION, and only for one of
-    # its two forms - so that is what this says now.
+    # NOTHING OF IT IS LOST, so the entry is a ``note``, not a ``warn``: the stop
+    # condition is honoured too (``until=pool_complete`` ends the session when
+    # every target holds its frames). At ``warn`` the entry counted in
+    # :func:`losses`, made /start ask for ``accept_unmapped`` and told an
+    # operator with Automatic resume On that the campaign loses something it
+    # does not (#829). The sentence stays: it says what the run will do.
     if compiled.get("campaign"):
         runs = ("It images until its window closes, goes dormant with "
                 "auto-resume armed, and comes back the next night picking up "
@@ -1157,7 +1161,7 @@ def _automation(compiled: dict, out: list[dict], *,
             "campaign",
             f"{runs}. The campaign ends when every target reaches its "
             f"requested frame count. Tonight shows the integration-goal "
-            f"hours as estimates"))
+            f"hours as estimates", "note"))
 
     auto = compiled.get("automation") or {}
     if "dome" in auto:

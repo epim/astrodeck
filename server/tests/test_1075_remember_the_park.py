@@ -160,42 +160,69 @@ async def test_a_record_with_a_mount_that_reports_unparked_latches(
 _MOTIONS = ["unpark", "goto", "pad", "pulse", "tracking_on", "find_home"]
 
 
+#: The command each motion puts on the wire, and what it is scripted to answer.
+#: A motion that runs to its end needs every command it sends answered, with
+#: the exact string it sends (``FakeLink`` matches whole strings, so a bare
+#: ``"Sr"`` key never matches ``Sr01:00:00``). The goto's target is 01:00:00
+#: and +20, and the position reads agree, so the slew arrives.
+_GOTO_RA_H, _GOTO_DEC = 1.0, 20.0
+_MOTION_REPLIES = {"Spu": "1", "MS": "0", "Te": "1", "Td": "1",
+                   "Sr01:00:00": "1", "Sd+20*00:00": "1",
+                   "GR": "01:00:00", "GD": "+20*00:00"}
+#: A command only that motion sends, so the case can say the motion ran.
+_MOTION_VERB = {"unpark": "Spu", "goto": "MS", "pad": "Me", "pulse": "Mn",
+                "tracking_on": "Te", "find_home": "hP"}
+
+
 async def _move(tel, fl, how: str) -> None:
-    fl.script.update({"Spu": "1", "Sr": "1", "Sd": "1", "MS": "e14",
-                      "Te": "1", "Td": "1", "RG": "1", "RS": "1", "RM": "1",
-                      "RC": "1"})
-    try:
-        if how == "unpark":
-            await tel.unpark()
-        elif how == "goto":
-            await tel.unpark()
-            await tel.slew(1.0, 20.0)
-        elif how == "pad":
-            await tel.move_axis("ra", 0.5)
-        elif how == "pulse":
-            await tel.pulse_guide("n", 100)
-        elif how == "tracking_on":
-            await tel.set_tracking(True)
-        elif how == "find_home":
-            await tel.find_home()
-    except Exception:  # noqa: BLE001 - only the record matters here
-        pass
+    """Run one motion to its end. An exception is the test's failure, not a
+    thing to swallow: a move that stops at its first refused command proves
+    only that the record was cleared before the wire."""
+    fl.script.update(_MOTION_REPLIES)
+    if how == "unpark":
+        await tel.unpark()
+    elif how == "goto":
+        # No unpark first: unpark clears the record itself, which would
+        # stand in for the slew's own clear.
+        await tel.slew(_GOTO_RA_H, _GOTO_DEC)
+    elif how == "pad":
+        await tel.move_axis("ra", 0.5)
+    elif how == "pulse":
+        await tel.pulse_guide("n", 100)
+    elif how == "tracking_on":
+        await tel.set_tracking(True)
+    elif how == "find_home":
+        await tel.find_home()
+    else:
+        raise AssertionError(how)
 
 
 @pytest.mark.parametrize("how", _MOTIONS)
 async def test_any_motion_command_clears_the_record(
         how, fixed_env, clock, logged):
-    """A command that can move the tube removes the record before it is sent,
-    so a later reopen at the pole latches even though the mount reports
+    """A command that can move the tube removes the record, and the motion
+    runs to its end: it reaches its own command on the wire and returns, so a
+    clear that only a refused or half-run motion reaches is not enough. A
+    later reopen at the pole then latches even though the mount reports
     parked.
 
     MUTANT M3 "do not clear on motion" (``_clear_park_record`` body made
     ``return``): RED for every parametrisation - AssertionError: assert True
     is False
+
+    WP 8.2 (#1176). The goto used to run ``unpark`` first, which clears the
+    record, and the rest of the goto stopped at ``Sr01:00:00`` (the script
+    keyed ``Sr``), so the slew's own clear was never what this graded.
+    MUTANT "slew does not clear" (``self._clear_park_record()`` replaced by
+    ``pass`` in ``ZwoAm5Telescope.slew``): GREEN before this change, RED now,
+    for ``goto`` - AssertionError: assert {...} is None.
     """
     fl, tel = await _parked_by_us(clock)
     assert config_mod.load_mount_park_record(tel._park_key()) is not None
+    fl.sent.clear()
     await _move(tel, fl, how)
+    assert _MOTION_VERB[how] in fl.sent, (
+        f"premise: {how} did not reach its own command; sent {fl.sent}")
     assert config_mod.load_mount_park_record(tel._park_key()) is None
     _reads_pole_and(fl, parked=True)
     logged.clear()
@@ -204,15 +231,35 @@ async def test_any_motion_command_clears_the_record(
     assert len(_unknown_warnings(logged)) == 1
 
 
+@pytest.mark.parametrize("how", _MOTIONS)
 async def test_the_record_is_cleared_before_the_command_goes_out(
-        fixed_env, clock):
-    """A crash mid-command must leave no record: at the instant the unpark
-    reaches the wire the record is already gone."""
+        how, fixed_env, clock):
+    """A crash mid-command must leave no record: at the instant the motion's
+    FIRST command reaches the wire the record is already gone. Graded on
+    the first command of each motion, whatever it is, so a motion that clears
+    only after it has sent something is caught for every motion and not for
+    ``unpark`` alone.
+
+    WP 8.2 (#1176). Was ``unpark`` alone.
+    MUTANT "pulse clears after the wire" (the ``self._clear_park_record()``
+    in ``ZwoAm5Telescope.pulse_guide`` replaced by ``pass`` and the same call
+    placed after ``await asyncio.to_thread(pulse.run)``): GREEN before this
+    change (the record is gone by the time the old case looked), RED now for
+    ``pulse`` - AssertionError: assert [{...}] == [None].
+    """
     fl, tel = await _parked_by_us(clock)
-    seen = []
-    fl.script["Spu"] = lambda _c: (
-        seen.append(config_mod.load_mount_park_record(tel._park_key())) or "1")
-    await tel.unpark()
+    key = tel._park_key()
+    assert config_mod.load_mount_park_record(key) is not None
+    seen: list = []
+    send = fl._exchange
+
+    def watch(cmd: str, reply: str):
+        if not seen:
+            seen.append(config_mod.load_mount_park_record(key))
+        return send(cmd, reply)
+
+    fl._exchange = watch
+    await _move(tel, fl, how)
     assert seen == [None]
 
 

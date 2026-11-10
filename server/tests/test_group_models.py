@@ -181,7 +181,8 @@ GOLDEN = Path(__file__).parent / "fixtures" / "flow_plan_golden" / \
 #:
 #: RE-PINNED AGAIN IN BACKLOG WP-34 (#195, 2026-09-30): the golden's
 #: ``resume_across_nights: false`` (``SequencePlan``'s new field; #195:
-#: "Single night" means auto-resume does not arm across nights) rides along
+#: Automatic resume On decides whether a campaign arms, via
+#: compile.campaign_block; the retired "Single night" is not a setting) rides along
 #: unchanged the same way, so the two files' same-named constants still
 #: agree.
 #:

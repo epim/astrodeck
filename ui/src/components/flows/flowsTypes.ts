@@ -194,7 +194,7 @@ export interface FlowRunState {
    *  `phase` is written the instant a run's POST returns, before the engine's
    *  first publish (#189 S5) - a guess that needs a bound, since nothing
    *  server-side confirms it. Bridges a live-reading `phase` for at most
-   *  `RUN_PHASE_BRIDGE_MS` (`flowRunControls.tsx`) past this moment, after
+   *  `RUN_PHASE_BRIDGE_MS` (`flowRunState.ts`) past this moment, after
    *  which the displayed state defers to the server's own answer (`ours`)
    *  alone; cleared back to null the moment `onSequence` below sees the
    *  server report the run that set it has ended (#647), so a run that ends

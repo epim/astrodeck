@@ -71,7 +71,8 @@ class TestArmingIsAboutTheActiveSession:
         the effect. It reads the store after a real ``start``.
 
         RED under mutant "a fresh run is left unarmed" (``session.auto_resume =
-        resume`` in the same place), observed:
+        False`` as the first statement of ``SequenceEngine._arm_exclusively``,
+        the one place a run is armed), observed:
 
             AssertionError: a fresh run left its session unarmed in the store
         """
@@ -96,8 +97,8 @@ class TestArmingIsAboutTheActiveSession:
         was cleared (what a superseded session looks like) and reads the store.
 
         RED under mutant "a resume is left unarmed" (``session.auto_resume =
-        not resume`` inserted before ``self._session = session`` in
-        ``SequenceEngine.start``), observed:
+        False`` as the first statement of ``SequenceEngine._arm_exclusively``,
+        the one place a run is armed), observed:
 
             AssertionError: a resumed run left its session unarmed in the store
         """

@@ -1367,7 +1367,7 @@ export function createFlowsActions(
     // #647: THE OPTIMISTIC `phase` IS CLEARED HERE, NOT LEFT TO EXPIRE.
     // `flowsRun` sets `flows.run.phase` to a live value the instant its POST
     // returns, before the engine's first publish - a guess
-    // `flowRunControls.tsx` bridges for only `RUN_PHASE_BRIDGE_MS`, but
+    // the RUN button bridges for only `RUN_PHASE_BRIDGE_MS` (`flowRunState.ts`), but
     // nothing ever wrote it back once that window had nothing to confirm or
     // deny it, and besides `useFlowRunControls` three OTHER files read
     // `flows.run.phase` directly (`FlowEditor.tsx`, `FlowWireLayer.tsx`,
@@ -2241,7 +2241,7 @@ export function createFlowsActions(
         const res = await flowsApi.run(id, flags);
         set((s) => patch(s, {
           // `startedAt` stamps THIS optimistic belief (#647): read by
-          // `flowRunControls.tsx`'s `RUN_PHASE_BRIDGE_MS` window, so a label
+          // `flowRunState.ts`'s `RUN_PHASE_BRIDGE_MS` window, so a label
           // that leans on this guess stops doing so once the bridge has had
           // long enough to hear from the engine either way.
           run: { ...s.flows.run, phase: "running", startedAt: Date.now(),

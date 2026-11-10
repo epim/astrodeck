@@ -112,6 +112,10 @@
 //     + SYNC instead." 19/20: "x a driver that declines is NOT reported as
 //     cleared: the declined toast is not the agreed advice: The mount did not
 //     accept that its position is known. Run SOLVE + SYNC instead.".
+//   h1m5_note_pad_key_back -- POSITION_UNKNOWN_NOTE with "Holding a pad key
+//     still moves the tube." put back (#829: false in NINA mode, and a named
+//     move is advice to move). The exact-copy case and "the note names a move"
+//     go red.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -403,9 +407,9 @@ test("each copy names the safe order: TRUST POSITION at home, otherwise home by 
   eq(POSITION_UNKNOWN_NOTE,
     "The mount is reporting its home position, as it does after any power-up or "
     + "reset, so it does not know where the tube points. That is normal at the "
-    + "start of a night. Holding a pad key still moves the tube. With the tube at "
-    + "home, TRUST POSITION tells the mount where it is; after that, the first "
-    + "solve and sync away from the pole measures it.",
+    + "start of a night. With the tube at home, TRUST POSITION tells the mount "
+    + "where it is; after that, the first solve and sync away from the pole "
+    + "measures it.",
     "POSITION_UNKNOWN_NOTE");
   eq(TRUST_POSITION_CONFIRM_BODY,
     "You are saying the tube is physically at the mount's home or park position, "
@@ -443,8 +447,8 @@ test("the note says what the mount is doing in ordinary terms, and what still wo
   assert(t.includes(POSITION_UNKNOWN_NOTE), `the note is not the shared copy: ${t}`);
   assert(/normal/.test(POSITION_UNKNOWN_NOTE) && /start of a night/.test(POSITION_UNKNOWN_NOTE),
     "the note does not say this is the ordinary start of a night");
-  assert(/Holding a pad key still moves the tube/.test(POSITION_UNKNOWN_NOTE),
-    "the note does not say what still works");
+  assert(!/pad key|hold|slew|nudge|move/i.test(POSITION_UNKNOWN_NOTE),
+    "the note names a move: it advises one while the position is unknown, and a held key moves nothing in NINA mode");
   assert(!/error|lost|failed|warning/i.test(POSITION_UNKNOWN_NOTE),
     "the note is alarming where the state is ordinary");
 });

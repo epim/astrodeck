@@ -37,6 +37,7 @@ verbatim:
 from __future__ import annotations
 
 import dataclasses
+import time
 
 import pytest
 
@@ -87,7 +88,7 @@ async def test_unguided_frame_rejected_when_ceiling_set(tmp_path, monkeypatch):
         f"an unguided frame passed the RMS ceiling: rejected={eng._rejected}")
 
 
-async def _guided_frame(tmp_path, monkeypatch, *, lone_sample: bool,
+async def _guided_frame(tmp_path, monkeypatch, *, samples: int,
                         pin_verdict: bool) -> SequenceEngine:
     """Shoot one frame that WAS guided under a 1.0 arcsec ceiling.
 
@@ -100,10 +101,12 @@ async def _guided_frame(tmp_path, monkeypatch, *, lone_sample: bool,
     flake ("a guided frame under the ceiling was rejected: 1", seen 3 times in
     two days on Linux runners, never alone).
 
-    ``lone_sample`` forces that interleaving: the guider reports exactly one
-    sample inside the exposure, 1.4 arcsec out. ``pin_verdict`` is the
-    isolation: the test states the verdict the gate reads instead of leaving it
-    to the sim's noise."""
+    ``samples`` forces that interleaving: the guider reports exactly that many
+    samples inside the exposure, each 1.4 arcsec out (none: the sim's own
+    stream). #1222: one sample is not a verdict (``GUIDE_MIN_SAMPLES``), so the
+    forced stream only judges the frame from three samples up. ``pin_verdict``
+    is the isolation: the test states the verdict the gate reads instead of
+    leaving it to the sim's noise."""
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
     hub = Hub()
     await hub.connect_sim()
@@ -117,13 +120,26 @@ async def _guided_frame(tmp_path, monkeypatch, *, lone_sample: bool,
         monkeypatch.setattr(
             eng, "_guide_verdict",
             lambda lo, hi: GuideVerdict(0.5, True, 12, 1.0))
-    if lone_sample:
+    if samples:
         real_stats = hub.guider.stats
 
-        def _one_sample_in_the_exposure():
+        def _samples_in_the_exposure():
+            opened = eng._frame_started_at
+            if not opened:
+                # Between frames: a settled stretch of good samples, so the
+                # pre-shutter guard has a verdict to pass (#1146).
+                now = time.time()
+                return dataclasses.replace(real_stats(), recent=[
+                    {"t": now - 3.0 + k, "ra": 0.1, "dec": 0.0}
+                    for k in range(4)])
             return dataclasses.replace(real_stats(), recent=[
-                {"t": eng._frame_started_at + 0.001, "ra": 1.2, "dec": 0.8}])
-        monkeypatch.setattr(hub.guider, "stats", _one_sample_in_the_exposure)
+                {"t": opened + 1e-6 * k, "ra": 1.2, "dec": 0.8}
+                for k in range(samples)])
+        monkeypatch.setattr(hub.guider, "stats", _samples_in_the_exposure)
+        # The sim rig's guider keeps a trace of its own (#1146) and the verdict
+        # reads that; this test scripts ``stats().recent``, the list a guider
+        # without a trace is judged on.
+        monkeypatch.setattr(hub.guider, "guide_samples", lambda lo, hi: None)
 
     eng.start(_plan(guide=True, max_guide_rms=1.0, dither_every=0,
                     autofocus_every=0, meridian_flip=False))
@@ -135,7 +151,7 @@ async def _guided_frame(tmp_path, monkeypatch, *, lone_sample: bool,
 async def test_a_guided_frame_is_not_rejected_by_the_same_ceiling(
         tmp_path, monkeypatch):
     """CONTROL: the same ceiling, but the frame WAS guided -- accepted."""
-    eng = await _guided_frame(tmp_path, monkeypatch, lone_sample=False,
+    eng = await _guided_frame(tmp_path, monkeypatch, samples=0,
                               pin_verdict=True)
 
     assert eng._rejected == 0, (
@@ -148,7 +164,7 @@ async def test_the_control_holds_when_the_guider_gives_one_bad_sample(
     """#1119, the forced interleaving: a sparse guide stream leaves one
     over-ceiling sample in the exposure. The control states its own verdict,
     so the sim's noise cannot reject the frame."""
-    eng = await _guided_frame(tmp_path, monkeypatch, lone_sample=True,
+    eng = await _guided_frame(tmp_path, monkeypatch, samples=1,
                               pin_verdict=True)
 
     assert eng._rejected == 0, (
@@ -157,13 +173,26 @@ async def test_the_control_holds_when_the_guider_gives_one_bad_sample(
 
 
 @pytest.mark.asyncio
+async def test_a_lone_sample_does_not_reject_the_frame(tmp_path, monkeypatch):
+    """#1222: with the verdict left to the guider, one over-ceiling sample in
+    the exposure is no verdict and the frame is kept (the premise the next
+    test flips with three samples)."""
+    eng = await _guided_frame(tmp_path, monkeypatch, samples=1,
+                              pin_verdict=False)
+
+    assert eng._rejected == 0, (
+        f"a frame was judged on one sample: {eng._rejected}")
+
+
+@pytest.mark.asyncio
 async def test_the_gate_judges_the_samples_in_the_exposure_not_guide_rms(
         tmp_path, monkeypatch):
     """#1119, the premise the control rests on: with the verdict left to the
-    guider, one over-ceiling sample in the exposure rejects the frame whatever
-    ``_guide_rms`` says. This is why the control above pins the verdict and
-    patching ``_guide_rms`` alone does not."""
-    eng = await _guided_frame(tmp_path, monkeypatch, lone_sample=True,
+    guider, over-ceiling samples in the exposure (three, the least that is a
+    verdict, #1222) reject the frame whatever ``_guide_rms`` says. This is why
+    the control above pins the verdict and patching ``_guide_rms`` alone does
+    not."""
+    eng = await _guided_frame(tmp_path, monkeypatch, samples=3,
                               pin_verdict=False)
 
     assert eng._rejected == 1, (
