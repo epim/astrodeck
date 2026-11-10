@@ -2392,9 +2392,17 @@ def _native_guiders_are_closed():
 def pytest_runtest_setup(item):
     """The one gate on a test that needs the astrodeck_native wheel (#1255):
     skipped without the wheel, an ERROR under ASTRODECK_REQUIRE_NATIVE=1.
-    First, so no fixture is built for a test that cannot run."""
-    from _native_gate import gate
-    gate(item)
+    First, so no fixture is built for a test that cannot run. A test without
+    the marker never touches the gate module: a child session that loads this
+    conftest by path, or a copy of it alone in a temp directory, has no
+    ``_native_gate.py`` beside it."""
+    if item.get_closest_marker("native") is None:
+        return
+    spec = importlib.util.spec_from_file_location(
+        "_native_gate", Path(__file__).with_name("_native_gate.py"))
+    gate_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate_module)
+    gate_module.gate(item)
 
 
 #: Seconds one test's call phase may take on CI before it fails the run

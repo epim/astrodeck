@@ -261,3 +261,44 @@ def test_a_wheel_that_is_installed_but_will_not_import_is_not_hidden(monkeypatch
         _native_gate.optional_native()
     monkeypatch.setattr(_native_gate, "_installed", lambda: False)
     assert _native_gate.optional_native() is None
+
+
+# ------------------------------------------- a child session over a copy of conftest
+
+def test_a_conftest_copied_alone_gates_nothing_it_does_not_mark(tmp_path):
+    """Several tests run a child session over a copy of conftest.py, alone in a
+    temp directory (test_real_config_guard.py), or load it by path from another
+    rootdir. ``_native_gate.py`` is not beside it there, and a test with no
+    ``native`` marker must never need it: with the hook importing it for every
+    test, each such test ERRORED at setup with ModuleNotFoundError (the server
+    job's first run of #1255).
+
+    NAMED MUTANT "the hook imports the gate for every test" (``from
+    _native_gate import gate`` put back above the marker check, run from a byte
+    backup, restored with its sha256 checked): RED, the child's one test is an
+    error at setup."""
+    import os
+    import subprocess
+
+    import astrodeck
+    tests = tmp_path / "repo" / "server" / "tests"
+    tests.mkdir(parents=True)
+    (tests / "conftest.py").write_bytes((TESTS / "conftest.py").read_bytes())
+    (tests / "test_probe.py").write_text("def test_trivial():\n    assert True\n",
+                                         encoding="utf-8")
+    ini = tmp_path / "repo" / "server" / "pytest.ini"
+    ini.write_text("[pytest]\naddopts =\n", encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
+    env["ASTRODECK_CONFIG_DIR"] = str(tmp_path / "config")
+    env["ASTRODECK_CAPTURE_DIR"] = str(tmp_path / "repo" / "captures")
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(Path(astrodeck.__file__).resolve().parents[1]),
+         *filter(None, [env.get("PYTHONPATH")])])
+    run = subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-p",
+         "no:randomly", "-n", "0", "-q", "-c", str(ini), "--rootdir",
+         str(tmp_path / "repo" / "server"), str(tests / "test_probe.py")],
+        cwd=tmp_path / "repo" / "server", env=env, capture_output=True,
+        text=True, timeout=300)
+    assert "1 passed" in run.stdout and run.returncode == 0, (
+        run.stdout[-2000:] + run.stderr[-1000:])
