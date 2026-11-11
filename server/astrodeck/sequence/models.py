@@ -610,6 +610,12 @@ class DuskFlatsPlan(BaseModel):
     adu_target: int = Field(ge=1, le=65535)
     count: int = Field(ge=1, le=200)
     panel_brightness: int | None = Field(None, ge=0)
+    # The canvas id of the DUSK FLATS node this block was compiled from
+    # (#1231): the block has no step, so nothing else carries the id the run
+    # names while it shoots the flats. None for a plan not made from a flow.
+    # EXCLUDED FROM EVERY DUMP, like ``Target.block``: dumping it would move
+    # every stored plan and plan hash of a flow with the node.
+    node: str | None = Field(None, exclude=True)
 
 
 class SequencePlan(BaseModel):

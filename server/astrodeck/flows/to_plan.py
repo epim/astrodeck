@@ -766,6 +766,15 @@ def _lane_nodes(graph: FlowGraph | None) -> dict[str, list[dict]]:
             for block in graph.nodes if block.type in OWNER_TYPES}
 
 
+def _dusk_flats_node(graph: FlowGraph | None) -> str | None:
+    """The canvas id of the DUSK FLATS node the compile read
+    (``compile_plan`` takes the first), so the run can name it (#1231). None
+    with no graph: the compiled dicts do not carry node ids."""
+    if graph is None:
+        return None
+    return next((n.id for n in graph.nodes if n.type == "duskflats"), None)
+
+
 def _name_lane(targets: list[dict], entry: dict,
                lane_nodes: dict[str, list[dict]]) -> None:
     """Put the block's lane on each of its targets, in place: every panel of a
@@ -2416,6 +2425,7 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
                     light_filters.append(f)
         flats, _why = dusk_flats_plan(flats_block, light_filters=light_filters)
         if flats is not None:
+            flats.node = _dusk_flats_node(graph)
             fields["dusk_flats"] = flats
     # THE GUIDE NODE MEANS WHAT IT DRAWS (#239 stage C).
     #
