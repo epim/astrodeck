@@ -83,7 +83,8 @@ from urllib.parse import urlsplit
 import httpx
 
 from .aio import reap
-from .events import RELAY_GAP, SITE_ALERT_TYPE, SITE_DERIVED_KEY, bus
+from .events import (ALERT_TWIN_KEY, RELAY_GAP, SITE_ALERT_TYPE,
+                     SITE_DERIVED_KEY, bus)
 from .rig_beacon import is_closed_vocabulary
 
 # State-change event types are NEVER deduped (C1-18). These are subscribed by
@@ -289,6 +290,14 @@ def _smtp_send_blocking(sink: Any, ev: "AlertEvent") -> tuple[bool, str | None]:
 # ntfy priority mapping by level.
 _NTFY_PRIORITY = {"error": "urgent", "warning": "high", "info": "default"}
 _LEVEL_RANK = {"info": 0, "warning": 1, "error": 2}
+
+
+#: The page a ``site_derived`` warning or error sends in place of its words
+#: (#1165). ``level`` and ``source`` are a severity and a subsystem name, never
+#: a value computed from the site.
+SITE_WITHHELD_ALERT = (
+    "A {level} was logged by {source} that cannot be sent here because it "
+    "depends on the site. Read it in the night log on the rig.")
 
 
 class AlertEvent:
@@ -825,24 +834,33 @@ class AlertDispatcher:
             alert = AlertEvent("heartbeat", "info", data.get("message", "heartbeat"))
         elif (t == "log" and data.get("level") in ("warning", "error")
               and data.get("source") != _ALERT_LOG_SOURCE
-              and not data.get(SITE_DERIVED_KEY)):
+              and not data.get(ALERT_TWIN_KEY)):
             # NB: skip the dispatcher's OWN failure diagnostics (source="alert").
             # They are logged from _dispatch on a delivery failure; re-mapping
             # them into a new alert would self-feed an alert-failure loop (#13).
             #
-            # NB: skip a line flagged ``site_derived`` (#166, #302): its
-            # MOMENT was set by a site computation (a flip taken at the
-            # crossing, the idle hold at a flip point), the same fact
-            # ``api.redact`` withholds from a viewer on every other seam. An
-            # admin configures the sinks, but the channel itself (a shared
-            # Discord or Slack room, an ntfy topic) is not a principal
-            # `view.site_derived` can be checked against, so the safe
-            # default is to never forward one. The line still reaches a
-            # holder through the UI (`/api/logs`, `_redact_log_rows_for`)
-            # and the durable night-log file, which this never touches.
-            # A flagged warning or error that must still page is published
-            # with its alert-safe wording (`EventBus.log_with_alert`), the
-            # next arm.
+            # NB: a line flagged ``site_derived`` (#166, #302, #1165) pages
+            # with its words WITHHELD: its MOMENT was set by a site
+            # computation (a flip taken at the crossing, the idle hold at a
+            # flip point), the same fact ``api.redact`` withholds from a viewer
+            # on every other seam, and its words may carry a value computed
+            # from the site. An admin configures the sinks, but the channel
+            # itself (a shared Discord or Slack room, an ntfy topic) is not a
+            # principal `view.site_derived` can be checked against. Dropping
+            # the page made a site-timed stop silent while its neighbours
+            # paged, so the sink gets a fixed sentence: that something
+            # happened, from which subsystem, and where to read it. The line
+            # itself still reaches a holder through the UI (`/api/logs`,
+            # `_redact_log_rows_for`) and the durable night-log file, which
+            # this never touches. A flagged line that can say more
+            # (``EventBus.log_with_alert``) carries ``ALERT_TWIN_KEY`` and
+            # pages its own site-free wording through the next arm instead.
+            if data.get(SITE_DERIVED_KEY):
+                return AlertEvent(
+                    data["level"], data["level"],
+                    SITE_WITHHELD_ALERT.format(
+                        level=data["level"], source=data.get("source") or "the rig"),
+                    source=data.get("source", ""))
             alert = AlertEvent(data["level"], data["level"],
                                data.get("message", ""),
                                source=data.get("source", ""))
