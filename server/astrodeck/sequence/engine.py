@@ -1592,6 +1592,17 @@ class WindowClosed(StopTarget):
     deferred, the panel would be promised a retry the night cannot give."""
 
 
+#: The words for what closed the last window, by cause (#1239). Only a dawn
+#: ending says dawn; ``end_reason`` stays ``dawn_cutoff`` for every one.
+_WINDOW_END_WORDS = {
+    "dawn": "stopped at dawn",
+    "time": "stopped at its stop time",
+    "max_run": "stopped at its run-length cap",
+    "set": "stopped with every target set or not yet risen",
+    "none": "stopped",
+}
+
+
 class TargetTimeUp(StopTarget):
     """The target's own maximum time is spent (``Target.max_time_min``, #1094,
     `_enforce_time_bound`). The target is DONE, not skipped: the scheduler's
@@ -2443,6 +2454,12 @@ class SequenceEngine:
         # its window closes under the frame loop, the target is dropped, the
         # queue empties, and the run used to call that "all targets complete".
         self._window_closed = False
+        # WHAT CLOSED THE LAST WINDOW (#1239): the frozen stop time of the
+        # window that closed last and the boundary that closed it, so the
+        # run's ending can say dawn only for a dawn. ``_run_capped`` names the
+        # targets whose frozen stop is their own ``max_run_min`` cap.
+        self._window_end: tuple[float, str] | None = None
+        self._run_capped: set[int] = set()
         # The ids of the targets whose own maximum time (`Target.max_time_min`)
         # ran out this run (#1094): what tells a run that ended owing frames
         # because a bound it was given was reached from one a guard cut short.
@@ -2882,6 +2899,8 @@ class SequenceEngine:
         self._mosaic_completion_fired = set()
         self._dawn_cutoff = False
         self._window_closed = False
+        self._window_end = None
+        self._run_capped = set()
         self._time_bounded = set()
         # Drop the prior run synchronously: Stop can arrive before the task's
         # first turn. _run publishes running once execution actually begins.
@@ -4119,9 +4138,14 @@ class SequenceEngine:
                 # (§1.9-C). The second half used to fall through to "all targets
                 # complete" below, which is how a 58-frame shortfall came to be
                 # recorded as the word "complete" (#252).
-                self._set_state(state="complete", detail="stopped at dawn (windows closed)",
+                # ONLY A DAWN ENDING SAYS DAWN (#1239). `end_reason` stays
+                # "dawn_cutoff" whatever closed the windows: stored reports,
+                # the session machine and auto-resume read it. The words come
+                # from the boundary that closed the LAST window.
+                said = self._window_end_phrase()
+                self._set_state(state="complete", detail=f"{said} (windows closed)",
                                 end_reason="dawn_cutoff", schedule=None, session=None)
-                bus.log("info", f"sequence '{plan.name}' stopped at dawn: "
+                bus.log("info", f"sequence '{plan.name}' {said}: "
                                 f"{self._shortfall_phrase(owed)}", "sequence")
                 self._finalize_report("dawn_cutoff")
             elif owed:
@@ -5053,6 +5077,7 @@ class SequenceEngine:
             bound: VisitBound | None = None
             follows: TargetGroup | None = None
             leave_tonight: list[tuple[Target, str]] = []
+            closed_windows: list[Target] = []
             for target in remaining:
                 # A COMPLETE TARGET OWED ITS COMPLETION RULES IS TAKEN UP
                 # WHATEVER ITS GATING SAYS (S7 review of #481, S7
@@ -5081,6 +5106,8 @@ class SequenceEngine:
                                                 window=frozen.get(id(target)))
                 state = gs["state"]
                 if state in ("window_closed", "never_rises"):
+                    if state == "window_closed":
+                        closed_windows.append(target)
                     continue        # this one will be skipped below
                 if state == "ready":
                     e = elig.get(target.id)
@@ -5231,8 +5258,11 @@ class SequenceEngine:
                     sched_r = ready.schedule
                     if sched_r is not None and sched_r.max_run_min:
                         start_ts, stop_ts = frozen.get(id(ready), (None, None))
-                        frozen[id(ready)] = (start_ts, schedule.apply_max_run_cap(
-                            stop_ts, sched_r.max_run_min, now))
+                        capped_ts = schedule.apply_max_run_cap(
+                            stop_ts, sched_r.max_run_min, now)
+                        if capped_ts != stop_ts:
+                            self._run_capped.add(id(ready))
+                        frozen[id(ready)] = (start_ts, capped_ts)
                 ti = index_of[id(ready)]
                 group = self._group_of(ready)
                 if (group is not None and group.id in self._group_runs
@@ -5407,6 +5437,8 @@ class SequenceEngine:
                     if self.reporter:
                         self.reporter.mark_skipped(target, "window closed")
                     bus.log("info", f"{target.name}: window closed — skipping", "sequence")
+                for target in closed_windows:
+                    self._note_window_end(target)
                 self._dawn_cutoff = True
                 return
 
@@ -9008,6 +9040,35 @@ class SequenceEngine:
                                     kind="time_bound")
         raise TargetTimeUp("maximum time on the target reached")
 
+    def _window_cause(self, target: Target) -> str:
+        """Which boundary is this target's frozen stop: ``max_run`` when its
+        own cap came sooner, else its ``stop_mode`` (``dawn`` or ``time``).
+        ``none`` for a stop no schedule field explains."""
+        if id(target) in self._run_capped:
+            return "max_run"
+        sched = target.schedule
+        if sched is not None and sched.stop_mode in ("dawn", "time"):
+            return sched.stop_mode
+        return "none"
+
+    def _note_window_end(self, target: Target) -> None:
+        """Remember the boundary that closed ``target``'s window, if it closed
+        no earlier than the one remembered (#1239)."""
+        win = self._frozen.get(id(target))
+        stop_ts = win[1] if win else None
+        if stop_ts is None:
+            return
+        if self._window_end is None or stop_ts >= self._window_end[0]:
+            self._window_end = (stop_ts, self._window_cause(target))
+
+    def _window_end_phrase(self) -> str:
+        """What stopped the run, from the window that closed LAST: when
+        several targets' windows closed for different reasons the run's end
+        is the last of them, as the night ended when it closed. With no
+        window recorded the targets set or never rose (#1239)."""
+        cause = self._window_end[1] if self._window_end else "set"
+        return _WINDOW_END_WORDS[cause]
+
     def _enforce_stop_boundary(self, target: Target) -> None:
         """Raise :class:`WindowClosed`, a :class:`StopTarget`, when the
         target's FROZEN stop boundary has passed (§1.6). ``resolve_window``
@@ -9032,6 +9093,7 @@ class SequenceEngine:
             # what stopped this target. Without this the last target's cut is
             # indistinguishable from a target that simply finished.
             self._window_closed = True
+            self._note_window_end(target)
             raise WindowClosed("observing window closed (stop time / max run / dawn)")
 
     async def _enforce_altitude_floor(self, target: Target) -> None:
