@@ -89,7 +89,7 @@ from ..config import (FRAME_SCOPES, REDACTED_SINK_FIELDS, AlertSink, AuthConfig,
                       EscalationConfig, FocusConfig, GuideConfig,
                       NamingConfig, Optics,
                       ProvidersConfig, RotatorConfig, SafetyConfig, Site,
-                      StandardsConfig, SurveyConfig, SyncPushConfig,
+                      StandardsConfig, SurveyConfig, SyncPushConfig, stamping_enabled,
                       UpdateConfig, WcsStampConfig,
                       WeatherConfig,
                       config_store, frames_payload, nogo_wedge_problem,
@@ -7144,7 +7144,7 @@ def create_app(*, bind_host: str | None = None,
             # note, not a warning: nothing is wrong with the night, and
             # stamping is the operator's call (it costs an ASTAP run a frame).
             stamping_note = sequence_coverage.stamping_note(
-                _plan, bool(config_store.cfg().solve_saved_lights))
+                _plan, stamping_enabled(config_store.cfg()))
             if stamping_note:
                 geometry_issues.append({
                     "text": f"▸ MOSAIC - {stamping_note}. Turn on \"solve "
@@ -7648,7 +7648,7 @@ def create_app(*, bind_host: str | None = None,
         in arcminutes and an angle in degrees, and no RA or Dec of a frame.
         The keys are the verifier's own, and held to an allow-list at the
         wire by tests/test_w16_coverage_route.py."""
-        stamping = bool(config_store.cfg().solve_saved_lights)
+        stamping = stamping_enabled(config_store.cfg())
         if session is None:
             return {"session": None, "stamping": stamping, "note": None,
                     "groups": []}

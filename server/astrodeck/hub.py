@@ -28,7 +28,7 @@ import numpy as np
 from . import cooling, tracking_probe
 from .aio import reap
 from .config import (config_store, f_ratio, fov_deg, frames_payload,
-                     image_scale_arcsec_px, redacted)
+                     image_scale_arcsec_px, redacted, stamping_enabled)
 from .persist import read_json_or, write_json_atomic
 from .devices.base import (
     Camera,
@@ -4620,7 +4620,7 @@ class Hub:
         angle = None
         try:
             if (frame_type.upper() == "LIGHT"
-                    and getattr(config_store.cfg(), "solve_saved_lights", False)):
+                    and stamping_enabled(config_store.cfg())):
                 angle = await _sky_angle.exposure_context(self, cam,
                                                           live_pier=False)
         except asyncio.CancelledError:
@@ -4714,7 +4714,7 @@ class Hub:
         # kill timeout) per frame — a 50-frame dark library would peg a core of
         # the Pi for the whole unattended run and flood the log with failures.
         if (snap.frame_type.upper() == "LIGHT"
-                and config_store.cfg().solve_saved_lights):
+                and stamping_enabled(config_store.cfg())):
             i = info or {}
             # star count from the preview's SINGLE detection pass (info["stars"]),
             # not frame.stars — the latter is only ever set by a backend that

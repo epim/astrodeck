@@ -177,6 +177,7 @@ async def test_a_saved_light_s_wcs_solve_records_and_calibrates(sim_hub):
     from astrodeck.config import config_store
 
     config_store.cfg().solve_saved_lights = True
+    config_store.cfg().solve_saved_lights_by_hand = True
     rig = sim_hub.sim_rig
     rig.rotator_mech_deg = 10.0
     rig.rotator_pa_offset_deg = 30.0          # truth: PA 40
@@ -425,11 +426,13 @@ async def test_the_capture_path_reads_the_rotator_only_when_a_solve_will_use_it(
 
     sim_hub.sim_rig.rotator_mech_deg = 42.0
     config_store.cfg().solve_saved_lights = False
+    config_store.cfg().solve_saved_lights_by_hand = True
     await sim_hub.capture(0.05, 100, 30, 1, save=False)
     assert sim_hub._promotable["camera"].snap.angle is None, (
         "the capture path read the rotator for a solve that will never run")
 
     config_store.cfg().solve_saved_lights = True
+    config_store.cfg().solve_saved_lights_by_hand = True
     await sim_hub.capture(0.05, 100, 30, 1, save=False)
     angle = sim_hub._promotable["camera"].snap.angle
     assert angle is not None and near(angle.mech_deg, 42.0), angle
@@ -486,6 +489,7 @@ async def test_a_pre_flip_frame_solved_after_the_flip_is_refused(sim_hub,
     from astrodeck.config import config_store
 
     config_store.cfg().solve_saved_lights = True
+    config_store.cfg().solve_saved_lights_by_hand = True
     rig = sim_hub.sim_rig
     rig.rotator_mech_deg = 30.0
     rig.rotator_pa_offset_deg = 0.0

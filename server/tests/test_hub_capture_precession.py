@@ -432,6 +432,7 @@ async def test_solve_saved_lights_stamps_wcs(monkeypatch, tmp_path):
     import astrodeck.config as config_mod
     monkeypatch.setattr(config_mod, "config_store", temp_store)
     temp_store.cfg().solve_saved_lights = True
+    temp_store.cfg().solve_saved_lights_by_hand = True
     temp_store.bump_and_save()
     # Force the sim solver (deterministic; independent of whether ASTAP is on box).
     from astrodeck.solve import SimSolver
