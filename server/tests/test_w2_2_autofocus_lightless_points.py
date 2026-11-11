@@ -33,6 +33,10 @@ restored and sha256-verified each time:
 
         AssertionError: the slope was discarded although the sky starved the sweep
 
+    (That branch is gone: since WP 9.1 the keep-or-discard decision is
+    ``focus.autofocus.slope_contradicted``, on the measured points, and its
+    mutant is in ``test_w9_1_autofocus_keeps_the_slope.py``.)
+
   * ``_accept_bracketed`` never finding a minimum (``found = None``):
     ``test_a_bracketed_minimum_is_found_when_the_next_point_cannot_be_measured``
     and ``test_two_no_light_points_among_good_ones_report_the_minimum_found``
@@ -178,7 +182,9 @@ async def test_a_flat_refusal_with_a_no_light_point_keeps_the_slope(
         monkeypatch, dark):
     """A sweep sized from a measured slope starves on two points whose frames
     read ``no_light`` (or ``obstructed``), then the engine refuses it flat.
-    The slope was not wrong, so it stays, and the log says why."""
+    The slope was not wrong, so it stays, and the log says why. Since WP 9.1
+    the record stays because nothing was MEASURED against it, whatever the
+    frames read as; the frame classes now only add the cause to the line."""
     _plant_a_calibration()
     cam, foc = await _rig()
     st = resolve_sweep(foc, None, 4).step
@@ -197,11 +203,14 @@ async def test_a_flat_refusal_with_a_no_light_point_keeps_the_slope(
     assert not any("discarding that calibration" in m for m in said), said
 
 
-async def test_a_flat_refusal_with_ordinary_starved_points_still_discards(
+async def test_a_flat_refusal_with_ordinary_starved_points_keeps_the_slope(
         monkeypatch):
-    """The discard keeps its purpose: starved points whose frames are a clear
-    star field (a span too wide for the field, not a dark sky) say nothing in
-    the slope's favour, so a flat refusal still forgets it."""
+    """WP 9.1 (#1077) turned this the other way round. It used to say that
+    starved points on a clear star field (a span too wide for the field, not a
+    dark sky) still forgot the slope. Starved points are not evidence of
+    anything: nothing was measured, so the record stays whatever the frames
+    read as. Measured points too flat for the slope still discard it
+    (`test_w9_1_autofocus_keeps_the_slope.py`)."""
     _plant_a_calibration()
     cam, foc = await _rig()
     st = resolve_sweep(foc, None, 4).step
@@ -214,8 +223,10 @@ async def test_a_flat_refusal_with_ordinary_starved_points_still_discards(
     res, said = await _sweep(cam, foc, frame_context=CONTEXT)
 
     assert not res.success
-    assert load_focus_calibration(None) is None, "the bad span survived"
-    assert any("discarding that calibration" in m for m in said), said
+    assert load_focus_calibration(None) is not None, (
+        "a sweep that measured nothing discarded the slope")
+    assert any("keeping that calibration" in m for m in said), said
+    assert not any("discarding that calibration" in m for m in said), said
 
 
 # ---------------------------------------------- a minimum found is reported found

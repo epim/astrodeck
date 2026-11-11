@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -20,6 +21,7 @@ from ..devices.base import Camera, DeviceError, Focuser
 from ..events import bus
 from ..imaging.stars import (OVEREXPOSED_FRAC, focus_size, median_hfr,
                              saturation_fraction, size_advice, star_size)
+from .span import DEFAULT_STEP, STEP_MIN
 
 
 class TrackingLost(DeviceError):
@@ -740,6 +742,144 @@ class AutofocusResult:
     #: initial autofocus and every plan refocus pass no line, so it is
     #: False for them whatever the field.
     gated: bool = False
+    #: On a FAILED result of a sweep this module sized itself (no explicit
+    #: step): the smaller sweep that failure's own points say will measure,
+    #: from ``retry_geometry`` (#1077, #1298). ``run_native_autofocus`` reads it
+    #: and runs that sweep once. None when the points prove nothing nearer
+    #: would measure, and on every success.
+    retry_basis: "RetryGeometry | None" = None
+
+
+# ------------------------------------------------- what a failed sweep proves
+# Two questions a sweep that failed has to answer from the points it MEASURED
+# (a point that starved is no evidence of anything, and a stored slope or a span
+# must never be judged on the missing). Both are PURE for the reason
+# ``is_flat_sweep`` and ``curve_verdict`` are: the decision sits behind a camera,
+# a focuser and a Rust state machine.
+
+#: Measured points a failed sweep needs before they can speak AGAINST the slope
+#: it was sized from: the number the fit itself needs. Fewer is a sweep that
+#: starved, and a starved sweep proves nothing about the optical train (#1077:
+#: a cloud at 03:00 cost the next night a working autofocus).
+MIN_EVIDENCE_POINTS = 4
+
+#: How much slower than the stored slope the measured points may rise before
+#: they count as evidence it is wrong: they have to rise at less than 1/2 of it.
+#: Every slope this rig has measured sits within about 8 percent of the others
+#: (0.0749 to 0.0812 px/step), so 2 is far outside the noise and still catches
+#: a calibration that makes the sweep too narrow to see the V.
+SLOPE_DISAGREEMENT_FACTOR = 2.0
+
+
+@dataclass(frozen=True)
+class SlopeVerdict:
+    """Whether a failed sweep's measured points are evidence against the stored
+    slope, and the sentence saying why either way."""
+    contradicts: bool
+    reason: str
+
+
+def slope_contradicted(stored_slope: float, points) -> SlopeVerdict:
+    """Do the MEASURED ``points`` ``[(position, size_px), ...]`` of a failed
+    sweep say the stored ``stored_slope`` (px per step) made it too narrow?
+
+    Only that direction. A flat failure is what a too-narrow span produces
+    (``native.FLAT_FAILURES``); a too-wide one starves its outer points, which
+    says nothing against the slope. So: at least ``MIN_EVIDENCE_POINTS``
+    measured points, and either they move by no more than a flat sweep does
+    (``is_flat_sweep``) or the median slope they imply, ``sqrt(size**2 -
+    tip**2) / distance`` from the smallest of them (the inversion
+    ``span.defocus_slope`` uses), is under ``1 / SLOPE_DISAGREEMENT_FACTOR`` of
+    the stored one. Anything else is no evidence and the record stays.
+    """
+    rows = []
+    for pos, size in points:
+        try:
+            p, h = float(pos), float(size)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(p) and math.isfinite(h) and h > 0:
+            rows.append((p, h))
+    if len(rows) < MIN_EVIDENCE_POINTS:
+        return SlopeVerdict(
+            False,
+            f"the sweep measured {len(rows)} point"
+            f"{'' if len(rows) == 1 else 's'}, and it takes "
+            f"{MIN_EVIDENCE_POINTS} before they can speak against the slope")
+    sizes = [h for _p, h in rows]
+    if is_flat_sweep(sizes):
+        return SlopeVerdict(
+            True,
+            f"its {len(rows)} measured points moved by only "
+            f"{max(sizes) - min(sizes):.2f} px, too flat for the slope")
+    tip_pos, tip = min(rows, key=lambda r: r[1])
+    implied = sorted(
+        math.sqrt(max(h * h - tip * tip, 0.0)) / abs(p - tip_pos)
+        for p, h in rows if abs(p - tip_pos) >= 1.0)
+    if not implied:
+        return SlopeVerdict(False, "every measured point sat at one position")
+    n = len(implied)
+    median = (implied[n // 2] if n % 2
+              else 0.5 * (implied[n // 2 - 1] + implied[n // 2]))
+    if median < stored_slope / SLOPE_DISAGREEMENT_FACTOR:
+        return SlopeVerdict(
+            True,
+            f"its measured points rise at {median:.4f} px/step, under "
+            f"1/{SLOPE_DISAGREEMENT_FACTOR:g} of the stored {stored_slope:.4f}")
+    return SlopeVerdict(
+        False,
+        f"its measured points rise at {median:.4f} px/step against the "
+        f"stored {stored_slope:.4f}, which is not evidence against it")
+
+
+@dataclass(frozen=True)
+class RetryGeometry:
+    """The one smaller sweep a failed one asks for: centred on the tip it
+    measured, with its outer point on the nearest wing position that already
+    measured (``wing_distance`` steps out)."""
+    centre: int
+    step: int
+    steps_each_side: int
+    wing_distance: int
+
+
+def retry_geometry(points, counts, step: int,
+                   steps_each_side: int) -> RetryGeometry | None:
+    """The sweep to retry a failed ``step`` x ``steps_each_side`` one with, from
+    the points it MEASURED (``[(position, size_px), ...]`` and the stars behind
+    each), or None when they prove no nearer point would measure (#1077, #1298).
+
+    Needs a tip measured from at least ``THIN_POINT_STARS`` stars and a wing
+    point at least as far above it as ``curve_verdict`` asks of a wing. The
+    outer point lands on the NEAREST such wing position: it was measured from
+    at least ``MIN_STARS_PER_POINT`` stars moments ago, so it is measurable by
+    construction. On the default span that wing is the first point off centre,
+    so the new step is the old one over ``steps_each_side`` (350 / 4): a point
+    that read about 28 px on this rig at 0.08 px/step. Floored at
+    ``span.STEP_MIN``, with fewer sides (never under 2) when the floor binds.
+    None, too, when the result is not a smaller sweep than the one that failed.
+    """
+    rows = [(float(p), float(h), int(n)) for (p, h), n in zip(points, counts)
+            if h and float(h) > 0]
+    if not rows:
+        return None
+    tip_pos, tip, tip_n = min(rows, key=lambda r: r[1])
+    if tip_n < THIN_POINT_STARS:
+        return None
+    need = tip + max(WING_RISE_FRAC * tip, WING_RISE_FLOOR_PX)
+    wings = [abs(p - tip_pos) for p, h, _n in rows
+             if abs(p - tip_pos) >= 1.0 and h >= need]
+    if not wings:
+        return None
+    wing = min(wings)
+    sides = max(1, int(steps_each_side))
+    new_step = int(round(wing / sides))
+    if new_step < STEP_MIN:
+        new_step = STEP_MIN
+        sides = max(2, int(wing // new_step))
+    if new_step * sides >= int(step) * max(1, int(steps_each_side)):
+        return None
+    return RetryGeometry(int(round(tip_pos)), new_step, sides, int(round(wing)))
 
 
 #: The BROADBAND sweep pair. Named rather than left in the signature because a
@@ -806,7 +946,42 @@ def resolve_sweep(focuser, step: int | None, steps_each_side: int):
             geometry.step, geometry.steps_each_side,
             f"{geometry.basis} (looked for key '{key}' in "
             f"{focus_calibration_path()})", geometry.measured)
+        _say_missing_calibration(focuser, key)
     return geometry
+
+
+def _say_missing_calibration(focuser, key: str) -> None:
+    """Say, at WARNING level, why a focuser that has measured before has no
+    record to size from (#1298): the file exists and holds nothing under this
+    key, or the record was discarded on evidence and is kept as ``previous``.
+    A file that was never written (a new rig) is not a warning; the info line
+    beside it covers it. Names the key and the path, which are the two things
+    to check."""
+    from ..config import (focus_calibration_absence, focus_calibration_path,
+                          load_previous_focus_calibration)
+    try:
+        kind, words = focus_calibration_absence(calibration_key(focuser))
+        previous = (load_previous_focus_calibration(calibration_key(focuser))
+                    if kind == "discarded" else None)
+    except Exception:      # noqa: BLE001 - an unreadable file is "not measured"
+        return
+    path = focus_calibration_path()
+    if kind == "no_entry":
+        bus.log("warning",
+                f"autofocus: {path.name} exists but holds no entry for key "
+                f"'{key}' ({path}) - something removed it; sizing at the "
+                f"shipped default and retrying once smaller if the sweep "
+                f"cannot measure its outer points", "focus")
+    elif kind == "discarded":
+        was = (f"the record measured {previous.measured_on or 'earlier'} "
+               f"({previous.slope_px_per_step:.4f} px/step)"
+               if previous is not None else "the earlier record")
+        bus.log("warning",
+                f"autofocus: no live focus calibration for key '{key}' in "
+                f"{path}: {was} was discarded ({words or 'no reason kept'}) "
+                f"and is kept as 'previous'; sizing at the shipped default "
+                f"and retrying once smaller if the sweep cannot measure its "
+                f"outer points", "focus")
 
 
 async def record_measured_span(focuser, points, best_position: int,
@@ -888,14 +1063,49 @@ async def record_measured_span(focuser, points, best_position: int,
         bus.log("debug", f"could not record the defocus slope: {e}", "focus")
 
 
-def forget_measured_span(focuser) -> None:
-    """Discard this focuser's measured span. Never raises — see
-    ``config.clear_focus_calibration`` for when and why."""
+def demote_measured_span(focuser, why: str) -> None:
+    """Take this focuser's measured span out of service, keeping it as
+    ``previous`` - see ``config.demote_focus_calibration``. Never raises."""
     try:
-        from ..config import clear_focus_calibration
-        clear_focus_calibration(calibration_key(focuser))
+        from ..config import demote_focus_calibration
+        demote_focus_calibration(calibration_key(focuser), why)
     except Exception:      # noqa: BLE001 - never cost a run that already failed
         pass
+
+
+def settle_stored_slope(focuser, points, came_back: str, *,
+                        note: str = "") -> None:
+    """A sweep sized from a measured slope has failed with ``came_back``: keep
+    the slope, or take it out of service, on what the sweep MEASURED.
+
+    ``points`` is ``[(position, size_px), ...]``, the measured points only
+    (``slope_contradicted`` says what they have to show). A sweep that starved,
+    or whose measured points agree with the slope, proves nothing against it
+    and the record stays: on 2026-10-17 and 2026-10-19 three such sweeps cost
+    the rig a working calibration and the file became ``{}`` (#1077, #1298).
+    ``note`` is a clause for the log line only. Says which it did, at warning
+    level, and why."""
+    from ..config import focus_calibration_path, load_focus_calibration
+    try:
+        cal = load_focus_calibration(calibration_key(focuser))
+    except Exception:      # noqa: BLE001 - an unreadable file is "not measured"
+        cal = None
+    if cal is None:
+        return
+    verdict = slope_contradicted(cal.slope_px_per_step, points)
+    head = (f"autofocus: this sweep was sized from a measured defocus slope "
+            f"and came back {came_back}")
+    if verdict.contradicts:
+        demote_measured_span(focuser, verdict.reason)
+        bus.log("warning",
+                f"{head}, and {verdict.reason} - discarding that calibration "
+                f"so the next run uses the {DEFAULT_STEP}-step default; the "
+                f"record is kept as 'previous' in {focus_calibration_path()}",
+                "focus")
+    else:
+        bus.log("warning",
+                f"{head}, but {verdict.reason}{note} - keeping that "
+                f"calibration", "focus")
 
 
 async def run_autofocus(camera: Camera, focuser: Focuser, *,
@@ -1247,14 +1457,10 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
                 f"either arm of the V (raise the step size), or the focuser is not "
                 f"moving as far as it reports.")
             # A flat curve is the one failure a span WE sized produces, so it is
-            # the first thing to doubt — see `config.clear_focus_calibration`.
+            # the first thing to doubt, on what it measured: see
+            # `settle_stored_slope`.
             if geometry.measured:
-                forget_measured_span(focuser)
-                bus.log("warning",
-                        "autofocus: this sweep was sized from a measured "
-                        "defocus slope and came back flat — discarding that "
-                        "calibration so the next run uses the default span",
-                        "focus")
+                settle_stored_slope(focuser, points, "flat")
             await focuser.move_to(start_pos)
             bus.publish("focus", state="failed",
                         points=[{"position": p, "hfr": h} for p, h in points],

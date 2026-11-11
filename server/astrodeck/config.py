@@ -1758,15 +1758,109 @@ def save_focus_calibration(key: str | None, cal) -> None:
     """Record what a sweep measured (best-effort merge; never raises).
 
     A calibration is a by-product of a focus run that has already succeeded, so
-    failing to store it must never turn that success into a failure."""
+    failing to store it must never turn that success into a failure.
+
+    THE RECORD IT REPLACES IS KEPT, as ``previous`` inside the same entry (#1077):
+    one earlier record per key, never a list, so a bad measurement is
+    recoverable by reading the file. The new record's own keys are exactly what
+    ``FocusCalibration.to_json`` writes; ``previous`` and ``discarded`` are the
+    only optional keys an entry can carry, and ``FocusCalibration.from_json``
+    ignores both."""
     try:
         data = read_json_or(focus_calibration_path(), {})
         if not isinstance(data, dict):
             data = {}
-        data[key or _FOCUSER_DEFAULT_KEY] = cal.to_json()
+        k = key or _FOCUSER_DEFAULT_KEY
+        entry = _focus_entry(data, k)
+        record = cal.to_json()
+        before = _live_record(entry)
+        if before is not None:
+            record["previous"] = before
+        elif isinstance(entry.get("previous"), dict):
+            record["previous"] = entry["previous"]
+        data[k] = record
         write_json_atomic(focus_calibration_path(), data)
     except Exception:  # noqa: BLE001 - bookkeeping must not break a focus run
         pass
+
+
+def _focus_entry(data: dict, key: str) -> dict:
+    """The entry filed under ``key``, or an empty one."""
+    entry = data.get(key)
+    return entry if isinstance(entry, dict) else {}
+
+
+def _live_record(entry: dict) -> dict | None:
+    """The flat record in ``entry`` as ``FocusCalibration.to_json`` writes it,
+    without ``previous`` or ``discarded``; None when the entry holds no usable
+    record (a demoted entry, a half-written one)."""
+    from .focus.span import FocusCalibration
+    cal = FocusCalibration.from_json(entry)
+    return None if cal is None else cal.to_json()
+
+
+def load_previous_focus_calibration(key: str | None):
+    """The record this focuser's entry keeps as ``previous``, or None.
+
+    A ``focus.span.FocusCalibration``, like ``load_focus_calibration``. It is
+    what a successful sweep replaced, or what a discard demoted (#1077)."""
+    from .focus.span import FocusCalibration
+    data = read_json_or(focus_calibration_path(), {})
+    if not isinstance(data, dict):
+        return None
+    entry = _focus_entry(data, key or _FOCUSER_DEFAULT_KEY)
+    return FocusCalibration.from_json(entry.get("previous"))
+
+
+def focus_calibration_absence(key: str | None) -> tuple[str, str]:
+    """Why ``load_focus_calibration(key)`` finds nothing, as ``(kind, words)``.
+
+    ``kind`` is ``"no_file"`` (nothing has ever been written: a new rig),
+    ``"no_entry"`` (the file exists and holds nothing for this key: something
+    removed it, or it is another focuser's file, #1298) or ``"discarded"`` (the
+    entry holds a ``previous`` record and the reason it was demoted, ``words``).
+    ``"present"`` when a usable record is there after all, ``words`` empty."""
+    path = focus_calibration_path()
+    if not path.exists():
+        return "no_file", ""
+    data = read_json_or(path, {})
+    if not isinstance(data, dict):
+        return "no_entry", ""
+    entry = _focus_entry(data, key or _FOCUSER_DEFAULT_KEY)
+    if _live_record(entry) is not None:
+        return "present", ""
+    if isinstance(entry.get("previous"), dict):
+        return "discarded", str(entry.get("discarded") or "")
+    return "no_entry", ""
+
+
+def demote_focus_calibration(key: str | None, why: str) -> bool:
+    """Take this focuser's record out of service because the evidence is
+    against it, keeping it as ``previous`` (#1077). True when a record was
+    demoted; never raises.
+
+    Called when a sweep sized from the record MEASURED enough points and they
+    were too flat for it (``focus.autofocus.slope_contradicted``). The entry
+    becomes ``{"previous": <the record>, "discarded": "<date>: <why>"}``, so
+    the key stays in the map and a discard can never write ``{}`` (#1298).
+    Without a live record there is nothing to demote and the file is left
+    alone. Sending the next attempt to the shipped default is what the missing
+    live record does; see ``focus.autofocus.resolve_sweep``."""
+    try:
+        data = read_json_or(focus_calibration_path(), {})
+        if not isinstance(data, dict):
+            return False
+        k = key or _FOCUSER_DEFAULT_KEY
+        record = _live_record(_focus_entry(data, k))
+        if record is None:
+            return False
+        import datetime as _dt
+        data[k] = {"previous": record,
+                   "discarded": f"{_dt.date.today().isoformat()}: {why}"}
+        write_json_atomic(focus_calibration_path(), data)
+        return True
+    except Exception:  # noqa: BLE001 - bookkeeping must not break a focus run
+        return False
 
 
 # ------------------------------------------------- the park AstroDeck made (#1075)
@@ -1813,26 +1907,6 @@ def clear_mount_park_record(key: str) -> None:
         return
     data.pop(key, None)
     write_json_atomic(mount_park_record_path(), data)
-
-
-def clear_focus_calibration(key: str | None) -> None:
-    """Forget this focuser's measured span.
-
-    Called when a sweep fails the ONE way a too-narrow span fails — a flat
-    curve with no spread to fit. Without this a single bad calibration would
-    narrow every subsequent sweep of the night into the same failure, with the
-    rig getting further from focus each time. Forgetting sends the next attempt
-    back to the shipped default, which is the geometry every successful focus
-    run in this project's history used."""
-    try:
-        data = read_json_or(focus_calibration_path(), {})
-        if not isinstance(data, dict):
-            return
-        if data.pop(key or _FOCUSER_DEFAULT_KEY, None) is None:
-            return
-        write_json_atomic(focus_calibration_path(), data)
-    except Exception:  # noqa: BLE001 - bookkeeping must not break a focus run
-        pass
 
 
 # --------------------------------------------------------------------- pure math
