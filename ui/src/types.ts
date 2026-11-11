@@ -932,8 +932,10 @@ export interface SequenceState {
     };
   };
   /** What each flow stage (canvas node id) is doing in this run: running,
-   *  done, skipped or failed (#464). Sent only for a run compiled from a flow,
-   *  and only for the stages it names. */
+   *  done, skipped, failed, deferred or waiting (#464, #1231). Sent only for a
+   *  run compiled from a flow, and only for the stages it names. The last
+   *  publish of a run carries the settled words: none is running or waiting.
+   *  A word a client does not know reads as unwritten. */
   stages?: Record<string, string>;
 }
 

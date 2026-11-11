@@ -46,12 +46,13 @@ def test_revision_12_names_the_engines_words_and_the_selector():
     fields that carry the names, the store's field and the one selector."""
     said = _revision_12()
     engine = ENGINE.read_text(encoding="utf-8")
-    words = sorted(set(re.findall(r'return "(running|done|skipped)"', engine)
-                       + ["failed"]))
+    words = sorted(set(re.findall(
+        r'return "(running|done|skipped|deferred|waiting)"', engine)
+        + ["failed"]))
     missing = [w for w in words if f"`{w}`" not in said]
     assert not missing, (
-        f"the engine's words are {words} and Revision 12 names none of "
-        f"{missing}")
+        f"the engine's words are {words} and the spec from Revision 12 on "
+        f"names none of {missing}")
     for name in ("SequenceEngine._publish_stages", "ExposureStep.stage",
                  "Target.block", "`stages`", "`flows.statuses`",
                  "`stageStatusOf`", "`useStageStatus`", "`flowRunLive`",
