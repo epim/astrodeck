@@ -852,7 +852,11 @@ async def test_the_alert_is_said_once_and_again_on_the_blind_cadence(
     assert all(d["level"] == "error" and d["source"] == "safety"
                and d.get(events.SITE_DERIVED_KEY) is True for d in said), said
     dispatcher = AlertDispatcher(events.bus, lambda: cfg)
-    assert [dispatcher._alert_for(events.Event("log", d)) for d in said] \
+    # The real ``publish`` marks the flagged line of a ``log_with_alert`` pair
+    # (``ALERT_TWIN_KEY``, #1165); this test replaced ``publish``, so the mark
+    # is put on here. Such a line maps to no alert: its twin below pages.
+    marked = [{**d, events.ALERT_TWIN_KEY: True} for d in said]
+    assert [dispatcher._alert_for(events.Event("log", d)) for d in marked] \
         == [None] * 3, "the flagged line itself is never forwarded"
     twins = lines(events.SITE_ALERT_TYPE)
     assert len(twins) == 3

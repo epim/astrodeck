@@ -151,6 +151,16 @@ SITE_DERIVED_KEY = "site_derived"
 #: file. The alert dispatcher is its one reader.
 SITE_ALERT_TYPE = "site_alert"
 
+#: The ``data`` key :meth:`EventBus.log_with_alert` puts on the flagged line it
+#: publishes: "my alert-safe wording follows as a :data:`SITE_ALERT_TYPE`
+#: event". The alert dispatcher pages a flagged line with a fixed sentence
+#: (#1165) unless it carries this, so such a line pages once, in its own
+#: site-free words.
+ALERT_TWIN_KEY = "alert_twin"
+
+_ALERT_TWIN: contextvars.ContextVar[bool] = (
+    contextvars.ContextVar("astrodeck_alert_twin", default=False))
+
 
 def is_site_derived(row: Any) -> bool:
     """Does this event carry the ``site_derived`` flag?
@@ -801,6 +811,8 @@ class EventBus:
         # nobody else's payload.
         if in_site_timed_span() and not _span_exempt(type, data):
             data[SITE_DERIVED_KEY] = True
+        if type == "log" and _ALERT_TWIN.get():
+            data[ALERT_TWIN_KEY] = True
         if type in ("focus", "filter_offsets"):
             from copy import deepcopy
             self.operation_snapshots[type] = {**deepcopy(data), "_observed_at": time.time()}
@@ -1011,7 +1023,11 @@ class EventBus:
         else. It defaults to ``message``, for a line whose words carry no value
         computed from the site (the moment is the line's timestamp); a line
         that names the Sun's altitude passes the wording without it."""
-        self.log(level, message, source, site_derived=True)
+        token = _ALERT_TWIN.set(True)
+        try:
+            self.log(level, message, source, site_derived=True)
+        finally:
+            _ALERT_TWIN.reset(token)
         self.publish(SITE_ALERT_TYPE, level=level,
                      message=message if alert_message is None else alert_message,
                      source=source, **{SITE_DERIVED_KEY: True})
