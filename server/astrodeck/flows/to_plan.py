@@ -1883,8 +1883,10 @@ def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
         # it was.
         corrected = corrects_convergence(layout_panels,
                                          rotate=angle == "rotate", rig=rig)
-        tolerance = (corrected_tolerance_deg(spec) if corrected
-                     else framing.angle_tolerance_deg(spec))
+        # THE DOCTOR'S NUMBER, for the whole grid (#1175): skipped panels are
+        # tiles of the layout, since skip is outside the block's identity.
+        fixed = framing.angle_tolerance_deg(spec)
+        tolerance = corrected_tolerance_deg(spec) if corrected else fixed
     except ValidationError as e:
         # THE LAYOUT REFUSES THE CENTRE BEFORE ANY PANEL IS MADE (#362):
         # ``MosaicSpecIn`` holds the sphere's bounds, so an RA typed as 30h
@@ -1982,10 +1984,15 @@ def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
         # convergence taken (`corrected_tolerance_deg`).
         "angle_tolerance_deg": tolerance,
         "skipped_ids": skipped_ids,
-        # Provenance only; `_group_cols` reads `cols` as a fallback.
+        # Provenance, and one number: `_group_cols` reads `cols` as a
+        # fallback, and `fixed_tolerance_deg` (a corrected block only, whose
+        # `angle_tolerance_deg` leaves convergence uncharged) is what the
+        # angle check allows with rotation off tonight
+        # (`angle_check.allowed_error`).
         "geometry": {"rows": nums["rows"], "cols": nums["cols"],
                      "overlap": overlap, "fov_x": fov_x, "fov_y": fov_y,
-                     "fov_from": str(m.get("fov_from") or ""), "key": key},
+                     "fov_from": str(m.get("fov_from") or ""), "key": key,
+                     **({"fixed_tolerance_deg": fixed} if corrected else {})},
     }
     if angle == "measure":
         # #187: the group says it is laid out at what the first solve of each

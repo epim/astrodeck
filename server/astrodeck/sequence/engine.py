@@ -73,6 +73,7 @@ from ..hub import (GOTO_NOT_ARRIVED_REASON, SOLVE_REASON_SOLVER_MISSING,
                    Hub, destination_pier_side_in_mount_frame,
                    slew_in_mount_frame)
 from ..imaging.frame_class import FrameClass, FrameContext, classify
+from ..solve import light as _light
 from ..imaging.processing import to_jpeg
 from . import schedule
 from .cloudstate import CloudState, verdict_from_info
@@ -1592,6 +1593,17 @@ class WindowClosed(StopTarget):
     deferred, the panel would be promised a retry the night cannot give."""
 
 
+#: The words for what closed the last window, by cause (#1239). Only a dawn
+#: ending says dawn; ``end_reason`` stays ``dawn_cutoff`` for every one.
+_WINDOW_END_WORDS = {
+    "dawn": "stopped at dawn",
+    "time": "stopped at its stop time",
+    "max_run": "stopped at its run-length cap",
+    "set": "stopped with every target set or not yet risen",
+    "none": "stopped",
+}
+
+
 class TargetTimeUp(StopTarget):
     """The target's own maximum time is spent (``Target.max_time_min``, #1094,
     `_enforce_time_bound`). The target is DONE, not skipped: the scheduler's
@@ -1831,6 +1843,8 @@ class SequenceEngine:
         #: ceiling" line (#855), None until the first, so the first says it and
         #: the rest at most every ``TRAIL_VETO_LOG_EVERY_S``.
         self._trail_veto_logged_at: float | None = None
+        # When the no-light veto on a focus sweep last said why (#1077).
+        self._no_light_veto_said_at: float | None = None
         #: CONSECUTIVE sweeps abandoned mid-way on a trailing field (#855).
         #: A sweep that runs to its end resets it; see MAX_TRAIL_ABANDONS.
         self._trail_abandons = 0
@@ -2443,6 +2457,12 @@ class SequenceEngine:
         # its window closes under the frame loop, the target is dropped, the
         # queue empties, and the run used to call that "all targets complete".
         self._window_closed = False
+        # WHAT CLOSED THE LAST WINDOW (#1239): the frozen stop time of the
+        # window that closed last and the boundary that closed it, so the
+        # run's ending can say dawn only for a dawn. ``_run_capped`` names the
+        # targets whose frozen stop is their own ``max_run_min`` cap.
+        self._window_end: tuple[float, str] | None = None
+        self._run_capped: set[int] = set()
         # The ids of the targets whose own maximum time (`Target.max_time_min`)
         # ran out this run (#1094): what tells a run that ended owing frames
         # because a bound it was given was reached from one a guard cut short.
@@ -2665,6 +2685,7 @@ class SequenceEngine:
         self._sparse_resweep_next = None
         self._sparse_gated_logged_at = None
         self._trail_veto_logged_at = None
+        self._no_light_veto_said_at = None
         self._trail_abandons = 0
         self._accepted_seen = None
         self._focus_groups_acquired = set()
@@ -2882,6 +2903,8 @@ class SequenceEngine:
         self._mosaic_completion_fired = set()
         self._dawn_cutoff = False
         self._window_closed = False
+        self._window_end = None
+        self._run_capped = set()
         self._time_bounded = set()
         # Drop the prior run synchronously: Stop can arrive before the task's
         # first turn. _run publishes running once execution actually begins.
@@ -4119,9 +4142,14 @@ class SequenceEngine:
                 # (§1.9-C). The second half used to fall through to "all targets
                 # complete" below, which is how a 58-frame shortfall came to be
                 # recorded as the word "complete" (#252).
-                self._set_state(state="complete", detail="stopped at dawn (windows closed)",
+                # ONLY A DAWN ENDING SAYS DAWN (#1239). `end_reason` stays
+                # "dawn_cutoff" whatever closed the windows: stored reports,
+                # the session machine and auto-resume read it. The words come
+                # from the boundary that closed the LAST window.
+                said = self._window_end_phrase()
+                self._set_state(state="complete", detail=f"{said} (windows closed)",
                                 end_reason="dawn_cutoff", schedule=None, session=None)
-                bus.log("info", f"sequence '{plan.name}' stopped at dawn: "
+                bus.log("info", f"sequence '{plan.name}' {said}: "
                                 f"{self._shortfall_phrase(owed)}", "sequence")
                 self._finalize_report("dawn_cutoff")
             elif owed:
@@ -5053,6 +5081,7 @@ class SequenceEngine:
             bound: VisitBound | None = None
             follows: TargetGroup | None = None
             leave_tonight: list[tuple[Target, str]] = []
+            closed_windows: list[Target] = []
             for target in remaining:
                 # A COMPLETE TARGET OWED ITS COMPLETION RULES IS TAKEN UP
                 # WHATEVER ITS GATING SAYS (S7 review of #481, S7
@@ -5081,6 +5110,8 @@ class SequenceEngine:
                                                 window=frozen.get(id(target)))
                 state = gs["state"]
                 if state in ("window_closed", "never_rises"):
+                    if state == "window_closed":
+                        closed_windows.append(target)
                     continue        # this one will be skipped below
                 if state == "ready":
                     e = elig.get(target.id)
@@ -5231,8 +5262,11 @@ class SequenceEngine:
                     sched_r = ready.schedule
                     if sched_r is not None and sched_r.max_run_min:
                         start_ts, stop_ts = frozen.get(id(ready), (None, None))
-                        frozen[id(ready)] = (start_ts, schedule.apply_max_run_cap(
-                            stop_ts, sched_r.max_run_min, now))
+                        capped_ts = schedule.apply_max_run_cap(
+                            stop_ts, sched_r.max_run_min, now)
+                        if capped_ts != stop_ts:
+                            self._run_capped.add(id(ready))
+                        frozen[id(ready)] = (start_ts, capped_ts)
                 ti = index_of[id(ready)]
                 group = self._group_of(ready)
                 if (group is not None and group.id in self._group_runs
@@ -5407,6 +5441,8 @@ class SequenceEngine:
                     if self.reporter:
                         self.reporter.mark_skipped(target, "window closed")
                     bus.log("info", f"{target.name}: window closed — skipping", "sequence")
+                for target in closed_windows:
+                    self._note_window_end(target)
                 self._dawn_cutoff = True
                 return
 
@@ -9008,6 +9044,35 @@ class SequenceEngine:
                                     kind="time_bound")
         raise TargetTimeUp("maximum time on the target reached")
 
+    def _window_cause(self, target: Target) -> str:
+        """Which boundary is this target's frozen stop: ``max_run`` when its
+        own cap came sooner, else its ``stop_mode`` (``dawn`` or ``time``).
+        ``none`` for a stop no schedule field explains."""
+        if id(target) in self._run_capped:
+            return "max_run"
+        sched = target.schedule
+        if sched is not None and sched.stop_mode in ("dawn", "time"):
+            return sched.stop_mode
+        return "none"
+
+    def _note_window_end(self, target: Target) -> None:
+        """Remember the boundary that closed ``target``'s window, if it closed
+        no earlier than the one remembered (#1239)."""
+        win = self._frozen.get(id(target))
+        stop_ts = win[1] if win else None
+        if stop_ts is None:
+            return
+        if self._window_end is None or stop_ts >= self._window_end[0]:
+            self._window_end = (stop_ts, self._window_cause(target))
+
+    def _window_end_phrase(self) -> str:
+        """What stopped the run, from the window that closed LAST: when
+        several targets' windows closed for different reasons the run's end
+        is the last of them, as the night ended when it closed. With no
+        window recorded the targets set or never rose (#1239)."""
+        cause = self._window_end[1] if self._window_end else "set"
+        return _WINDOW_END_WORDS[cause]
+
     def _enforce_stop_boundary(self, target: Target) -> None:
         """Raise :class:`WindowClosed`, a :class:`StopTarget`, when the
         target's FROZEN stop boundary has passed (§1.6). ``resolve_window``
@@ -9032,6 +9097,7 @@ class SequenceEngine:
             # what stopped this target. Without this the last target's cut is
             # indistinguishable from a target that simply finished.
             self._window_closed = True
+            self._note_window_end(target)
             raise WindowClosed("observing window closed (stop time / max run / dawn)")
 
     async def _enforce_altitude_floor(self, target: Target) -> None:
@@ -23061,7 +23127,27 @@ class SequenceEngine:
         A temperature that cannot be READ decides nothing and the sweep runs —
         this is spending minutes, not skipping a safety gate, so the fallback
         is the old behaviour.
+
+        NOT WHILE THE RUN IS HOLDING FOR CLOUD (#1077). A flip taken inside a
+        cloud hold (the hold's own watch takes it) ran this sweep under a sky
+        the engine had called cloudy: on 2026-10-19 it failed on 3 and then 9
+        stars and cost the rig its calibration. A sweep under that sky cannot
+        succeed, so it answers False, says why, and owes the probe-gated
+        re-sweep, due at the first light frame banked after the hold: the
+        probe asks the sky itself and sweeps only when it finds stars
+        (`_note_sparse_resweep`).
         """
+        if self._holding_for_clear:
+            self._sparse_resweep_owed = True
+            self._sparse_resweep_due = False
+            self._sparse_resweep_next = time.monotonic()
+            bus.log("warning",
+                    "skipping the post-flip autofocus: the run is holding for "
+                    "cloud, and a sweep under a sky already called cloudy "
+                    "cannot measure; it is owed, and will take a probe at "
+                    "the first light frame after the hold and sweep only if "
+                    f"it finds at least {SPARSE_FIELD_WARN} stars", "sequence")
+            return False
         if self._last_focus_at is None:
             return True
         age_s = time.monotonic() - self._last_focus_at
@@ -23357,7 +23443,18 @@ class SequenceEngine:
         failed was often not even the one the visit was for. The failure is
         said and the visit goes on at the focus the run has; the sweep stays
         owed (`_last_focus_at` is cleared by the failed sweep itself). Abort
-        is the operator's own word and still ends the run."""
+        is the operator's own word and still ends the run.
+
+        NOT RIGHT AFTER A NO-LIGHT VERDICT (#1077). The setup's centring hold
+        ends on "still no light after holding" and goes on at the starting
+        focus; a sweep then measures a sky the light check has just said is
+        dark. It asks `_autofocus`, which says why and owes the probe-gated
+        re-sweep, before the mount goes to another panel for it, and answers
+        False so the hop's first acquisition is given back and the next hop
+        owes the sweep again."""
+        if _light.no_light_just_now(self.hub) is not None:
+            res = await self._autofocus("initial autofocus", target=site)
+            return res is not None
         if site is not target:
             bus.log("info",
                     f"{target.name}: the focus sweep falls due; it runs on "
@@ -23440,7 +23537,37 @@ class SequenceEngine:
         running probes for a runaway at every point (`_sweep_probe`, over
         TRAIL_SWEEP_ABORT_FACTOR x the ceiling) and is abandoned through its
         own teardown, bounded by MAX_TRAIL_ABANDONS.
+
+        A SWEEP IS NOT STARTED RIGHT AFTER A NO-LIGHT VERDICT (#1077). On
+        2026-10-17 the solver had just said "still no light after holding" and
+        a sweep started anyway: 0 to 2 stars at every point, and its failure was
+        blamed on the slope. While the last failed solve's verdict was no light
+        and is younger than `light.NO_LIGHT_FRESH_S`, this returns None BEFORE
+        any state changes (as the trailing-field veto does), says why at most
+        every TRAIL_VETO_LOG_EVERY_S, and owes the probe-gated re-sweep
+        (``_sparse_resweep_owed``): the run carries on at the focus it has and
+        asks the sky itself one cadence later.
         """
+        no_light = _light.no_light_just_now(self.hub)
+        if no_light is not None:
+            # The debt is for a sweep, not for this label: a due re-sweep that
+            # was vetoed is owed again one cadence on, as a declined probe is.
+            now = time.monotonic()
+            self._sparse_resweep_owed = True
+            self._sparse_resweep_due = False
+            self._sparse_resweep_next = now + SPARSE_RESWEEP_EVERY_S
+            said = self._no_light_veto_said_at
+            if said is None or now - said >= TRAIL_VETO_LOG_EVERY_S:
+                self._no_light_veto_said_at = now
+                bus.log("warning",
+                        f"{label} skipped: the light check has just said "
+                        f"{no_light}, so a sweep would measure a dark sky; "
+                        f"the run carries on at the focus it has, and the "
+                        f"sweep is owed: it takes a probe in "
+                        f"{SPARSE_RESWEEP_EVERY_S / 60:.0f} minutes and "
+                        f"sweeps only if it finds at least "
+                        f"{SPARSE_FIELD_WARN} stars", "sequence")
+            return None
         # A SWEEP IS TEN EXPOSURES OVER FIVE MINUTES AND USED TO ASK NOBODY.
         # On 2026-08-21 one ran to completion on a mount that had stopped four
         # minutes earlier, consumed the drift as data, returned HFR 8.40 px

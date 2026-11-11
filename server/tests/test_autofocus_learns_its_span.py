@@ -14,6 +14,7 @@ away.
 """
 import pytest
 
+import astrodeck.config as config_mod
 from astrodeck.config import load_focus_calibration
 from astrodeck.devices.sim import build_sim_rig
 from astrodeck.events import bus
@@ -172,6 +173,33 @@ def _refuse_with(monkeypatch, reason):
                         lambda config, start: _FailingSweep(reason))
 
 
+class _FlatSweep:
+    """An engine that asks for five points a step apart, around where it
+    started, and then refuses with a given reason."""
+    def __init__(self, config, start, reason):
+        step = config["step_size"]
+        self._steps = [{"action": "move_to", "position": start + i * step}
+                       for i in (-2, -1, 0, 1, 2)]
+        self._steps.append({"action": "failed", "reason": reason})
+
+    def next(self):
+        return self._steps.pop(0) if len(self._steps) > 1 else self._steps[0]
+
+    def add_measurement(self, *a, **kw):
+        pass
+
+
+def _refuse_flat_after_measuring(monkeypatch, reason):
+    """Five MEASURED points that do not move (3.00 px from 50 stars each):
+    the evidence a too-narrow span produces, which a sweep that starved does
+    not have (#1077)."""
+    import astrodeck.focus.native as native_mod
+    monkeypatch.setattr(native_mod._native, "FocusSweep",
+                        lambda config, start: _FlatSweep(config, start, reason))
+    monkeypatch.setattr(native_mod, "native_sweep_metric",
+                        lambda frame: (3.0, 50))
+
+
 def _plant_a_calibration(foc):
     """A slope so steep the derived sweep is at its floor — i.e. exactly the
     too-narrow calibration the discard rule exists for."""
@@ -188,10 +216,15 @@ async def test_a_flat_refusal_discards_the_span_that_produced_it(monkeypatch,
     on a span we chose would otherwise narrow every sweep of the night into the
     same failure — with the rig further from focus each time and nothing saying
     why. Forgetting sends the next attempt back to the shipped default, which is
-    the geometry every successful focus run in this project's history used."""
+    the geometry every successful focus run in this project's history used.
+
+    WP 9.1 (#1077): only on EVIDENCE. The engine here refuses after five points
+    that were MEASURED and did not move; a refusal with nothing measured keeps
+    the record (`test_w9_1_autofocus_keeps_the_slope.py`). The record is demoted
+    to `previous`, never erased."""
     _rig, cam, foc = await _connected_sim()
     _plant_a_calibration(foc)
-    _refuse_with(monkeypatch, reason)
+    _refuse_flat_after_measuring(monkeypatch, reason)
 
     import astrodeck.focus.native as N
     q = bus.subscribe()
@@ -206,6 +239,8 @@ async def test_a_flat_refusal_discards_the_span_that_produced_it(monkeypatch,
     assert load_focus_calibration(None) is None, "the bad span survived"
     assert resolve_sweep(foc, None, 4).step == DEFAULT_STEP
     assert any("discarding that calibration" in m for m in said), said
+    # WP 9.1: demoted, not erased: the record stays as `previous`
+    assert config_mod.load_previous_focus_calibration(None) is not None
 
 
 async def test_a_fit_quality_refusal_keeps_it(monkeypatch):
