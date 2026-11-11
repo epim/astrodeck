@@ -5092,7 +5092,17 @@ def create_app(*, bind_host: str | None = None,
         refusal, as the loops run. Calibration targets (darks, bias, flats)
         carry mandatory dummy coordinates and never slew, so every check
         skips them: a dark-library build at a configured site must not be
-        refused because (0, 0) is below the horizon or in the keep-out."""
+        refused because (0, 0) is below the horizon or in the keep-out.
+
+        A PLAN THAT CENTRES NEEDS A PLATE SOLVER, FIRST OF ALL (#721): with
+        none on the rig (``Hub.solver_refusal``) the start is a 409
+        ``solver_missing`` before any sky check, because the night would end
+        its first target as a fault. Not waived by ``force``, which waives a
+        lost night and not a missing capability."""
+        why = hub.solver_refusal(plan)
+        if why is not None:
+            raise HTTPException(409, detail={"detail": why,
+                                             "code": "solver_missing"})
         groups = {g.id: g for g in plan.groups}
         sky = [t for t in plan.targets if not t.calibration
                and getattr(t, "ra_hours", None) is not None

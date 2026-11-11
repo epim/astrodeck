@@ -102,6 +102,10 @@ class _Dusk:
 class _Hub:
     site: dict = {}
 
+    def solver_refusal(self, plan):
+        """This rig has a plate solver (#721): the start is not refused."""
+        return None
+
     def __init__(self) -> None:
         self.devices = {"camera": _Device(), "telescope": _Device()}
         self.dusk_arm = _Dusk()

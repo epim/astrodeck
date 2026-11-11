@@ -86,10 +86,12 @@ async def test_resume_waits_before_any_recovery_motion(monkeypatch):
     from astrodeck.sequence.models import SequencePlan
     import astrodeck.sequence.resume_arm as resume_mod
     session = NS(id="test-session", name="Test session", owed=lambda: 1,
-                 crash_resumes=0, plan=SequencePlan())
+                 crash_resumes=0, plan=SequencePlan(),
+                 remaining=lambda: {})
     monkeypatch.setattr(resume_mod.session_store, "armed", lambda: session)
     engine = NS(running=False)
-    hub = NS(dusk_arm=NS(resume_veto=lambda: "Camera is cooling"))
+    hub = NS(dusk_arm=NS(resume_veto=lambda: "Camera is cooling"),
+             solver_refusal=lambda plan: None)
     resume = ResumeArm(engine, hub, clock=lambda: 100)
     monkeypatch.setattr(resume, "_window_open", lambda *args: True)
     # Readiness/recovery must not even be queried until dusk preparation is done.
