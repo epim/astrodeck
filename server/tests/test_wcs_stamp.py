@@ -74,6 +74,7 @@ async def wcs_hub(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_module, "config_store", store)
     monkeypatch.setattr(config_mod, "config_store", store)
     store.cfg().solve_saved_lights = True
+    store.cfg().solve_saved_lights_by_hand = True
     store.bump_and_save()
     h = Hub()
     await h.connect_sim()
@@ -376,6 +377,7 @@ async def test_no_wcs_work_when_off_or_not_locally_saved(wcs_hub, monkeypatch,
     frame_type = {"dark": "Dark", "bias": "Bias", "flat": "Flat"}.get(reason, "Light")
     if reason == "feature-off":
         store.cfg().solve_saved_lights = False
+        store.cfg().solve_saved_lights_by_hand = True
         store.bump_and_save()
     elif reason == "remote-saved":
         # Make the sim camera answer like a remote (NINA) backend: pre-rendered

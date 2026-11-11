@@ -451,6 +451,7 @@ class TestWhatItReports:
         assert off["note"] == (
             "coverage cannot be checked: frames are not being plate-solved")
         api.store.cfg().solve_saved_lights = True
+        api.store.cfg().solve_saved_lights_by_hand = True
         on = (await api.flow(fid)).json()
         assert on["stamping"] is True
         assert on["note"] is None

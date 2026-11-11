@@ -108,6 +108,17 @@ def _own_mount_park_record(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_solver_probe(monkeypatch):
+    """``config._solver_configured`` keeps its look at the machine for a few
+    seconds (#1206). That is process memory, so one test's answer would
+    otherwise be the next test's inside the same worker: every test starts
+    with nothing remembered."""
+    import astrodeck.config as config_mod
+    monkeypatch.setattr(config_mod, "_solver_seen", None)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _no_calibration_settle(monkeypatch):
     """Runtime seam (test-suite fast-path), the native guider's half of
     ``_fast_sim_delays``: zero ``guide.native._CAL_SETTLE_S`` (#848's settle

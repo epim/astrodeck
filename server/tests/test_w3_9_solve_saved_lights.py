@@ -199,16 +199,24 @@ def wired(tmp_path, monkeypatch):
     """The app over a real ``ConfigStore`` in ``tmp_path``, loaded under the
     test's say-so about whether a solver is configured."""
     import astrodeck.hub as hub_mod
+    # The solver patch below lasts the whole test, and the app may load the
+    # process-wide store cold under it. A cold store is put back cold, so the
+    # next test's load sees the real machine and not this test's (#227).
+    shared = config_mod.config_store
+    was_cold = shared._cfg is None
 
     def _build(solver_present: bool) -> TestClient:
-        # The store loads inside the patch and the patch ends there: the
-        # process-wide ``config_store`` may load cold while this test runs, and
-        # it must load as it would anywhere else.
+        # The store loads inside a scoped patch: the process-wide
+        # ``config_store`` may load cold meanwhile, and it must load as it
+        # would anywhere else. The patch is then set again for the rest of the
+        # test, because the option is read where it is used (#1206) and the
+        # readers must see the same machine the load did.
         with monkeypatch.context() as scoped:
             scoped.setattr(config_mod, "_solver_configured",
                            lambda: solver_present)
             store = ConfigStore(path=tmp_path / "astrodeck.json")
             store.cfg()
+        _solver(monkeypatch, solver_present)
         monkeypatch.setattr(config_mod, "config_store", store)
         monkeypatch.setattr(hub_mod, "config_store", store)
         monkeypatch.setattr(app_module, "config_store", store)
@@ -219,7 +227,9 @@ def wired(tmp_path, monkeypatch):
         client = TestClient(app_module.create_app())
         client.store = store
         return client
-    return _build
+    yield _build
+    if was_cold:
+        shared._cfg = None
 
 
 def _stamping_rows(client: TestClient) -> list[dict]:
@@ -309,3 +319,113 @@ class TestTheRouteHandsTheOptionBack:
             r = _post_wcs(client, solve_saved_lights=False, follow_solver=True)
             assert r.status_code == 403, r.text
             assert client.store.cfg().solve_saved_lights_by_hand is True
+
+
+class TestTheOptionFollowsTheSolverConfiguredNow:
+    """#1206: the follow ran once, at load, so ASTAP installed while the server
+    ran changed nothing until a restart. Every reader now asks
+    ``config_mod.stamping_enabled`` which reads "set by hand" and "a solver is
+    configured" at the moment of the read.
+
+    NAMED MUTANT "read once at load again" (``stamping_enabled`` made to
+    return ``cfg.solve_saved_lights``): the first test is RED, observed:
+
+        assert config_mod.stamping_enabled(store.cfg()) is True
+        E   assert False is True
+    """
+
+    def test_installing_a_solver_mid_run_turns_stamping_on(
+            self, tmp_path, monkeypatch):
+        _solver(monkeypatch, False)
+        store = ConfigStore(path=tmp_path / "astrodeck.json")
+        assert config_mod.stamping_enabled(store.cfg()) is False
+        _solver(monkeypatch, True)
+        assert config_mod.stamping_enabled(store.cfg()) is True
+
+    def test_removing_the_solver_mid_run_turns_stamping_off(
+            self, tmp_path, monkeypatch):
+        _solver(monkeypatch, True)
+        store = ConfigStore(path=tmp_path / "astrodeck.json")
+        assert config_mod.stamping_enabled(store.cfg()) is True
+        _solver(monkeypatch, False)
+        assert config_mod.stamping_enabled(store.cfg()) is False
+
+    def test_a_hand_set_off_is_never_overridden_by_a_solver_appearing(
+            self, tmp_path, monkeypatch):
+        _solver(monkeypatch, False)
+        store = ConfigStore(path=tmp_path / "astrodeck.json")
+        store.set_wcs_stamp(True, store.cfg().wcs_stamp)
+        store.set_wcs_stamp(False, store.cfg().wcs_stamp)
+        _solver(monkeypatch, True)
+        assert config_mod.stamping_enabled(store.cfg()) is False
+
+    def test_a_hand_set_on_is_never_overridden_by_the_solver_going(
+            self, tmp_path, monkeypatch):
+        _solver(monkeypatch, False)
+        store = ConfigStore(path=tmp_path / "astrodeck.json")
+        store.set_wcs_stamp(True, store.cfg().wcs_stamp)
+        _solver(monkeypatch, True)
+        _solver(monkeypatch, False)
+        assert config_mod.stamping_enabled(store.cfg()) is True
+
+    @pytest.mark.parametrize("stored, solver_now, effective", [
+        # hand-set on, hand-set off, never set (an old file with False written out)
+        ({"solve_saved_lights": True}, False, True),
+        ({"solve_saved_lights": False, "solve_saved_lights_by_hand": True},
+         True, False),
+        ({"solve_saved_lights": False}, True, True),
+    ])
+    def test_a_stored_config_reads_as_it_did_and_the_file_is_not_rewritten(
+            self, tmp_path, monkeypatch, stored, solver_now, effective):
+        _solver(monkeypatch, solver_now)
+        path = tmp_path / "astrodeck.json"
+        _write(path, {"version": 7, **stored})
+        store = ConfigStore(path=path)
+        cfg = store.cfg()
+        assert cfg.solve_saved_lights is effective
+        assert config_mod.stamping_enabled(cfg) is effective
+        before = _read(path)
+        _solver(monkeypatch, solver_now)
+        config_mod.stamping_enabled(store.cfg())
+        assert _read(path) == before
+
+    def test_the_machine_is_looked_at_once_in_a_while_not_once_a_frame(
+            self, monkeypatch):
+        """Cost: the probe is a few ``Path.exists`` calls, cached for a few
+        seconds, so the per-frame read is a clock read and a compare."""
+        import astrodeck.solve.astap as astap_mod
+        calls = []
+        monkeypatch.setattr(astap_mod, "find_astap",
+                            lambda: calls.append(1) or None)
+        monkeypatch.setattr(config_mod, "_solver_seen", None)
+        clock = [100.0]
+        monkeypatch.setattr(config_mod, "_monotonic", lambda: clock[0])
+        for _ in range(50):
+            config_mod._solver_configured()
+        assert len(calls) == 1
+        clock[0] += config_mod._SOLVER_PROBE_TTL_S + 1
+        config_mod._solver_configured()
+        assert len(calls) == 2
+
+
+class TestEveryReaderGoesThroughIt:
+    def test_a_compile_after_a_solver_is_installed_has_no_note(
+            self, wired, monkeypatch):
+        with wired(False) as client:
+            assert len(_stamping_rows(client)) == 1
+            _solver(monkeypatch, True)
+            assert _stamping_rows(client) == []
+
+    def test_a_compile_after_the_solver_is_removed_has_the_note(
+            self, wired, monkeypatch):
+        with wired(True) as client:
+            assert _stamping_rows(client) == []
+            _solver(monkeypatch, False)
+            assert len(_stamping_rows(client)) == 1
+
+    def test_the_coverage_answer_says_what_the_run_does(
+            self, wired, monkeypatch):
+        with wired(False) as client:
+            assert client.get("/api/sequence/coverage").json()["stamping"] is False
+            _solver(monkeypatch, True)
+            assert client.get("/api/sequence/coverage").json()["stamping"] is True

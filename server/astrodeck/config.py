@@ -24,6 +24,7 @@ import os
 import secrets
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
@@ -2466,12 +2467,42 @@ def _apply_migrations(cfg: AppConfig, stored: int) -> None:
                 "config")
 
 
+#: How long a look at the machine for a solver is believed. The probe is a few
+#: ``Path.exists`` calls; the readers run once per saved frame on the event
+#: loop, so the answer is kept for a few seconds and an install or removal shows
+#: within that, without a restart (#1206).
+_SOLVER_PROBE_TTL_S = 5.0
+_monotonic = time.monotonic
+_solver_seen: tuple[float, bool] | None = None
+
+
 def _solver_configured() -> bool:
     """Whether this machine has a plate solver to stamp frames with: the one
     ``providers.pick_solver`` builds on a real rig is ASTAP, found the way
-    ``solve_saved_lights`` finds it. Lazy import: it pulls in astropy."""
+    ``solve_saved_lights`` finds it. Lazy import: it pulls in astropy. Probed
+    at most once per ``_SOLVER_PROBE_TTL_S``."""
+    global _solver_seen
+    now = _monotonic()
+    seen = _solver_seen
+    if seen is not None and now - seen[0] < _SOLVER_PROBE_TTL_S:
+        return seen[1]
     from .solve.astap import find_astap
-    return find_astap() is not None
+    found = find_astap() is not None
+    _solver_seen = (now, found)
+    return found
+
+
+def stamping_enabled(cfg: AppConfig) -> bool:
+    """Whether saved lights are plate-solved and stamped right now (#1206).
+
+    What the operator set by hand is never overridden; otherwise it is on
+    exactly when a solver is configured at this moment. Computed at the read, so
+    no writer of the solver configuration can be forgotten, and it writes
+    nothing: the stored ``solve_saved_lights`` keeps its meaning. Every reader
+    of the option goes through here rather than reading the field."""
+    if cfg.solve_saved_lights_by_hand:
+        return cfg.solve_saved_lights
+    return _solver_configured()
 
 
 def _follow_the_solver(cfg: AppConfig) -> None:
