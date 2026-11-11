@@ -1958,7 +1958,7 @@
     },
     {
       "path": "server/pyproject.toml",
-      "sha256": "fb524e9c667f7086e629d5651bd2fd81c55428de89aec4946c27c49c3f1e7ca8",
+      "sha256": "ef036f9fd45d09ac1a15973056155774737776a4d61eccbdeb7c1afa2400d4c5",
       "component": "AstroDeck application source"
     }
   ],

@@ -2201,8 +2201,9 @@ export const useStore = create<AppState>((set, get, storeApi) => ({
 //
 // THE WRITER is the engine: it publishes what each flow stage is doing as
 // `stages` on the sequence state (server `SequenceEngine._publish_stages`:
-// canvas node id to running, done, skipped or failed), at every transition,
-// so the WS event and the snapshot a reload reads carry the same answer.
+// canvas node id to running, done, skipped, failed, deferred or waiting), at
+// every transition, so the WS event and the snapshot a reload reads carry the
+// same answer.
 // `flows.statuses` is that answer in the canvases' own words (busy, ok, warn,
 // bad), kept by the one subscription below and by nothing else: it holds the
 // stages of the OPEN flow's live run, and is empty whenever there is none, so
@@ -2213,9 +2214,17 @@ export const useStore = create<AppState>((set, get, storeApi) => ({
 // canvases. A stage the engine has said nothing about (an AUTOFOCUS node, a
 // REPORT) draws no status while the open flow's run is live (null), because
 // idle is false then, and reads idle where it is true.
+//
+// TWO WORDS HAVE NO CANVAS WORD OF THEIR OWN (#1231). `deferred` (the group
+// driver will take the panel up again tonight) reads as `warn`, the look
+// `skipped` has. `waiting` (a chained stage held behind an earlier phase) is
+// left out of the table on purpose: the stage then reads as unwritten, which is
+// true and is what it shows for a stage nobody has named. Mapping it to idle
+// would draw IDLE over a rig that is shooting.
 // ============================================================================
 const STAGE_WORDS: Record<string, FlowNodeStatus> = {
   running: "busy", done: "ok", skipped: "warn", failed: "bad",
+  deferred: "warn",
 };
 const NO_STATUSES: Record<string, string> = {};
 

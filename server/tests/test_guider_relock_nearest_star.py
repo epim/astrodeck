@@ -228,38 +228,6 @@ async def test_a_brightness_swap_is_not_a_relock_to_a_different_star(monkeypatch
     assert logs.at("info", "re-acquired the same star")
 
 
-async def test_each_relock_logs_both_distances(monkeypatch):
-    """(d) For one release (0.3.35) each re-lock logs the real distance AND the
-    one the old brightest-first rule would have judged, so the first nights on
-    this fix show whether the old guard was firing on artefacts. Both numbers
-    must be in the SAME line, or the log cannot pair them.
-
-    MUTANT "drop the brightest-first distance from the log" (the same-star
-    line built without its ``old`` clause) -- RED, observed verbatim:
-
-        AssertionError: the re-lock line does not carry the old rule's
-        distance: ['native guider: re-acquired the same star (2.7 arcsec from
-        the last lock; re-lock 1 this session)']
-    """
-    logs = _Logs(monkeypatch)
-    g, _e = _harness(
-        monkeypatch,
-        actions=[_IDLE, _PULSE, _LOST, _IDLE, _PULSE],
-        fields=[[_A, _B], [_A, _B], [], [_B, _A_BACK], [_B, _A_BACK]])
-
-    await g._guide_loop()
-
-    lines = logs.at("info", "re-acquired the same star")
-    assert len(lines) == 1, lines
-    # The real distance: A to where A came back. The old one: the brightest
-    # pick before the loss (A) to the brightest pick after it (B), 820 px.
-    real = math.hypot(_A_BACK[0] - _A[0], _A_BACK[1] - _A[1]) * 5.5
-    old = math.hypot(_B[0] - _A[0], _B[1] - _A[1]) * 5.5
-    assert f"{real:.1f} arcsec from the last lock" in lines[0], lines
-    assert f"brightest-first pick reads {old:.1f} arcsec" in lines[0], (
-        f"the re-lock line does not carry the old rule's distance: {lines}")
-
-
 # ------------------------------------ (b): a far star only, the engine guiding
 
 
