@@ -994,6 +994,16 @@ SOLVE_REASON_SOLVER_MISSING = (
     "plate solve failed: no plate solver is available on this rig")
 SOLVE_REASON_FILE_LOCKED = (
     "plate solve failed: another program held the solve frame's file open")
+# The START's sentence for the same cause (#721): a run that centres by plate
+# solve is refused before it begins when nothing on the rig can solve, so it
+# says what to install or set instead of describing a failed solve. Fixed
+# words, no paths, and no mention of light or waiting: the cause is the rig's
+# and does not clear by itself.
+SOLVER_MISSING_REFUSAL = (
+    "This run centres its targets by plate solve and this rig has no plate "
+    "solver: ASTAP was not found and a real mount or focuser is connected, so "
+    "the simulator solver is refused. Install ASTAP or set ASTAP_PATH to it, "
+    "then start again. Or turn centring off for the targets.")
 # Not a failed solve: the solve worked and the MOUNT refused to take it (#850).
 # Rig-side and it does not clear by itself, so D-03 may match it. Worded
 # without "plate" beside "solve": until #792 the UI's humanizer turned any
@@ -3330,6 +3340,26 @@ class Hub:
                 f"then arm again. To start anyway, press ACKNOWLEDGE on the "
                 f"Windows restart card in Rig > Safety: nights then start despite "
                 f"it until Windows has restarted.")
+
+    def solver_refusal(self, plan: Any) -> str | None:
+        """The sentence that refuses to START ``plan`` for want of a plate
+        solver, or None to allow it (#721).
+
+        A run needs a solve when it carries a sky target that centres (a
+        non-calibration target with ``center`` on): its first slew is followed
+        by a centring solve, which a rig with no solver can only fail. Asking
+        ``resolve("solve")`` now, before the first slew, is the same question
+        the solve will ask later, so the night does not begin only to end its
+        first target as a fault. A plan with nothing that centres, a rig with
+        ASTAP and the simulator all answer None."""
+        if not any(t.center and not t.calibration for t in plan.targets):
+            return None
+        from .providers import SolverUnavailable, resolve
+        try:
+            resolve("solve", self)
+        except SolverUnavailable:
+            return SOLVER_MISSING_REFUSAL
+        return None
 
     #: Whether the operator has acknowledged the restart Windows is holding.
     #: Process memory on purpose: a restart of this process (which is what the

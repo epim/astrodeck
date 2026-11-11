@@ -129,7 +129,7 @@ from ..solve.light import (BIAS_MASTER, CLOUD, DARK_MASTER, EXPLICIT,
 from . import schedule
 from .group_rules import (CENTRING, SET_ASIDE_EXPIRY_S, pool_sky_scores,
                           set_aside_expiry)
-from .models import (Target, TargetGroup, duplicate_name_warning,
+from .models import (SequencePlan, Target, TargetGroup, duplicate_name_warning,
                      plan_identity_errors, quota_unbounded, replan_cooling)
 from .panel_order import OrderSnapshot, order_panels, order_pool
 from .policy import resolve_policy
@@ -1616,6 +1616,28 @@ class ResumeArm:
                 f"({tonight}) is a different one. CONTINUE it by hand to "
                 f"shoot the rest.", "sequence")
 
+    @staticmethod
+    def _owed_plan(session: Session) -> SequencePlan:
+        """``session``'s plan cut to the targets that still owe frames, the
+        cut the HTTP resume routes make (``_owed_plan`` in ``api.app``)."""
+        left = session.remaining()
+        return session.plan.model_copy(update={"targets": [
+            t for t in session.plan.targets
+            if any(left.get(st.id, 0) > 0 for st in t.steps)]})
+
+    def _disarm_no_solver(self, session: Session, refusal: str) -> None:
+        """#721: ``session`` centres by plate solve and the rig has no plate
+        solver, so its start is refused every time. Disarm it (the same
+        write-locked, re-read-before-write path as :meth:`_disarm_stopped`)
+        and say why, in the refusal's own words."""
+        fresh = self._write_disarm(session, "the missing plate solver")
+        if fresh is None:
+            return
+        bus.log("error",
+                f"auto-resume is off for '{fresh.name}': {refusal} Arm it "
+                f"from the session list once the solver is installed.",
+                "sequence")
+
     def _set_hold(self, session, reason: str, retry_at: float = 0.0,
                   site_detail: str | None = None, *,
                   nothing_tonight: bool = False) -> None:
@@ -1976,6 +1998,19 @@ class ResumeArm:
             if nights and tonight not in nights:
                 self._disarm_single_night(armed, nights[0], tonight)
                 return
+        # A RUN THE START GATE WOULD REFUSE EVERY TIME IS NOT ARMED (#721).
+        # The HTTP starts refuse a plan that centres on a rig with no plate
+        # solver (``Hub.solver_refusal``); this loop starts from its own
+        # door, so it asks the same question, over the targets the session
+        # still owes. Like the single night above it is PERMANENT until the
+        # operator acts, and a retry in ten minutes would meet the same
+        # answer for the rest of the night with the mount parked: so it
+        # disarms, in an error line (the level the alert pipeline delivers),
+        # and the operator arms it again once a solver is installed.
+        solver = self.hub.solver_refusal(self._owed_plan(armed))
+        if solver is not None:
+            self._disarm_no_solver(armed, solver)
+            return
         # A SESSION THAT KEEPS CRASHING IS NOT A SESSION TO KEEP RESTARTING.
         #
         # Continuity is the right default and it is what the rest of this tick
