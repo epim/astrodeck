@@ -57,5 +57,121 @@
         "n4": "done"
       }
     }
+  ],
+  "recorded_deferred": "tests/test_w10_1_stage_words.py::test_the_recorded_deferred_stream_is_what_the_engine_publishes, a clocked simulator night of the 2x2 mosaic flow (TARGET n2 over four panels, FILTER CYCLE n7, REPORT n12) with every panel's first centring missed, the sequence payloads reduced to state, session and stages and de-duplicated",
+  "deferred_frames": [
+    {
+      "state": "running",
+      "session": {
+        "id": "da63df1ae67341d0aa4b851e63dc060f"
+      }
+    },
+    {
+      "state": "running",
+      "session": {
+        "id": "da63df1ae67341d0aa4b851e63dc060f"
+      },
+      "stages": {
+        "n7": "running",
+        "n2": "running"
+      }
+    },
+    {
+      "state": "running",
+      "session": {
+        "id": "da63df1ae67341d0aa4b851e63dc060f"
+      },
+      "stages": {
+        "n7": "deferred",
+        "n2": "deferred"
+      }
+    },
+    {
+      "state": "running",
+      "session": {
+        "id": "da63df1ae67341d0aa4b851e63dc060f"
+      },
+      "stages": {
+        "n7": "running",
+        "n2": "running"
+      }
+    },
+    {
+      "state": "running",
+      "session": {
+        "id": "da63df1ae67341d0aa4b851e63dc060f"
+      },
+      "stages": {
+        "n7": "deferred",
+        "n2": "deferred"
+      }
+    },
+    {
+      "state": "running",
+      "session": {
+        "id": "da63df1ae67341d0aa4b851e63dc060f"
+      },
+      "stages": {
+        "n7": "running",
+        "n2": "running"
+      }
+    },
+    {
+      "state": "running",
+      "session": {
+        "id": "da63df1ae67341d0aa4b851e63dc060f"
+      },
+      "stages": {
+        "n7": "deferred",
+        "n2": "deferred"
+      }
+    },
+    {
+      "state": "running",
+      "session": {
+        "id": "da63df1ae67341d0aa4b851e63dc060f"
+      },
+      "stages": {
+        "n7": "running",
+        "n2": "running"
+      }
+    },
+    {
+      "state": "running",
+      "session": {
+        "id": "da63df1ae67341d0aa4b851e63dc060f"
+      },
+      "stages": {
+        "n7": "deferred",
+        "n2": "deferred"
+      }
+    },
+    {
+      "state": "running",
+      "session": {
+        "id": "da63df1ae67341d0aa4b851e63dc060f"
+      },
+      "stages": {
+        "n7": "running",
+        "n2": "running"
+      }
+    },
+    {
+      "state": "running",
+      "session": {
+        "id": "da63df1ae67341d0aa4b851e63dc060f"
+      },
+      "stages": {
+        "n7": "done",
+        "n2": "done"
+      }
+    },
+    {
+      "state": "complete",
+      "stages": {
+        "n7": "done",
+        "n2": "done"
+      }
+    }
   ]
 }

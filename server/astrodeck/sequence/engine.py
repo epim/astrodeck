@@ -1937,10 +1937,20 @@ class SequenceEngine:
         #: reads none of them, so the step is tried again then.
         self._set_aside: dict[str, str] = {}
         #: What each flow stage and block is doing, by canvas node id: "running",
-        #: "done", "skipped" or "failed" (#464, #1125). `_publish_stages` is its
-        #: one writer and `start()` empties it; the sequence state carries it as
-        #: ``stages``.
+        #: "done", "skipped", "failed", "deferred" or "waiting" (#464, #1125,
+        #: #1231). `_publish_stages` is its one writer and `start()` empties
+        #: it; the sequence state carries it as ``stages``.
         self._stage_status: dict[str, str] = {}
+        #: Targets the scheduler has left with frames owed, by target id, to
+        #: "skipped" (dropped for tonight: a `StopTarget`, a consumed
+        #: `JumpTarget`, a closed window) or "deferred" (the group driver
+        #: retries it on a later pass tonight). `_leave_target` writes it,
+        #: `_say_stages` forgets a target when it is entered again, and
+        #: `start()` empties it. Not persisted: a restart tonight is a new run
+        #: that tries everything again (`_persist_set_aside` is what records
+        #: a set-aside). It is the only thing `_stage_word` reads that the
+        #: ledger and the set-aside records do not hold.
+        self._scheduler_left: dict[str, str] = {}
         #: What this run's opening flat solves found, same key: None for a
         #: step whose exposure metered, the solver's word for why for one that
         #: did not (#846). `_run_calibration` fills it, `start()` empties it,
@@ -2725,6 +2735,7 @@ class SequenceEngine:
         # record was stamped with.
         self._set_aside = {}
         self._stage_status = {}
+        self._scheduler_left = {}
         self._flat_metered = {}
         self._set_aside_targets = {}
         self._set_aside_meta = {}
@@ -3588,6 +3599,13 @@ class SequenceEngine:
             self.state.pop("end_reason", None)
         elif state in _TERMINAL_STATES:
             kw.setdefault("end_reason", state)
+            # THE WORDS SETTLE WITH THE RUN (#1231). No stage is running once
+            # the run is over, and `_publish_stages` publishes nothing after
+            # the terminal state (the alert dispatcher reads every terminal
+            # `sequence` event as the run ending), so the settled map rides
+            # this one.
+            if self._stage_status and "stages" not in kw:
+                kw["stages"] = self._settle_stages()
         self.state = {**self.state, **kw}
         payload = dict(self.state)
         # ``_hop_site_derived`` (#166 item 1) is a STATE-only marker for
@@ -5360,6 +5378,7 @@ class SequenceEngine:
                         # The line `_enforce_altitude_floor` logged says so.
                         self._persist_set_aside(ready.id, str(e), kind="floor")
                     self._group_member_gone(ready, group, str(e))
+                    self._leave_target(ready, "skipped")
                 except JumpTarget as j:
                     # control-flow expansion: a fired run_target/skip_target
                     # instruction redirects the scheduler. Like StopTarget this
@@ -5417,6 +5436,7 @@ class SequenceEngine:
                         continue
                     if not consumed:
                         continue
+                    self._leave_target(ready, "skipped")
                     # A MEMBER THE JUMP CONSUMED LEAVES ITS GROUP TOO (#288),
                     # as a skip-drain's and a missed start's do: otherwise
                     # the group still counted it live, the published
@@ -5441,6 +5461,7 @@ class SequenceEngine:
                     if self.reporter:
                         self.reporter.mark_skipped(target, "window closed")
                     bus.log("info", f"{target.name}: window closed — skipping", "sequence")
+                    self._leave_target(target, "skipped")
                 for target in closed_windows:
                     self._note_window_end(target)
                 self._dawn_cutoff = True
@@ -8060,9 +8081,13 @@ class SequenceEngine:
                     self._group_last_visited[group.id] = (target.panel_row,
                                                           target.panel_col)
         if refused is not None:
+            # LEFT FOR NOW: the refusal is a wait, not a failure. A panel it
+            # then sets aside outranks this in `_pair_state`.
+            self._leave_target(target, "deferred")
             return self._hop_refused_by_a_limit(group, target, refused,
                                                 remaining)
         if deferred is not None:
+            self._leave_target(target, "deferred")
             # A DEFERRAL ENDS THE HOLD OR PAUSE IT CAME OUT OF, in what the
             # run publishes as well. The setup a cloud hold's release, a
             # safety pause's resume or a roof reopen re-runs makes this
@@ -8140,6 +8165,7 @@ class SequenceEngine:
         restart drops it, and `GroupRun.is_live` still counts it. The cost of
         the ruling is stated in the line: it is re-slewed and retried once a
         round for as long as it fails."""
+        self._leave_target(target, "deferred")
         run = self._group_runs[group.id]
         label = run.members.get(target.id, target.name)
         mosaic = group.name or group.id
@@ -12951,32 +12977,117 @@ class SequenceEngine:
         The stage owns every step of the plan compiled from its node (a FILTER
         CYCLE is one step a slot, on every target it feeds) and the block owns
         every step of every target compiled from its node (a mosaic's panels, a
-        pool's members)."""
-        plan = self.plan
-        if plan is None or not (step.stage or target.block):
-            return
-        words: dict[str, str] = {}
-        if step.stage:
-            words[step.stage] = self._stage_word(
-                [(t, s) for t in plan.targets for s in t.steps
-                 if s.stage == step.stage])
-        if target.block:
-            words[target.block] = self._stage_word(
-                [(t, s) for t in plan.targets if t.block == target.block
-                 for s in t.steps])
-        self._publish_stages(words)
+        pool's members).
 
-    def _stage_word(self, owned: list[tuple[Target, Any]]) -> str:
-        """What a stage that owns these (target, step) pairs is doing: done when
-        every step is complete, skipped when everything still owed is set aside
-        for tonight (the ledger keeps it owed), else running."""
-        owed = [(t, s) for t, s in owned if not self._step_complete(t, s)]
-        if not owed:
+        Entering a step is the target being taken up again, so the scheduler
+        forgets having left it (`_scheduler_left`). The words of every stage
+        already named are read again: entering a target's first phase turns
+        the later stage of its chain `waiting`, and a deferred panel's return
+        turns its stage `running`."""
+        self._scheduler_left.pop(target.id, None)
+        if self.plan is None or not (step.stage or target.block):
+            return
+        self._refresh_stages((step.stage, target.block))
+
+    def _leave_target(self, target: Target, word: str) -> None:
+        """The scheduler leaves ``target`` with frames owed: ``word`` is
+        "skipped" (dropped for tonight) or "deferred" (the group driver takes
+        it up again on a later pass tonight). Its stages and block are named
+        now, so a panel deferred before any step of its stage was entered
+        still says so."""
+        self._scheduler_left[target.id] = word
+        self._refresh_stages([s.stage for s in target.steps] + [target.block])
+
+    def _refresh_stages(self, entered=()) -> None:
+        """Publish the word of every stage and block already named, and of
+        ``entered`` (the node ids a step or a departure names now), from the
+        plan and the engine's records. A stage whose step raised keeps
+        "failed" until its own step is entered again: nothing else it owes has
+        happened since."""
+        plan = self.plan
+        if plan is None:
+            return
+        names = {n for n, w in self._stage_status.items() if w != "failed"}
+        names.update(n for n in entered if n)
+        owned: dict[str, list[tuple[Target, Any]]] = {n: [] for n in names}
+        for t in plan.targets:
+            for s in t.steps:
+                for n in (s.stage, t.block):
+                    if n in owned:
+                        owned[n].append((t, s))
+        self._publish_stages({n: self._stage_word(p) for n, p in owned.items()})
+
+    def _settle_stages(self) -> dict[str, str]:
+        """The map for the run's terminal state (#1231): every stage and block
+        named reads what it left off at, never "running" or "waiting".
+        Finished is "done", dropped or set aside is "skipped", and whatever
+        else still owes frames is "deferred": the ledger keeps them and a
+        later run takes them up. "failed" stays."""
+        plan = self.plan
+        if plan is not None:
+            owned: dict[str, list[tuple[Target, Any]]] = {
+                n: [] for n, w in self._stage_status.items() if w != "failed"}
+            for t in plan.targets:
+                for s in t.steps:
+                    for n in (s.stage, t.block):
+                        if n in owned:
+                            owned[n].append((t, s))
+            self._stage_status = {
+                **self._stage_status,
+                **{n: self._stage_word(p, settled=True)
+                   for n, p in owned.items()}}
+        return dict(self._stage_status)
+
+    def _pair_state(self, target: Target, step) -> str:
+        """Where one step of one target stands, for `_stage_word`: "done"
+        (complete), "aside" (set aside for tonight, the step or the target),
+        "skipped" or "deferred" (the scheduler left the target, see
+        `_scheduler_left`), "waiting" (held behind an earlier phase of its
+        chain that is still owed), "aside" again for a phase held behind an
+        earlier one that is wholly set aside (it will not start tonight), and
+        "live" otherwise."""
+        if self._step_complete(target, step):
             return "done"
-        if all(f"{t.id}:{s.id}" in self._set_aside
-               or t.id in self._set_aside_targets for t, s in owed):
-            return "skipped"
-        return "running"
+        if (f"{target.id}:{step.id}" in self._set_aside
+                or target.id in self._set_aside_targets):
+            return "aside"
+        left = self._scheduler_left.get(target.id)
+        if left is not None:
+            return left
+        owed = [(i, s) for i, s in enumerate(target.steps)
+                if not self._step_complete(target, s)]
+        current, later = self._current_phase(owed)
+        if not any(s is step for _i, s in later):
+            return "live"
+        if all(f"{target.id}:{s.id}" in self._set_aside for _i, s in current):
+            return "aside"
+        return "waiting"
+
+    def _stage_word(self, owned: list[tuple[Target, Any]], *,
+                    settled: bool = False) -> str:
+        """What a stage that owns these (target, step) pairs is doing: done
+        when every step is complete; running while any step it owes is live;
+        otherwise "deferred" when any owed step is left for a later pass,
+        "waiting" when any is held behind an earlier phase of its chain, and
+        "skipped" when everything owed is set aside or dropped for tonight (the
+        ledger keeps it owed).
+
+        ``settled`` is the run being over (`_settle_stages`): nothing is live
+        or waiting then, so what still owes frames and is not set aside or
+        dropped is "deferred"."""
+        states = {self._pair_state(t, s) for t, s in owned} - {"done"}
+        if not states:
+            return "done"
+        if settled:
+            states = {"deferred" if st in ("live", "waiting") else st
+                      for st in states}
+        if "live" in states:
+            return "running"
+        if "deferred" in states:
+            return "deferred"
+        if "waiting" in states:
+            return "waiting"
+        return "skipped"
 
     def _publish_stages(self, words: dict[str, str]) -> None:
         """THE ONE WRITER of ``stages`` (#464, #1125): the canvases' pills, LEDs
