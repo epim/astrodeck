@@ -1,5 +1,7 @@
 # Release engineering handoff
 
+> Superseded in part by the #638 ruling D-F (2026-10-23, WP 1.12, main 5137bb7f): WCSLIB is not shipped in any build since 0.3.46, and the GCC runtime exception is recorded. This file stays as the dated record of the artifact it inspected; where it names WCSLIB as shipped or open, read it as the state on its own date.
+
 JOB4 implements matching native-wheel builds and stateless packaged capability probes (#630), removes DSS2 fetching from release builds (#631), repairs and checks relay build contexts (#645), and repairs owned binary smoke lifecycle checks (#654). The local native wheel passes its artifact gate. The source and frozen gates remain red for the findings below, so publication is blocked. The workflow uploads accepted payloads only after their gates and waits for source plus all four binary targets before publishing.
 
 Artifact source commit: `e21ad9cbb5353186d520e87f00f33354e19f3e51`, atop frozen integration base `c58ff3e4`. The immutable review anchor remains `6e8dad9d66f66b78d5df7cc12872f49e1f626d6b`. An evidence-only commit records these results separately; rebuilding later requires the new checkout's source revision and fresh evidence.

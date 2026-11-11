@@ -363,9 +363,9 @@
     },
     {
       "path": "server/pyproject.toml",
-      "sha256": "fb524e9c667f7086e629d5651bd2fd81c55428de89aec4946c27c49c3f1e7ca8",
-      "reviewed_revision": "4662315da404184adf6f642e08d96c3fe030ba56",
-      "review": "Carried from the reviewed base b3ce0f1b8f3e: the version line changed from 0.3.45 to 0.3.49 and nothing else (the proof the registry row for this file rested on, now recorded in the ledger)."
+      "sha256": "ef036f9fd45d09ac1a15973056155774737776a4d61eccbdeb7c1afa2400d4c5",
+      "review": "WP 10.6 (#1154): adds the PEP 639 licence field, license = Apache-2.0, matching the repository LICENSE, and a one-line comment. No dependency or version change. Read by the wave 10 coordinator.",
+      "reviewed_revision": "48de177204f9af9e9d38c23a296a5aa13291c851"
     },
     {
       "path": "ui/src/api/backends.ts",

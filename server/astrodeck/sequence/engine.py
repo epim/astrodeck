@@ -16990,11 +16990,20 @@ class SequenceEngine:
         # the meridian -- so only this one call site is flagged, never
         # unconditionally (passing the keyword at all, even False, breaks a
         # caller that intercepts ``bus.log`` with a narrower signature).
+        #
+        # PAGES IN ITS OWN WORDS (#1165): the event class, "the cloud hold
+        # stopped tracking at the meridian flip point", is site-free and is
+        # the page. ``why`` is the target's name and that class, nothing
+        # computed.
         if why_kind == "flip":
-            bus.log("warning",
-                    f"{why} - stopping tracking; the cloud hold goes on but "
-                    f"judges no sky until the mount can track the target "
-                    f"again", "sequence", site_derived=True)
+            bus.log_with_alert(
+                "warning",
+                f"{why} - stopping tracking; the cloud hold goes on but "
+                f"judges no sky until the mount can track the target again",
+                "sequence",
+                alert_message=f"Cloud hold: {why}, so the mount has stopped "
+                              f"tracking until the flip can be taken. Read "
+                              f"the night log on the rig.")
         else:
             bus.log("warning",
                     f"{why} - stopping tracking; the cloud hold goes on but judges "

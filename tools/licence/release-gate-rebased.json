@@ -1,4 +1,5 @@
 {
+  "superseded_note": "Superseded in part by the #638 ruling D-F (2026-10-23, WP 1.12, main 5137bb7f): WCSLIB is not shipped in any build since 0.3.46, and the GCC runtime exception is recorded. This file stays as the dated record of the artifact it inspected; where it names WCSLIB as shipped or open, read it as the state on its own date.",
   "schema_version": 1,
   "status": "review_complete_with_release_blockers",
   "source_commit": "e21ad9cbb5353186d520e87f00f33354e19f3e51",

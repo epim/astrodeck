@@ -50,6 +50,12 @@
       "intended_assertion_failed": true
     },
     {
+      "name": "post-analysis-wcslib-filter",
+      "file": "packaging/astrodeck.spec",
+      "test": "test_release_packaging.ReleasePolicy.test_spec_drops_wcslib_rows_reintroduced_by_analysis",
+      "intended_assertion_failed": true
+    },
+    {
       "name": "post-analysis-url-excluded",
       "file": "packaging/metadata_payloads.py",
       "test": "test_release_packaging.MetadataSelection.test_post_analysis_filter_is_exact_and_never_reads_metadata",
@@ -293,14 +299,14 @@
   "baseline_green": true,
   "restored_suite_green": true,
   "exact_restored_sha256": {
-    "packaging/distribution_policy.py": "e7e856ae5e77dda4c8c52f9d87c6b35792d9648fd3918072f6ead86357f09549",
-    "scripts/build_release.py": "e95396284e8d504431d997ba4320b0631dce9af63f42ef10c19e54c2588fae3f",
-    "packaging/metadata_payloads.py": "491556e9af902e8c1eb347252027d71e092d17def7d1f33f59a8856fa680db2f",
-    "packaging/astrodeck.spec": "17f5fa127111ac73169aaf85fbe391e69aac23a879f035ff07fb60771082220e",
-    "packaging/build_binary.py": "a49e583e9349db296183e9035b2db4cb9442d4640a1257354c7cb92cc2f181c5",
-    "packaging/build_native.py": "7f060b7ceef563cb6c31a7e6a6be74d71f852a6dcf14a827cd6ac8230eec9bf1",
-    "packaging/native_probe.py": "f1fc366f5e450ecbfe9afd62cc11fac100d4ee6309f7159772039333e104f85b",
-    "packaging/entry.py": "2a7e6474fe3fc5fa72eb4dbf7d27fe7e283bcee92a6b1284d23f4477e8566b8b",
-    "packaging/smoke_ownership.py": "45c8ee33a5c5b58a30afc4145446ce15d2e86ffca0e39be5c7c60edd76ba1496"
+    "packaging/distribution_policy.py": "fda7a5e1aa532a9e65d6bc1c64fd104cb3c144dc9806748ff44102cc110b1ebd",
+    "scripts/build_release.py": "74049235de33814d012165343610e3f18a90b67d84a4f288907c148c7941ee9d",
+    "packaging/metadata_payloads.py": "6bf00bd3f1b03be1a2086a573fcd4aeb6a31aa525c08f509e51b8ca215b43817",
+    "packaging/astrodeck.spec": "4a97decd493d57c2df161b370dcffc9e80724a0efc904aeb40e926e05585530a",
+    "packaging/build_binary.py": "af9dff0959327bc89642c9a6737e97cb675a13eb3c385557ec35858999bbd028",
+    "packaging/build_native.py": "9e7cee6751403b7d64ee89be1d50806da15a42274adc429c218cba7646996551",
+    "packaging/native_probe.py": "21d48b3aaea36af3c6d5b15ff962896fa5ef11d6a5d6d5d4d0f0dd1d24db09bb",
+    "packaging/entry.py": "4baf24d08b54e2e5da676e525dd00bd87a34bbf081d896df8edfcd2a5a05f88a",
+    "packaging/smoke_ownership.py": "5471cf4180f12e1c305caa3e88874249d3770ff65331a11d46d5441e6951a05d"
   }
 }

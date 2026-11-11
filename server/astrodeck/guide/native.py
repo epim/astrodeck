@@ -973,10 +973,6 @@ class NativeGuider(Guider):
         # can know; the re-lock radius widens by it until the first settled
         # frame re-measures the lock.
         self._lock_moved_px = 0.0
-        # TODO(remove in 0.3.36): the lock as the pre-#204 brightest-first rule
-        # would have held it, kept only so each re-lock can log the distance
-        # that rule would have judged (see ``_note_lock``).
-        self._lock_xy_brightest: tuple[float, float] | None = None
         # #1083: the lock star's flux and HFD over its last measured frames,
         # which a star re-acquired after a loss must match.
         self._identity = StarIdentity()
@@ -1340,7 +1336,6 @@ class NativeGuider(Guider):
                 self._relock_events = []
                 self._relock_unconfirmed = 0
                 self._lock_moved_px = 0.0
-                self._lock_xy_brightest = None
                 self._identity = StarIdentity()
                 self._model_mark_id = None
                 # #848/#849: a start is a new session for the probation, the
@@ -3304,8 +3299,6 @@ class NativeGuider(Guider):
             # pre-fix brightest-first guess (kept for a wheel that predates
             # the field, or a test double that never sets it).
             self._lock_xy = engine_lock if engine_lock is not None else stars[0]
-            if stars:
-                self._lock_xy_brightest = stars[0]
             self._relock_pending = False
             self._relock_unconfirmed = 0
             return
@@ -3360,17 +3353,6 @@ class NativeGuider(Guider):
         scale = self._image_scale if self._image_scale > 0 else 1.0
         unit = "arcsec" if (self._image_scale_known
                             and self._image_scale > 0) else "px"
-        # TODO(remove in 0.3.36): the distance the pre-#204 rule would have
-        # judged -- this frame's brightest star against the previous brightest
-        # pick. Logged beside the real one for one release (0.3.35), so the
-        # first nights on this fix show whether the old guard was firing on
-        # artefacts. Remove it, ``_lock_xy_brightest`` and the ``old`` clauses
-        # below in the release after 0.3.35.
-        old = ""
-        if stars and self._lock_xy_brightest is not None:
-            b, pb = stars[0], self._lock_xy_brightest
-            d_old = math.hypot(b[0] - pb[0], b[1] - pb[1]) * scale
-            old = f"the old brightest-first pick reads {d_old:.1f} {unit}"
         if near is None:
             # LOST: no star the engine's local find could have followed here.
             # No displacement exists to record, so none is; the baseline and
@@ -3380,8 +3362,7 @@ class NativeGuider(Guider):
             bus.log("warning",
                     f"native guider: no star within {radius:.0f} px of the "
                     f"lock since the star loss ({n}/"
-                    f"{RELOCK_UNCONFIRMED_FRAMES})"
-                    + (f"; {old}" if old else ""), "guide")
+                    f"{RELOCK_UNCONFIRMED_FRAMES})", "guide")
             if n >= RELOCK_UNCONFIRMED_FRAMES:
                 if stars:
                     nearest = min(math.hypot(x - origin[0],
@@ -3401,8 +3382,6 @@ class NativeGuider(Guider):
         self._lock_moved_px = 0.0
         self._relock_pending = False
         self._relock_unconfirmed = 0
-        if stars:
-            self._lock_xy_brightest = stars[0]    # TODO(remove in 0.3.36)
         # ``_reacquire`` is deliberately NOT reset here. It is the budget for
         # consecutive losses and only a dispatched correction spends it
         # (``_dispatch``), which is the very next frame once the engine is
@@ -3424,29 +3403,27 @@ class NativeGuider(Guider):
         # `_relock_limit_exceeded`.
         reason = self._relock_limit_exceeded(d)
         if reason:
-            self._stop_for_relock(reason, f" ({old})" if old else "")
+            self._stop_for_relock(reason)
             return
         if d_px <= _RELOCK_SAME_STAR_PX:
             bus.log("info",
                     f"native guider: re-acquired the same star ({d:.1f} {unit} "
-                    f"from the last lock; " + (f"{old}; " if old else "")
-                    + f"re-lock {self._relocks} this session)", "guide")
+                    f"from the last lock; "
+                    f"re-lock {self._relocks} this session)", "guide")
             return
         bus.log("warning",
                 f"native guider: re-locked on a star {d:.1f} {unit} from the "
-                f"last lock (" + (f"{old}; " if old else "")
-                + f"re-lock {self._relocks} this session)", "guide")
+                f"last lock (re-lock {self._relocks} this session)", "guide")
 
-    def _stop_for_relock(self, reason: str, detail: str = "") -> None:
+    def _stop_for_relock(self, reason: str) -> None:
         """The guider stops ITSELF over a re-lock, through the honest-death
         path, identical to the camera-fault one: latch ``_lost``, drop
         ``_active`` so ``is_active()`` goes false for the sequence engine's
         recovery, set ``_stop`` so the loop exits on its next pass, and refresh
         the cached snapshot BEFORE publishing so no reader can be handed a
-        stale guiding=True from before this. ``detail`` goes to the log only;
-        ``reason`` is what the guider reports as its own."""
-        bus.log("error", f"native guider: {reason}{detail} — stopping",
-                "guide")
+        stale guiding=True from before this. ``reason`` is what the guider
+        reports as its own."""
+        bus.log("error", f"native guider: {reason} — stopping", "guide")
         self.dump_flight_recorder("relock-stop")
         self._relock_stop_reason = reason
         self._lost = True
