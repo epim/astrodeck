@@ -73,6 +73,7 @@ from ..hub import (GOTO_NOT_ARRIVED_REASON, SOLVE_REASON_SOLVER_MISSING,
                    Hub, destination_pier_side_in_mount_frame,
                    slew_in_mount_frame)
 from ..imaging.frame_class import FrameClass, FrameContext, classify
+from ..solve import light as _light
 from ..imaging.processing import to_jpeg
 from . import schedule
 from .cloudstate import CloudState, verdict_from_info
@@ -1842,6 +1843,8 @@ class SequenceEngine:
         #: ceiling" line (#855), None until the first, so the first says it and
         #: the rest at most every ``TRAIL_VETO_LOG_EVERY_S``.
         self._trail_veto_logged_at: float | None = None
+        # When the no-light veto on a focus sweep last said why (#1077).
+        self._no_light_veto_said_at: float | None = None
         #: CONSECUTIVE sweeps abandoned mid-way on a trailing field (#855).
         #: A sweep that runs to its end resets it; see MAX_TRAIL_ABANDONS.
         self._trail_abandons = 0
@@ -2682,6 +2685,7 @@ class SequenceEngine:
         self._sparse_resweep_next = None
         self._sparse_gated_logged_at = None
         self._trail_veto_logged_at = None
+        self._no_light_veto_said_at = None
         self._trail_abandons = 0
         self._accepted_seen = None
         self._focus_groups_acquired = set()
@@ -23123,7 +23127,27 @@ class SequenceEngine:
         A temperature that cannot be READ decides nothing and the sweep runs —
         this is spending minutes, not skipping a safety gate, so the fallback
         is the old behaviour.
+
+        NOT WHILE THE RUN IS HOLDING FOR CLOUD (#1077). A flip taken inside a
+        cloud hold (the hold's own watch takes it) ran this sweep under a sky
+        the engine had called cloudy: on 2026-10-19 it failed on 3 and then 9
+        stars and cost the rig its calibration. A sweep under that sky cannot
+        succeed, so it answers False, says why, and owes the probe-gated
+        re-sweep, due at the first light frame banked after the hold: the
+        probe asks the sky itself and sweeps only when it finds stars
+        (`_note_sparse_resweep`).
         """
+        if self._holding_for_clear:
+            self._sparse_resweep_owed = True
+            self._sparse_resweep_due = False
+            self._sparse_resweep_next = time.monotonic()
+            bus.log("warning",
+                    "skipping the post-flip autofocus: the run is holding for "
+                    "cloud, and a sweep under a sky already called cloudy "
+                    "cannot measure; it is owed, and will take a probe at "
+                    "the first light frame after the hold and sweep only if "
+                    f"it finds at least {SPARSE_FIELD_WARN} stars", "sequence")
+            return False
         if self._last_focus_at is None:
             return True
         age_s = time.monotonic() - self._last_focus_at
@@ -23419,7 +23443,18 @@ class SequenceEngine:
         failed was often not even the one the visit was for. The failure is
         said and the visit goes on at the focus the run has; the sweep stays
         owed (`_last_focus_at` is cleared by the failed sweep itself). Abort
-        is the operator's own word and still ends the run."""
+        is the operator's own word and still ends the run.
+
+        NOT RIGHT AFTER A NO-LIGHT VERDICT (#1077). The setup's centring hold
+        ends on "still no light after holding" and goes on at the starting
+        focus; a sweep then measures a sky the light check has just said is
+        dark. It asks `_autofocus`, which says why and owes the probe-gated
+        re-sweep, before the mount goes to another panel for it, and answers
+        False so the hop's first acquisition is given back and the next hop
+        owes the sweep again."""
+        if _light.no_light_just_now(self.hub) is not None:
+            res = await self._autofocus("initial autofocus", target=site)
+            return res is not None
         if site is not target:
             bus.log("info",
                     f"{target.name}: the focus sweep falls due; it runs on "
@@ -23502,7 +23537,37 @@ class SequenceEngine:
         running probes for a runaway at every point (`_sweep_probe`, over
         TRAIL_SWEEP_ABORT_FACTOR x the ceiling) and is abandoned through its
         own teardown, bounded by MAX_TRAIL_ABANDONS.
+
+        A SWEEP IS NOT STARTED RIGHT AFTER A NO-LIGHT VERDICT (#1077). On
+        2026-10-17 the solver had just said "still no light after holding" and
+        a sweep started anyway: 0 to 2 stars at every point, and its failure was
+        blamed on the slope. While the last failed solve's verdict was no light
+        and is younger than `light.NO_LIGHT_FRESH_S`, this returns None BEFORE
+        any state changes (as the trailing-field veto does), says why at most
+        every TRAIL_VETO_LOG_EVERY_S, and owes the probe-gated re-sweep
+        (``_sparse_resweep_owed``): the run carries on at the focus it has and
+        asks the sky itself one cadence later.
         """
+        no_light = _light.no_light_just_now(self.hub)
+        if no_light is not None:
+            # The debt is for a sweep, not for this label: a due re-sweep that
+            # was vetoed is owed again one cadence on, as a declined probe is.
+            now = time.monotonic()
+            self._sparse_resweep_owed = True
+            self._sparse_resweep_due = False
+            self._sparse_resweep_next = now + SPARSE_RESWEEP_EVERY_S
+            said = self._no_light_veto_said_at
+            if said is None or now - said >= TRAIL_VETO_LOG_EVERY_S:
+                self._no_light_veto_said_at = now
+                bus.log("warning",
+                        f"{label} skipped: the light check has just said "
+                        f"{no_light}, so a sweep would measure a dark sky; "
+                        f"the run carries on at the focus it has, and the "
+                        f"sweep is owed: it takes a probe in "
+                        f"{SPARSE_RESWEEP_EVERY_S / 60:.0f} minutes and "
+                        f"sweeps only if it finds at least "
+                        f"{SPARSE_FIELD_WARN} stars", "sequence")
+            return None
         # A SWEEP IS TEN EXPOSURES OVER FIVE MINUTES AND USED TO ASK NOBODY.
         # On 2026-08-21 one ran to completion on a mount that had stopped four
         # minutes earlier, consumed the drift as data, returned HFR 8.40 px
