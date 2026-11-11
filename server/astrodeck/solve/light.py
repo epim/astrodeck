@@ -169,6 +169,8 @@ from __future__ import annotations
 
 import asyncio
 import math
+import time
+import weakref
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import Any, Callable, Iterable
@@ -421,6 +423,49 @@ class SelfBias:
 #: (camera name, gain, offset, binning, temperature band, night). Written on
 #: the event loop only. Holds one night at a time: a write drops the others.
 _SELF_REFERENCES: dict[tuple, SelfBias] = {}
+
+#: How long a no-light verdict stands as the sky's answer, in seconds (#1077).
+#: Every sweep a failed solve is followed by starts within seconds of the
+#: verdict (the luminance wheel move is the longest step before it), and the
+#: centring hold's own retry is ``CENTRING_HOLD_RETRY_S`` (600 s) later, so any
+#: bound between the two separates "the solve just said no light" from "that
+#: was an earlier sky". Not measured beyond that; the test pins both sides.
+NO_LIGHT_FRESH_S = 300.0
+
+#: The clock the verdict memory reads, ``time.monotonic``: a wall clock that
+#: stepped would age a verdict by the step. A test replaces it.
+_clock: Callable[[], float] = time.monotonic
+
+#: The last failed solve's verdict, ``(clock reading, kind, the hub whose solve
+#: it was)``, or None. Process memory, never disk: it is a fact about the sky a
+#: few minutes ago and means nothing after a restart. Written on the event loop
+#: only, by ``failed_solve_error``; any later verdict replaces it, so a lit one
+#: clears a dark one. It is KEPT FOR THE HUB that judged the frame (a weak
+#: reference), because the verdict is about that rig's camera: a second hub
+#: (a test's, a profile swap's) must not be vetoed by the first one's sky, and
+#: a verdict is never kept alive by being remembered.
+_LAST_VERDICT: tuple[float, str, Callable[[], Any]] | None = None
+
+
+def reset_last_verdict() -> None:
+    """Forget the last failed solve's verdict (tests, which must not inherit
+    another test's sky)."""
+    global _LAST_VERDICT
+    _LAST_VERDICT = None
+
+
+def no_light_just_now(hub: Any,
+                     max_age_s: float = NO_LIGHT_FRESH_S) -> str | None:
+    """``NO_LIGHT_WORDS`` when ``hub``'s last failed solve's verdict was
+    ``NO_LIGHT`` and is younger than ``max_age_s``, else None (#1077).
+
+    What an autofocus asks before it starts: the light check has just said the
+    optic sees no light, and a sweep measures stars. A narrowband, cloud or
+    unknown verdict is not no light, and a sweep goes on after them."""
+    last = _LAST_VERDICT
+    if last is None or last[1] != NO_LIGHT or last[2]() is not hub:
+        return None
+    return NO_LIGHT_WORDS if _clock() - last[0] < max_age_s else None
 
 
 @dataclass(frozen=True)
@@ -1118,6 +1163,13 @@ async def failed_solve_error(frame: Any, result: Any, *, prefix: str,
         # and the reference, beside the filter that explains them.
         verdict = replace(verdict, kind=NARROWBAND,
                           why=narrowband_words(str(narrowband_filter)))
+    global _LAST_VERDICT
+    try:
+        _LAST_VERDICT = (_clock(), verdict.kind, weakref.ref(hub))
+    except TypeError:
+        # A hub that cannot be weakly referenced has no verdict kept: with
+        # nobody to ask for it, the sweep simply goes on, as it did before.
+        _LAST_VERDICT = None
     tail = f" (the camera said: {said})" if said else ""
     bus.log("info", f"failed solve, light check: {verdict.evidence()}"
                     f"{_readout(frame)}{tail}", "solve")
