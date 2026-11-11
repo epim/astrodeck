@@ -302,10 +302,10 @@ STARVED_END_FRAC = 0.05
 
 #: How many times the curve's own roughness the minimum must be deep by.
 #: Roughness is measured as each interior point's distance from the midpoint of
-#: its two neighbours (the tip excluded — the corner of a V is real curvature,
-#: not noise), so a straight arm contributes zero however steep it is and only
-#: scatter counts. 5x is the line between a dip that is structure and one that
-#: is the noise floor arranged conveniently.
+#: its two neighbours (see ``_arm_roughness``; the corner of a V is real
+#: curvature, not noise), so a straight arm contributes zero however steep it is
+#: and only scatter counts. 5x is the line between a dip that is structure and
+#: one that is the noise floor arranged conveniently.
 DEPTH_OVER_ROUGHNESS = 5.0
 
 #: Half-width of the window the vertex is fitted in: the measured minimum plus
@@ -441,6 +441,30 @@ def confirmed_best(points, fitted_position: int,
         f"sweep actually saw work")
 
 
+def _arm_roughness(ys, tip: int) -> float:
+    """The scatter on a V's arms, in px, apart from the curvature of the V.
+
+    Each interior point is measured against the midpoint of its neighbours.
+    The two points beside the tip have the tip itself as a neighbour, and the
+    tip's low value drags that midpoint down by the V's own corner; wide steps
+    make the corner large (the #1077 curve, 55.16 26.91 2.88 32.34 109.04, read
+    as 12.9 px of scatter and was refused, #1181). Such a point can only be
+    scatter when it sits ABOVE that midpoint, so only its excess counts. Every
+    other point counts both ways. Each arm takes the median of its own points
+    (robust to one saturated end) and the rougher arm is the curve's
+    roughness, so a clean arm cannot average a rough one away.
+    """
+    worst = 0.0
+    for walk in (range(1, tip), range(tip + 1, len(ys) - 1)):
+        devs = []
+        for k in walk:
+            dev = float(ys[k]) - 0.5 * (float(ys[k - 1]) + float(ys[k + 1]))
+            devs.append(max(dev, 0.0) if abs(k - tip) == 1 else abs(dev))
+        if devs:
+            worst = max(worst, float(np.median(devs)))
+    return worst
+
+
 def curve_verdict(points, counts=None) -> CurveVerdict:
     """Judge a measured V-curve on its own shape. PURE — see the block above.
 
@@ -502,9 +526,7 @@ def curve_verdict(points, counts=None) -> CurveVerdict:
             f"{'' if ns[i] == 1 else 's'} — under {THIN_POINT_STARS}, the tip "
             f"is one detection's opinion however clean the curve looks")
 
-    rough = [abs(float(ys[k]) - 0.5 * (float(ys[k - 1]) + float(ys[k + 1])))
-             for k in range(1, n_pts - 1) if k != i]
-    roughness = float(np.median(rough)) if rough else 0.0
+    roughness = _arm_roughness(ys, i)
     depth = min(left, right)
     if roughness > 0 and depth < DEPTH_OVER_ROUGHNESS * roughness:
         return CurveVerdict(
@@ -540,17 +562,14 @@ def curve_verdict(points, counts=None) -> CurveVerdict:
                f"{'its' if len(peeled) == 1 else 'their'} neighbour and "
                f"{'was' if len(peeled) == 1 else 'were'} peeled — past the "
                f"range the detector can size a donut)") if peeled else ""
+    where = (f"{depth / roughness:.0f}x the {roughness:.2f}px scatter between "
+             f"neighbouring points" if roughness > 0
+             else "no scatter between neighbouring points")
     return CurveVerdict(
         True, vertex,
-        f"a {depth:.2f}px-deep minimum at {int(round(vertex))}, "
-        f"{depth / roughness:.0f}x the {roughness:.2f}px scatter between "
-        f"neighbouring points, bracketed by wings rising to {float(ys[0]):.2f}px "
-        f"and {float(ys[-1]):.2f}px, measured from {int(ns[i])} stars" + trimmed
-        if roughness > 0 else
-        f"a {depth:.2f}px-deep minimum at {int(round(vertex))} on a curve with "
-        f"no scatter between neighbouring points, bracketed by wings rising to "
-        f"{float(ys[0]):.2f}px and {float(ys[-1]):.2f}px, measured from "
-        f"{int(ns[i])} stars",
+        f"a {depth:.2f}px-deep minimum at {int(round(vertex))}, {where}, "
+        f"bracketed by wings rising to {float(ys[0]):.2f}px and "
+        f"{float(ys[-1]):.2f}px, measured from {int(ns[i])} stars" + trimmed,
         depth, roughness)
 
 

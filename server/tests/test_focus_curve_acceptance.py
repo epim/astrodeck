@@ -463,3 +463,52 @@ def test_a_starved_end_that_IS_the_minimum_is_never_peeled():
         "peeled the smallest point off the end and called what was left a V — "
         f"focus is below 1000 here, not at 1300: {v.reason}")
     assert "bracket" in v.reason.lower(), v.reason
+
+
+# ------------------------------------- #1181: roughness measures scatter, not step
+
+#: The #1077 sweep of 2026-10-17: a clean V sampled with 350-step spacing, the
+#: tip bracketed by two measured points on each side. The arms steepen away from
+#: the tip, as a real V does, and no point sits off its arm.
+WIDE_1077 = [(10484, 55.16), (10834, 26.91), (11184, 2.88), (11534, 32.34),
+             (11884, 109.04)]
+WIDE_1077_STARS = [40, 120, 900, 110, 30]
+
+
+def _bump(points, index, by):
+    """The same sweep with one measurement pushed off its arm by ``by`` px."""
+    out = list(points)
+    out[index] = (out[index][0], out[index][1] + by)
+    return out
+
+
+def test_a_clean_wide_stepped_v_is_accepted():
+    """The gate scored this curve 4.1 against the 5 it needs, because it read
+    the curvature wide steps produce (the kink at the tip is next to both of
+    its neighbours) as scatter. Nothing here is off its arm."""
+    v = curve_verdict(WIDE_1077, WIDE_1077_STARS)
+    assert v.accepted, v.reason
+    assert abs(v.best_position - 11184) <= 350, v.best_position
+    assert v.roughness == 0.0, v.roughness
+
+
+def test_the_same_wide_sweep_with_scatter_on_an_arm_is_refused():
+    """15 px is 29% of the 52 px the shallower arm rises, three times the
+    10.5 px (depth / DEPTH_OVER_ROUGHNESS) at which the gate means 'a dip in
+    the noise'. The point sits above the chord of its neighbours."""
+    v = curve_verdict(_bump(WIDE_1077, 1, 15.0), WIDE_1077_STARS)
+    assert not v.accepted, v.reason
+    assert "scatter" in v.reason, v.reason
+
+
+def test_the_same_wide_sweep_with_scatter_on_the_other_arm_is_refused():
+    v = curve_verdict(_bump(WIDE_1077, 3, 40.0), WIDE_1077_STARS)
+    assert not v.accepted, v.reason
+    assert "scatter" in v.reason, v.reason
+
+
+def test_scatter_well_under_the_gate_does_not_refuse_the_wide_sweep():
+    """3 px on a 52 px deep minimum is x17 against the x5 needed."""
+    v = curve_verdict(_bump(WIDE_1077, 1, 3.0), WIDE_1077_STARS)
+    assert v.accepted, v.reason
+
