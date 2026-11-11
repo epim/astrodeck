@@ -126,6 +126,10 @@ class _ParkedHub:
     site: dict = {}
     dusk_arm = None
 
+    def solver_refusal(self, plan):
+        """This rig has a plate solver (#721): the start is not refused."""
+        return None
+
     def __init__(self) -> None:
         self.steps = {name: _Step() for name in
                       ("safety", "focus", "autofocus", "solve", "limits",
