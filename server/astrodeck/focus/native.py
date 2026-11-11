@@ -141,11 +141,13 @@ def bracketed_minimum(points: list[tuple[int, float, float]],
     ``THIN_POINT_STARS`` stars (below that it is one detection's opinion).
 
     This is the part of ``curve_verdict`` that makes a V a V, without its
-    scatter test: that test compares each interior point with the midpoint of
-    its neighbours, which a convex V with wide steps fails by construction
-    (the #1077 curve, 55.16 26.91 2.88 32.34 109.04, scores 4.1 against the 5
-    it needs). The vertex is the parabola through the tip and its two
-    neighbours when that lands between them, else the tip's own position."""
+    scatter test, its peeling of turned-back ends or its tolerance for a
+    wing that dips back. Both judges accept the #1077 curve, 55.16 26.91 2.88
+    32.34 109.04 (#1181 made ``curve_verdict``'s scatter test read the arms
+    and not the tip's own corner), but they can still disagree on a curve with
+    scatter on an arm, which this accepts when the wings merely rise.
+    The vertex is the parabola through the tip and its two neighbours when
+    that lands between them, else the tip's own position."""
     rows = sorted((int(p), float(h), int(n))
                   for (p, h, _s), n in zip(points, counts))
     last = len(rows) - 1

@@ -28,6 +28,12 @@ async def sim_hub(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
     _safety = hub_module.config_store.cfg().safety
     monkeypatch.setattr(_safety, "solar_avoidance", False)
+    # A made-up saved site: the dawn-stop cases below need one to resolve a
+    # dawn (#1239), and say dawn only because a dawn stop closed the window.
+    _site = hub_module.config_store.cfg().site
+    monkeypatch.setattr(_site, "latitude", 40.0)
+    monkeypatch.setattr(_site, "longitude", -74.0)
+    monkeypatch.setattr(_site, "is_default", False)
     h = Hub()
     await h.connect_sim()
     yield h
@@ -117,7 +123,7 @@ async def test_the_terminal_line_says_how_short_the_night_was(sim_hub, bus_lines
     NB `bus_lines` yields (level, message, source) TUPLES: `"text" in line` is
     whole-ELEMENT matching and matches nothing, ever. Read the message field.
     """
-    plan = _plan("shortfall", [_target("A", 8)])
+    plan = _plan("shortfall", [_target("A", 8, Schedule(stop_mode="dawn"))])
     eng = SequenceEngine(sim_hub)
     eng.start(plan)
     assert await wait_for(lambda: eng._frames_done >= 2)
@@ -156,7 +162,7 @@ async def test_the_terminal_line_of_a_flow_with_automatic_resume_off_says_contin
         "sequence 'shortfall_off' stopped at dawn: 3 of 8 frames, 5 remaining
         — the session stays armed and resumes when the window opens"
     """
-    plan = _plan("shortfall_off", [_target("A", 8)])
+    plan = _plan("shortfall_off", [_target("A", 8, Schedule(stop_mode="dawn"))])
     plan.resume_across_nights = False
     eng = SequenceEngine(sim_hub)
     eng.start(plan)
