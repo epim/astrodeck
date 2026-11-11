@@ -11189,11 +11189,17 @@ class SequenceEngine:
         The one question the holds ask the classifier
         (`imaging.frame_class.classify`). A fault the solver layer named
         (``solve_reason`` is ``SOLVE_REASON_SOLVER_MISSING``) is
-        ``SOLVER_MISSING`` without reading a pixel. Otherwise the frame the
-        hub solved is classified, and only when the result says its solve
-        FAILED (``solve_failed``): ``hub.last_frame`` is an older frame when
-        the goto never solved (a refused or aborted one), and a verdict on
-        that would blame the wrong field. None when there is nothing to read.
+        ``SOLVER_MISSING`` without reading a pixel. Otherwise the verdict the
+        hub reached on the frame the failed solve RAN ON (``solve_frame_class``,
+        #1182) is read, and only when the result says its solve FAILED
+        (``solve_failed``). ``hub.last_frame`` is never read: a preview, a
+        guide frame or a later capture replaces it, and a verdict on that
+        would blame another field.
+
+        None when the result carries no verdict: a refused or aborted goto
+        never solved, a stub has no frame, and a solve the hub could not
+        judge left none. Every caller reads None as "keep the generic
+        wording", so a hold never claims more than the solve's pixels showed.
 
         NO LIGHT IS THE HUB'S VERDICT, NOT THE CLASSIFIER'S. ``solve_light``
         "dark" was judged against the reference the hub holds for this
@@ -11206,10 +11212,10 @@ class SequenceEngine:
             return None
         if result.get("solve_reason") == SOLVE_REASON_SOLVER_MISSING:
             return classify(None, FrameContext(solver_missing=True))
-        frame = getattr(self.hub, "last_frame", None)
-        if not result.get("solve_failed") or frame is None:
+        carried = result.get("solve_frame_class")
+        if not result.get("solve_failed") or carried is None:
             return None
-        cls = await asyncio.to_thread(classify, frame)
+        cls = FrameClass(carried)
         if (cls in (FrameClass.CLOUD, FrameClass.UNKNOWN)
                 and result.get("solve_light") == "dark"):
             return FrameClass.NO_LIGHT

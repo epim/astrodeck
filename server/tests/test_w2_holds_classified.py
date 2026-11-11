@@ -9,9 +9,10 @@ behind a tree and every hold line said "the sky or the geometry is to blame"
 (#1093); a rig with no plate solver held a single target for its whole window
 under a sentence about waiting for light (#721).
 
-WHAT IT DOES NOW. After a failed solve the engine reads the frame the hub
-solved (``hub.last_frame``) through ``imaging.frame_class.classify``, and the
-hold says what the frame shows:
+WHAT IT DOES NOW. The hub judges the frame a failed solve ran on through
+``imaging.frame_class.classify`` and the result carries the class
+(``solve_frame_class``, #1182); the engine reads it, and the hold says what
+the frame shows:
 
   * obstructed: an obstruction in the foreground, not the sky;
   * no_light: the hub's own light verdict (``solve_light`` "dark", judged
@@ -23,7 +24,8 @@ hold says what the frame shows:
 The frames are the seeded synthetic ones of ``test_w2_frame_class.py``
 (``fixtures/frame_class/synth_frames.py``); none is from a real rig frame. A
 result that carries no ``solve_failed`` (a stub, an aborted goto) is never
-classified from pixels, because ``hub.last_frame`` may then be an older frame.
+classified: it carries no class, because the hub holds no frame of a solve that
+never ran.
 
 MUTANT RUNS, 2026-11-04, from a byte backup of ``astrodeck/sequence/engine.py``,
 restored and sha256-verified each time:
@@ -59,6 +61,7 @@ from _group_harness import (GROUP_NAME, T0, Night, grid_plan,  # noqa: F401
 from astrodeck.devices.base import CameraFrame
 from astrodeck.events import bus
 from astrodeck.hub import SOLVE_REASON_SOLVER_MISSING, Hub
+from astrodeck.imaging.frame_class import FrameClass
 from astrodeck.sequence import SequenceEngine, SequencePlan
 from astrodeck.sequence.models import ExposureStep, Target
 
@@ -112,17 +115,29 @@ def _lines(who: str, *fragments: str, level: str | None = None) -> list[str]:
     return out
 
 
+def _judged(result: dict, frame):
+    """The centring result as the hub now returns it: the class of the frame
+    the solve ran on rides in ``solve_frame_class`` (#1182)."""
+    from astrodeck.imaging.frame_class import classify
+    if frame is None or not result.get("solve_failed"):
+        return dict(result)
+    return dict(result) | {"solve_frame_class": classify(frame).value}
+
+
 def _scripted(sim_hub, monkeypatch, result: dict, frame: np.ndarray | None):
-    """Every centring attempt fails the same way and leaves ``frame`` as the
-    hub's last solved frame; returns the call counter."""
+    """Every centring attempt fails the same way, its result carrying the
+    class of ``frame`` as the hub would; returns the call counter."""
     calls = {"n": 0}
+    result = _judged(result, frame)
 
     async def goto(ra_hours, dec_deg, **kw):
         calls["n"] += 1
         return dict(result)
 
     monkeypatch.setattr(sim_hub, "goto_and_center", goto)
-    sim_hub.last_frame = None if frame is None else _frame(frame)
+    # A different frame on the hub: the verdict must come from the class
+    # the result carries, not from whatever the hub last held (#1182).
+    sim_hub.last_frame = _frame(synth.stars_frame())
     return calls
 
 
@@ -140,7 +155,7 @@ async def test_an_obstructed_frame_is_said_to_be_an_obstruction(
     calls = _scripted(sim_hub, monkeypatch, FAILED, synth.obstructed_frame())
 
     result = await engine._hold_for_light(_target(name="tree-night"), None,
-                                          dict(FAILED))
+                                          _judged(FAILED, synth.obstructed_frame()))
 
     assert not result["centered"]
     assert calls["n"] == engine._NO_LIGHT_MAX_RETRIES
@@ -161,7 +176,7 @@ async def test_a_cloud_frame_is_said_to_be_cloud_and_still_held(
     calls = _scripted(sim_hub, monkeypatch, FAILED, synth.cloud_frame())
 
     await engine._hold_for_light(_target(name="overcast-night"), None,
-                                 dict(FAILED))
+                                 _judged(FAILED, synth.cloud_frame()))
 
     assert calls["n"] == engine._NO_LIGHT_MAX_RETRIES
     named = _lines("overcast-night", "cloud", "nothing to solve")
@@ -180,7 +195,8 @@ async def test_a_dark_verdict_from_the_hub_is_said_to_be_no_light(
     dark = FAILED | {"solve_light": "dark", "solve_dark_kind": "dark_master"}
     calls = _scripted(sim_hub, monkeypatch, dark, synth.no_light_frame())
 
-    await engine._hold_for_light(_target(name="capped-night"), None, dict(dark))
+    await engine._hold_for_light(_target(name="capped-night"), None,
+                                 _judged(dark, synth.no_light_frame()))
 
     assert calls["n"] == engine._NO_LIGHT_MAX_RETRIES
     named = _lines("capped-night", "no light", "nothing to solve")
@@ -198,7 +214,8 @@ async def test_an_obstruction_is_never_called_no_light_even_with_the_dark_verdic
     dark = FAILED | {"solve_light": "dark", "solve_dark_kind": "dark_master"}
     _scripted(sim_hub, monkeypatch, dark, synth.obstructed_frame())
 
-    await engine._hold_for_light(_target(name="dark-tree"), None, dict(dark))
+    await engine._hold_for_light(_target(name="dark-tree"), None,
+                                 _judged(dark, synth.obstructed_frame()))
 
     assert _lines("dark-tree", "obstruction", "nothing to solve")
     assert not _lines("dark-tree", "no light", "nothing to solve")
@@ -226,14 +243,15 @@ async def test_a_missing_solver_ends_the_hold_as_a_fault_on_the_first_attempt(
 
 async def test_a_result_with_no_failed_solve_is_never_read_from_pixels(
         sim_hub, monkeypatch):
-    """``hub.last_frame`` can be an older frame when the goto never solved
-    (an aborted or refused goto). Only a result that says its solve failed
-    (``solve_failed``) is classified, so such a result keeps the generic hold
-    line even with an obstructed frame sitting in ``last_frame``."""
+    """A goto that never solved (an aborted or refused one) has no frame of
+    its own. Only a result that says its solve failed (``solve_failed``) is
+    classified, so such a result keeps the generic hold line even if a class
+    rides it (an obstructed one here)."""
     monkeypatch.setattr(engine_mod, "CENTRING_HOLD_RETRY_S", 0.01)
     engine = SequenceEngine(sim_hub)
-    plain = {"centered": False, "error_arcmin": None}
-    _scripted(sim_hub, monkeypatch, plain, synth.obstructed_frame())
+    plain = {"centered": False, "error_arcmin": None,
+             "solve_frame_class": FrameClass.OBSTRUCTED.value}
+    _scripted(sim_hub, monkeypatch, plain, None)
 
     await engine._hold_for_light(_target(name="plain"), None, dict(plain))
 
@@ -249,7 +267,8 @@ async def test_a_frame_the_classifier_cannot_name_keeps_the_generic_hold_line(
     engine = SequenceEngine(sim_hub)
     _scripted(sim_hub, monkeypatch, FAILED, synth.stars_frame())
 
-    await engine._hold_for_light(_target(name="field"), None, dict(FAILED))
+    await engine._hold_for_light(_target(name="field"), None,
+                                 _judged(FAILED, synth.stars_frame()))
 
     assert _lines("field", "nothing to solve", "holding for light")
     assert not _lines("field", "obstruction")
@@ -333,10 +352,10 @@ async def test_a_pass_that_failed_on_an_obstruction_says_so(
     a treeline frame. The pass closes in the centring hold and its sentence
     names the obstruction in place of "the sky or the geometry"; there is no
     second line, and the sentence says it of every panel tried."""
-    group_hub.last_frame = _frame(synth.obstructed_frame())
+    group_hub.last_frame = _frame(synth.stars_frame())
 
     def goto(who, n, result):
-        return {**result, **FAILED}
+        return {**result, **_judged(FAILED, synth.obstructed_frame())}
 
     night = Night(group_hub, monkeypatch, goto=goto)
     try:
