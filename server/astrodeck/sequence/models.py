@@ -350,7 +350,10 @@ class TargetGroup(BaseModel):
     # panel from a dropped one (spec 5.9). A target that is both is refused
     # at the start (``plan_identity_errors``).
     skipped_ids: list[str] = []
-    # Provenance only (rows, cols, overlap, fov, key): nothing steers by it.
+    # Provenance (rows, cols, overlap, fov, key), and for a corrected block
+    # ``fixed_tolerance_deg``: the number the doctor prints for the whole
+    # grid, which ``angle_check.allowed_error`` answers with rotation off
+    # tonight (#1175). A group stored before it existed has none.
     geometry: dict = {}
     # "Measure at the first solve" (#187; additive, each ABSENT from the dump
     # at its default). ``measure_angle``: the layout angle is what the first

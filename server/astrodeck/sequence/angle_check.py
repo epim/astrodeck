@@ -231,12 +231,35 @@ def _signed_turn(deg: float) -> float:
     return (deg + 180.0) % 360.0 - 180.0
 
 
+def _recorded_fixed_tolerance(group: TargetGroup) -> float | None:
+    """``geometry["fixed_tolerance_deg"]`` when the compile recorded one that
+    can be used: a real, finite, non-negative number (a bool is not one), on
+    a group whose own tolerance is a finite number to take it from."""
+    value = group.geometry.get("fixed_tolerance_deg")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if (_finite(group.angle_tolerance_deg) is None
+            or not 0.0 <= value < math.inf):
+        return None
+    return float(value)
+
+
 def _convergence_term_deg(group: TargetGroup,
                           members: Iterable[Target]) -> float:
     """What a camera that cannot correct convergence takes off ``group``'s
     corrected tolerance, in degrees: zero or negative.
 
-    A corrected block's members each carry their own angle, the layout angle
+    A corrected group's compile records what the doctor prints for the grid,
+    ``framing.angle_tolerance_deg``, in ``geometry["fixed_tolerance_deg"]``
+    (#1175), over every seam of the layout: a skipped panel is a tile of it,
+    because skip is outside the block's identity and a skipped panel may
+    hold banked frames. The term is that number less the group's own, so
+    the engine enforces the number the doctor prints and nothing is
+    rebuilt.
+
+    A group stored before that key existed (or one hand-built, or whose
+    number is not a finite, non-negative number) reads as it always did. A
+    corrected block's members each carry their own angle, the layout angle
     plus local north at the panel (``pa_deg``, #175), so a member's
     convergence is ``rotation_deg - group.pa_deg``. Two neighbours are turned
     against each other by the difference of their convergences, and the
@@ -252,6 +275,9 @@ def _convergence_term_deg(group: TargetGroup,
     convergence is 0 and so is the term: its own tolerance was computed with
     convergence charged. A group with no grid geometry, no layout angle or
     members with no row and column has no seams to read, and answers 0."""
+    recorded = _recorded_fixed_tolerance(group)
+    if recorded is not None:
+        return min(0.0, recorded - group.angle_tolerance_deg)
     # Imported here, not at the top: ``catalog.framing`` loads the auth layer,
     # which the engine has no use for (framing imports this module lazily for
     # the same reason).
