@@ -453,10 +453,10 @@ def package_findings(distributions, credits: dict) -> list[str]:
                for group in credits["groups"] for entry in group["entries"]}
     pool = credits.get("licenses", {})
     for normal, display, _, licence, _ in distributions:
-        if normal in FIRST_PARTY:
-            continue  # Accounted by the source-tar and native-wheel gates; listed in the report.
         if not licence:
             errors.append(f"{display}: the installed metadata states no licence")
+        if normal in FIRST_PARTY:
+            continue  # Its licence is checked against the source-tar and native-wheel gates; listed in the report.
         if normal in TOOLING:
             if licence:
                 try:

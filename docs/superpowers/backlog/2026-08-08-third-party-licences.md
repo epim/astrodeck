@@ -1,5 +1,7 @@
 # Third-party licences — what we ship, what each licence asks, where we fall short
 
+> Superseded in part by the #638 ruling D-F (2026-10-23, WP 1.12, main 5137bb7f): WCSLIB is not shipped in any build since 0.3.46, and the GCC runtime exception is recorded. This file stays as the dated record of the artifact it inspected; where it names WCSLIB as shipped or open, read it as the state on its own date.
+
 Task #194. Compliance audit plus the machinery that keeps it true: the credits
 are **generated from the real manifests** (`tools/gen_credits.py`) and
 `server/tests/test_credits.py` fails the build when a dependency exists with no
