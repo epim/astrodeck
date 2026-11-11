@@ -263,13 +263,10 @@ def test_an_installed_package_that_states_no_licence_fails(tmp_path, credits):
     assert "fastapi: the installed metadata states no licence" in text(findings)
 
 
-def test_the_first_party_server_package_is_listed_but_needs_no_licence_metadata(tmp_path, credits):
-    """server/pyproject.toml declares no licence, so the installed astrodeck metadata has none; the
-    source-tar gate is what accounts for first-party code, and the image gate must not fail every image on it."""
-    files = good_files()
-    files[SITE + "astrodeck-0.3.46.dist-info/METADATA"] = metadata("astrodeck", "0.3.46")
-
-    findings, report = audit(oci_image(tmp_path / "i.tar", [files]), credits)
+def test_the_first_party_server_package_is_listed_and_needs_no_credit(tmp_path, credits):
+    """First-party code has no generated credit (the source-tar gate accounts for it), but it must still
+    state its licence (#1154); the missing-licence case is in test_wp106_server_licence.py."""
+    findings, report = audit(oci_image(tmp_path / "i.tar", [good_files()]), credits)
 
     assert findings == []
     assert "astrodeck" in {row["name"] for row in report["python_packages"]}

@@ -1,5 +1,7 @@
 # Service and data licence audit, 2026-10-01
 
+> Superseded in part by the #638 ruling D-F (2026-10-23, WP 1.12, main 5137bb7f): WCSLIB is not shipped in any build since 0.3.46, and the GCC runtime exception is recorded. This file stays as the dated record of the artifact it inspected; where it names WCSLIB as shipped or open, read it as the state on its own date.
+
 Scope: source baseline `bf3eadddcac9fb74bd802309b57ab6536c15ee36` in `codex/licence-audit`, plus the local tarball identified below. This is an evidence review, not a legal clearance. Licensor quotations are distinguished from the reviewer's reading. Current primary pages were checked on 2026-10-01. No live rig, relay, private configuration or service API key was used.
 
 ## Artifact evidence and limits
