@@ -578,6 +578,18 @@ FLAT_RESOLVE_EVERY = 5
 #: ``MOVE_TIMEOUT_S`` (180 s). Past it the stage ends as any other failure of
 #: it does, and the night goes on to its lights.
 DUSK_FLATS_ROTATE_TIMEOUT_S = 400.0
+#: What `SequenceEngine._dusk_flats` returns, from every exit, and the word the
+#: stage's canvas node then reads (#1231). The stage reports its own failures
+#: without raising, so only its own return can tell "nothing was owed" from "it
+#: failed and shot nothing".
+DUSK_FLATS_SHOT = "shot"
+DUSK_FLATS_NOTHING_OWED = "nothing owed"
+DUSK_FLATS_NOT_TONIGHT = "not possible tonight"
+DUSK_FLATS_FAILED = "failed"
+_DUSK_FLATS_WORD = {DUSK_FLATS_SHOT: "done",
+                    DUSK_FLATS_NOTHING_OWED: "done",
+                    DUSK_FLATS_NOT_TONIGHT: "skipped",
+                    DUSK_FLATS_FAILED: "failed"}
 #: Where the twilight-sky flats point (`_sky_flat_field`): the altitude, in
 #: degrees, of the spot opposite the Sun, and the clearance it keeps from the
 #: mount's floor and zenith keep-out. High, because the sky is evenest there.
@@ -4081,7 +4093,9 @@ class SequenceEngine:
                     # scheduler's first target, so it can never land in the
                     # dark after a light frame. A no-op for a plan without the
                     # block, which is every plan saved before it existed.
-                    await self._dusk_flats()
+                    self._say_dusk_flats("running")
+                    outcome = await self._dusk_flats()
+                    self._say_dusk_flats(_DUSK_FLATS_WORD[outcome])
                     await self._run_scheduled(plan)
                 spell_ran_out = True
             except BaseException as exc:
@@ -13018,13 +13032,20 @@ class SequenceEngine:
                              also=stopped)
 
     def _lane_node_ids(self) -> set[str]:
-        """The canvas ids of every lane node the plan carries (SLEW, AUTOFOCUS,
-        GUIDE: `Target.lane`). They own no step, so a word read off the steps
+        """The canvas ids of every action node the plan carries: the lane nodes
+        (SLEW, AUTOFOCUS, GUIDE: `Target.lane`) and the DUSK FLATS node
+        (`DuskFlatsPlan.node`). They own no step, so a word read off the steps
         would call each of them done: the engine says theirs where it performs
-        the action (`_say_lane`), and the readers of the steps leave them out."""
+        the action (`_say_lane`, `_say_dusk_flats`), and the readers of the
+        steps leave them out."""
         plan = self.plan
-        return ({n.id for t in plan.targets for n in t.lane}
-                if plan is not None else set())
+        if plan is None:
+            return set()
+        ids = {n.id for t in plan.targets for n in t.lane}
+        flats = plan.dusk_flats
+        if flats is not None and flats.node:
+            ids.add(flats.node)
+        return ids
 
     def _say_lane(self, target: Target | None, kind: str, word: str) -> None:
         """Publish ``word`` for the lane nodes of ``kind`` that ``target``'s
@@ -13033,6 +13054,15 @@ class SequenceEngine:
         Nothing for a target whose plan names no lane."""
         lane = target.lane if target is not None else []
         self._publish_stages({n.id: word for n in lane if n.kind == kind})
+
+    def _say_dusk_flats(self, word: str) -> None:
+        """Publish ``word`` for the DUSK FLATS node (#1231). The block is
+        plan-level, with no step and no target, so the run names it around the
+        one call of the stage (`_run`). Nothing for a plan whose block names no
+        node (one no flow compiled)."""
+        flats = self.plan.dusk_flats if self.plan is not None else None
+        if flats is not None and flats.node:
+            self._publish_stages({flats.node: word})
 
     def _finish_lane(self, target: Target) -> None:
         """The end of ``target``'s setup: every lane node it holds that has not
@@ -13071,9 +13101,9 @@ class SequenceEngine:
         named reads what it left off at, never "running" or "waiting".
         Finished is "done", dropped or set aside is "skipped", and whatever
         else still owes frames is "deferred": the ledger keeps them and a
-        later run takes them up. A lane node (SLEW, AUTOFOCUS, GUIDE) still
-        running was cut off mid-action and is done again by the next run: it
-        reads "deferred" too. "failed" stays."""
+        later run takes them up. An action node (SLEW, AUTOFOCUS, GUIDE, DUSK
+        FLATS) still running was cut off mid-action and is done again by the
+        next run: it reads "deferred" too. "failed" stays."""
         plan = self.plan
         if plan is not None:
             lane = self._lane_node_ids()
@@ -16514,7 +16544,7 @@ class SequenceEngine:
                        "mount set_tracking")
         return was_tracking
 
-    async def _dusk_flats(self) -> None:
+    async def _dusk_flats(self) -> str:
         """Shoot the flat sets a flow's DUSK FLATS block asks for, once per
         observing night, before the first light (#603 jobs B and C).
 
@@ -16574,21 +16604,29 @@ class SequenceEngine:
         The panel is driven as a dust-cover panel: the node does not say which
         placement it is, and a dome-mounted or handheld panel cannot be driven
         from here.
+
+        IT RETURNS WHAT IT DID (#1231), from every exit, for the node's word
+        (`_say_dusk_flats`): ``DUSK_FLATS_SHOT`` (a set was shot),
+        ``DUSK_FLATS_NOTHING_OWED`` (no block, the night's latch, or the
+        library held every set), ``DUSK_FLATS_NOT_TONIGHT`` (no flats are
+        possible tonight, said why in the log) or ``DUSK_FLATS_FAILED`` (an
+        exception out of the stage, or a set the exposure would not meter).
+        Nothing it does or logs depends on the value.
         """
         plan = self.plan
         df = getattr(plan, "dusk_flats", None)
         if df is None:
-            return
+            return DUSK_FLATS_NOTHING_OWED
         night = night_key(time.time())
         if self._dusk_flats_night == night:
-            return
+            return DUSK_FLATS_NOTHING_OWED
         if df.method == "cap":
             self._dusk_flats_night = night
             bus.log("warning", "DUSK FLATS (translucent lens cap) is not run "
                                "yet: only the flat-panel and twilight-sky "
                                "methods are, so this night goes on without "
                                "flats", "sequence")
-            return
+            return DUSK_FLATS_NOT_TONIGHT
         sky = df.method == "sky"
         cc = self.hub.calibrator
         cam = self.hub.devices.get("camera")
@@ -16597,24 +16635,25 @@ class SequenceEngine:
             bus.log("warning", "DUSK FLATS skipped: no flat panel is "
                                "connected, so the night goes on without flats",
                     "sequence")
-            return
+            return DUSK_FLATS_NOT_TONIGHT
         if cam is None or not getattr(cam, "connected", False):
             self._dusk_flats_night = night
             bus.log("warning", "DUSK FLATS skipped: no camera is connected, so "
                                "the night goes on without flats", "sequence")
-            return
+            return DUSK_FLATS_NOT_TONIGHT
         if self._lights_taken_tonight():
             self._dusk_flats_night = night
             bus.log("info", "DUSK FLATS skipped: a light frame has already "
                             "been taken tonight, and the flats come before "
                             "the first one", "sequence")
-            return
+            return DUSK_FLATS_NOT_TONIGHT
 
         cover_was_open = cover_opened = False
         restore_tracking = False
         tel = point = None
         shot = skipped = unmetered = 0
         stopped = ""
+        failed = False
         try:
             if sky:
                 from ..site_gate import site_lat_lon
@@ -16622,14 +16661,14 @@ class SequenceEngine:
                     self._skip_sky_flats(night, "no site is saved, so neither "
                                                 "the Sun's window nor the sky "
                                                 "opposite it can be worked out")
-                    return
+                    return DUSK_FLATS_NOT_TONIGHT
                 if not await self._wait_for_the_sky_flats_window(df):
                     self._dusk_flats_night = night
-                    return
+                    return DUSK_FLATS_NOT_TONIGHT
                 refusal, tel, point = await self._sky_flats_ready()
                 if refusal:
                     self._skip_sky_flats(night, refusal)
-                    return
+                    return DUSK_FLATS_NOT_TONIGHT
             recipes, missing = self._dusk_flat_recipes(df)
             for name in missing:
                 bus.log("warning", f"DUSK FLATS: filter '{name}' is not in "
@@ -16642,7 +16681,7 @@ class SequenceEngine:
                                    f"lights. The night goes on without flats",
                         "sequence")
                 self._dusk_flats_night = night
-                return
+                return DUSK_FLATS_NOT_TONIGHT
             rotation = await self._dusk_flats_rotation()
             jobs = [(angle, recipe) for angle in angles for recipe in recipes]
             turning = angles != [None]
@@ -16763,6 +16802,7 @@ class SequenceEngine:
         except asyncio.CancelledError:
             raise
         except Exception as exc:                   # noqa: BLE001 - reported
+            failed = True
             bus.log("warning", f"DUSK FLATS stopped after {shot} set(s): "
                                f"{exc} - the night goes on without the rest",
                     "sequence")
@@ -16813,6 +16853,26 @@ class SequenceEngine:
                            f"meter)" if unmetered else "")
                         + (f"; stopped early: {stopped}" if stopped else ""),
                 "sequence")
+        return self._dusk_flats_outcome(shot=shot, skipped=skipped,
+                                        unmetered=unmetered, failed=failed,
+                                        stopped=stopped)
+
+    @staticmethod
+    def _dusk_flats_outcome(*, shot: int, skipped: int, unmetered: int,
+                            failed: bool, stopped: str) -> str:
+        """What a stage that ran to its end did, from what it counted. An
+        exception, or a set the exposure would not meter, is a failure whatever
+        else was shot. A set shot is shot, though the sky may have stopped the
+        rest. Every job fresh in the library owes nothing. Otherwise nothing
+        was shot and something stopped it (the sky, a wheel with none of the
+        filters): no flats were possible tonight."""
+        if failed or unmetered:
+            return DUSK_FLATS_FAILED
+        if shot:
+            return DUSK_FLATS_SHOT
+        if skipped and not stopped:
+            return DUSK_FLATS_NOTHING_OWED
+        return DUSK_FLATS_NOT_TONIGHT
 
     async def _stand_down_guider(self) -> bool:
         """Stop guiding, leave the mount tracking. Best-effort and never raises:

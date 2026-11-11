@@ -340,14 +340,26 @@ class Session(BaseModel):
     flow_blocks: dict[str, Any] = Field(default_factory=dict)
     flow_stages: dict[str, Any] = Field(default_factory=dict)
     flow_lanes: dict[str, Any] = Field(default_factory=dict)
+    # ``flow_dusk_flats`` is the canvas id of the DUSK FLATS node, which is a
+    # plan-level block with no step or target to carry it
+    # (``DuskFlatsPlan.node``, also excluded from every dump). A session
+    # created before it has none and names no DUSK FLATS node until a CONTINUE
+    # compiles it afresh; loading rewrites nothing.
+    flow_dusk_flats: Any = None
 
     @model_validator(mode="after")
     def _name_the_stages(self) -> "Session":
         """Put the recorded names back on the plan's targets and steps, where
         the plan names nothing. A plan that already names its own (one a flow
         has just compiled) is left alone."""
-        if not (self.flow_blocks or self.flow_stages or self.flow_lanes):
+        if not (self.flow_blocks or self.flow_stages or self.flow_lanes
+                or self.flow_dusk_flats):
             return self
+        flats = self.plan.dusk_flats
+        node = self.flow_dusk_flats
+        if (flats is not None and flats.node is None
+                and isinstance(node, str) and node):
+            flats.node = node
         for target in self.plan.targets:
             block = self.flow_blocks.get(target.id)
             if target.block is None and isinstance(block, str) and block:
@@ -385,6 +397,8 @@ class Session(BaseModel):
                             if s.stage}
         self.flow_lanes = {t.id: [[n.id, n.kind] for n in t.lane]
                            for t in self.plan.targets if t.lane}
+        flats = self.plan.dusk_flats
+        self.flow_dusk_flats = flats.node if flats is not None else None
 
     # ---- nights and arming (derived; nothing here is written) --------------
     def observing_nights(self) -> list[str]:
