@@ -50,11 +50,10 @@ from .autofocus import (MAX_DROPS_PER_POSITION, MIN_STARS_PER_POINT,
                         assert_tracking, confirmed_best,
                         over_swept_advice,
                         AutofocusResult, curve_verdict, dropped_points_phrase,
-                        forget_measured_span, overexposure_levers,
-                        overexposure_phrase, record_measured_span,
-                        resolve_sweep, sweep_levers, thin_points_phrase)
+                        overexposure_levers, overexposure_phrase,
+                        record_measured_span, resolve_sweep, retry_geometry,
+                        settle_stored_slope, sweep_levers, thin_points_phrase)
 from .pipeline import Prefetch, SweepPredictor
-from .span import DEFAULT_STEP
 from .window import measure_window, window_frame
 
 # Guarded handle to the Rust wheel. ``NATIVE_AVAILABLE`` (the single source of
@@ -341,7 +340,63 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                                min_probe_stars: int | None = None,
                                frame_context: FrameContext | None = None
                                ) -> AutofocusResult:
-    """Run a V-curve autofocus sweep driven by the native Rust engine.
+    """Run a V-curve autofocus sweep, and once more, smaller, when it fails for
+    want of measurable outer points (#1077, #1298).
+
+    ``_run_native_sweep`` is the sweep and its docstring says what every
+    parameter means. This is the retry around it: a sweep sized by this module
+    (``step`` None) that FAILED carries ``retry_basis``, the geometry its own
+    measured points say will measure (``focus.autofocus.retry_geometry``: a
+    rich tip and a wing point that measured, so the retry's outer point lands
+    where a point has already read). It is run once, with the focuser first put
+    on the tip it found, and its result is the answer, a failure included. The
+    retry uses an explicit ``step``, which ``resolve_sweep`` marks unmeasured,
+    so it can discard nothing, and a result of it carries no ``retry_basis``,
+    so it is never retried. An operator's own ``step`` is never second-guessed.
+
+    EVERY caller gets this through this one name: ``run_autofocus`` (the
+    sequence engine, the hub, the manual route) and the resume ladder's own
+    sweep.
+    """
+    sweep_kw = dict(exposure_s=exposure_s, gain=gain, binning=binning,
+                    expose_guard=expose_guard, hfr_method=hfr_method,
+                    tracking_check=tracking_check,
+                    approach_overshoot_steps=approach_overshoot_steps,
+                    frame_context=frame_context)
+    result = await _run_native_sweep(
+        camera, focuser, step=step, steps_each_side=steps_each_side,
+        min_probe_stars=min_probe_stars, **sweep_kw)
+    plan = result.retry_basis
+    if result.success or plan is None:
+        return result
+    bus.log("warning",
+            f"native autofocus: {result.message}; retrying once at "
+            f"{plan.step} steps (+/-{plan.step * plan.steps_each_side}) around "
+            f"{plan.centre}, where the sweep measured its tip - its nearest "
+            f"measured wing was {plan.wing_distance} steps out", "focus")
+    await assert_tracking(tracking_check, "before the retry")
+    overshoot = (max(0, int(approach_overshoot_steps))
+                 if approach_overshoot_steps is not None
+                 else configured_overshoot())
+    await approach_position(focuser, plan.centre, overshoot=overshoot)
+    # No probe line the second time: the first sweep's probe already cleared it.
+    return await _run_native_sweep(
+        camera, focuser, step=plan.step, steps_each_side=plan.steps_each_side,
+        min_probe_stars=None, **sweep_kw)
+
+
+async def _run_native_sweep(camera: Camera, focuser: Focuser, *,
+                            exposure_s: float = 2.0, gain: int = 120,
+                            step: int | None = None, steps_each_side: int = 4,
+                            binning: int = 2, expose_guard=None,
+                            hfr_method: str | None = None,
+                            tracking_check=None,
+                            approach_overshoot_steps: int | None = None,
+                            min_probe_stars: int | None = None,
+                            frame_context: FrameContext | None = None
+                            ) -> AutofocusResult:
+    """One V-curve autofocus sweep driven by the native Rust engine; see
+    ``run_native_autofocus`` for the retry around it.
 
     ``step`` None — the default — sizes the sweep from this focuser's MEASURED
     defocus slope (see ``focus.span``), falling back to the shipped 350 until a
@@ -455,6 +510,9 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
     #: Where the focuser is, as far as this run knows — see `_approach`, the
     #: only thing that moves it and therefore the only thing that updates this.
     current_pos = int(start_pos)
+    #: A span WE sized may be retried smaller (`run_native_autofocus`); one the
+    #: caller typed is theirs.
+    sized_by_us = step is None
     geometry = resolve_sweep(focuser, step, steps_each_side)
     step = geometry.step
     # Missing config keys (backlash strategy, max attempts, outlier policy) take
@@ -594,7 +652,8 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
     probe_sat = 0.0
     levers = sweep_levers(exposure_s, binning)
 
-    def _failed(reason: str, pts, advice: str | None) -> AutofocusResult:
+    def _failed(reason: str, pts, advice: str | None, *,
+                retryable: bool = False) -> AutofocusResult:
         """A failed result, saying whether it failed on a SPARSE FIELD (#507,
         H4 orchestrator ruling 4): the probe counted fewer than
         ``SPARSE_FIELD_WARN`` stars at the start position, on a frame that
@@ -606,9 +665,16 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
         make the next sweep worse (the overexposure branch below says so in
         its own advice)."""
         sparse = n0 < SPARSE_FIELD_WARN and probe_sat < OVEREXPOSED_FRAC
+        # THE SMALLER SWEEP THIS FAILURE'S OWN POINTS ASK FOR (#1077, #1298),
+        # for a span we sized, on a field that was not sparse at the start:
+        # the engine's retry at twice the exposure answers a sparse field.
+        retry = (retry_geometry(pts, counts, step, steps_each_side)
+                 if retryable and sized_by_us and n0 >= SPARSE_FIELD_WARN
+                 else None)
         return AutofocusResult(False, start_pos, None, pts, reason,
                                advice=advice, sparse_field=sparse,
-                               start_stars=n0 if n0 >= 0 else None)
+                               start_stars=n0 if n0 >= 0 else None,
+                               retry_basis=retry)
 
     def _advice(*, ok: bool) -> str | None:
         """The specific guidance THIS run earned — the sentence that used to go
@@ -1212,7 +1278,8 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                         bus.log("warning", vcurve_report(points, counts), "focus")
                         bus.publish("focus", state="failed", points=_pts(),
                                     best=None, message=reason, advice=advice)
-                        return _failed(reason, _result_pts(), advice)
+                        return _failed(reason, _result_pts(), advice,
+                                       retryable=True)
                     continue
 
                 # σ for the fit is the standard error of THIS median, not the raw
@@ -1374,28 +1441,23 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                 # letting one bad calibration narrow every sweep of the night
                 # into the same failure. An operator's explicit step is not
                 # ours to forget, hence `geometry.measured`.
-                sky = _lightless_positions()
-                if geometry.measured and reason in FLAT_FAILURES and sky:
-                    # THE SKY STARVED THIS SWEEP, NOT THE SLOPE (#1077): a
-                    # point whose frame reads as no light or an obstruction
-                    # says nothing about the span it was sized from, and a
-                    # cloud must not cost the next night a working
-                    # calibration.
-                    bus.log("warning",
-                            f"autofocus: this sweep was sized from a measured "
-                            f"defocus slope and came back {reason}, but the "
-                            f"frames at {', '.join(str(p) for p in sky)} read "
-                            f"as "
-                            f"{'/'.join(sorted({drop_class[p].value for p in sky}))}"
-                            f" - the sky starved it, not the slope - keeping "
-                            f"that calibration", "focus")
-                elif geometry.measured and reason in FLAT_FAILURES:
-                    forget_measured_span(focuser)
-                    bus.log("warning",
-                            f"autofocus: this sweep was sized from a measured "
-                            f"defocus slope and came back {reason} — discarding "
-                            f"that calibration so the next run uses the "
-                            f"{DEFAULT_STEP}-step default", "focus")
+                if geometry.measured and reason in FLAT_FAILURES:
+                    # ON WHAT IT MEASURED, NOT ON THE LABEL (#1077): a sweep
+                    # that starved, or whose measured points agree with the
+                    # slope, says nothing against it, and a cloud or a thin
+                    # start must not cost the rig a working calibration. Only
+                    # measured points too flat for it do
+                    # (`slope_contradicted`). What the frames of the starved
+                    # points read as is added to the line when it names a
+                    # cause.
+                    sky = _lightless_positions()
+                    settle_stored_slope(
+                        focuser, _result_pts(), reason,
+                        note=(f" (the frames at "
+                              f"{', '.join(str(p) for p in sky)} read as "
+                              f"{'/'.join(sorted({drop_class[p].value for p in sky}))}"
+                              f", the sky's doing and not the slope's)")
+                        if sky else "")
                 # Restore start: never park the focuser at an arbitrary sweep point.
                 await _approach(start_pos)
                 bus.publish("focus", state="failed", points=_pts(), best=None,
@@ -1417,7 +1479,7 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                 # keep quiet there rather than crowd out the engine's reason
                 # (test_autofocus_advice.py).
                 bus.log("warning", f"curve check agrees: {salvage.reason}", "focus")
-                return _failed(reason, _result_pts(), advice)
+                return _failed(reason, _result_pts(), advice, retryable=True)
 
             else:  # pragma: no cover - defensive: unknown engine action
                 raise DeviceError(f"native autofocus: unexpected step {action!r}")
