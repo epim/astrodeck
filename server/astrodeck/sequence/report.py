@@ -1454,6 +1454,7 @@ class SessionReporter:
         r._built = 0
         r._written = 0
         r._final_retry = None
+        r._pending = set()
         return r
 
     @staticmethod

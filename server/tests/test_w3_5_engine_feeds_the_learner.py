@@ -35,8 +35,8 @@ from astrodeck import site_horizon
 from astrodeck.catalog.coords import altaz
 from astrodeck.imaging.frame_class import FrameClass
 from astrodeck.sequence import SequenceEngine
-from test_w2_holds_classified import (FAILED, _lines, _scripted,  # noqa: F401
-                                      _target, sim_hub, synth)
+from test_w2_holds_classified import (FAILED, _judged, _lines,  # noqa: F401
+                                      _scripted, _target, sim_hub, synth)
 
 LAT, LON = 12.5, 34.5
 SITE = {"name": "Test field", "latitude": LAT, "longitude": LON,
@@ -93,7 +93,7 @@ async def test_an_obstructed_frame_in_a_hold_reaches_the_learner(
     ra, dec = _radec_now(35.0, 130.0)
 
     await engine._hold_for_light(
-        _target(name="learn-tree", ra_hours=ra, dec_deg=dec), None, dict(FAILED))
+        _target(name="learn-tree", ra_hours=ra, dec_deg=dec), None, _judged(FAILED, synth.obstructed_frame()))
 
     offer = site_horizon.LEARNER.suggestion(None)
     assert offer is not None, "six obstructed frames in a hold taught nothing"
@@ -106,7 +106,7 @@ async def test_a_cloud_frame_in_a_hold_teaches_nothing(sited, monkeypatch):
     ra, dec = _radec_now(35.0, 130.0)
 
     await engine._hold_for_light(
-        _target(name="learn-cloud", ra_hours=ra, dec_deg=dec), None, dict(FAILED))
+        _target(name="learn-cloud", ra_hours=ra, dec_deg=dec), None, _judged(FAILED, synth.cloud_frame()))
 
     assert site_horizon.LEARNER.suggestion(None) is None
 
@@ -120,7 +120,7 @@ async def test_the_default_site_files_nothing(sim_hub, monkeypatch):
     engine = _engine(sim_hub, monkeypatch)
     _scripted(sim_hub, monkeypatch, FAILED, synth.obstructed_frame())
 
-    await engine._hold_for_light(_target(name="no-site"), None, dict(FAILED))
+    await engine._hold_for_light(_target(name="no-site"), None, _judged(FAILED, synth.obstructed_frame()))
 
     assert filed == []
 
@@ -134,7 +134,7 @@ async def test_a_filing_failure_never_breaks_the_hold(sited, monkeypatch):
     calls = _scripted(sited, monkeypatch, FAILED, synth.obstructed_frame())
 
     result = await engine._hold_for_light(_target(name="learner-down"), None,
-                                          dict(FAILED))
+                                          _judged(FAILED, synth.obstructed_frame()))
 
     assert not result["centered"]
     assert calls["n"] == engine._NO_LIGHT_MAX_RETRIES
@@ -148,7 +148,7 @@ async def test_a_panels_failed_centring_reaches_the_learner(sited, monkeypatch):
     _scripted(sited, monkeypatch, FAILED, synth.obstructed_frame())
     group = SimpleNamespace(id="g1")
 
-    await engine._note_pass_frame_class(group, dict(FAILED),
+    await engine._note_pass_frame_class(group, _judged(FAILED, synth.obstructed_frame()),
                                         _target(name="panel"))
 
     assert filed == [FrameClass.OBSTRUCTED]
@@ -172,7 +172,7 @@ async def test_a_hold_with_no_horizon_says_what_to_do(sited, monkeypatch):
     engine = _engine(sited, monkeypatch, horizon=None)
     _scripted(sited, monkeypatch, FAILED, synth.obstructed_frame())
 
-    await engine._hold_for_light(_target(name="bare-site"), None, dict(FAILED))
+    await engine._hold_for_light(_target(name="bare-site"), None, _judged(FAILED, synth.obstructed_frame()))
 
     lines = _lines("bare-site", "obstruction")
     assert len(lines) == 1, lines
@@ -184,7 +184,7 @@ async def test_a_generic_hold_with_no_horizon_says_it_too(sited, monkeypatch):
     _scripted(sited, monkeypatch, FAILED, None)
 
     await engine._hold_for_light(_target(name="bare-generic"), None,
-                                 dict(FAILED))
+                                 _judged(FAILED, None))
 
     lines = _lines("bare-generic", "holding for light")
     assert len(lines) == 1, lines
@@ -195,7 +195,7 @@ async def test_a_hold_with_a_horizon_says_nothing_about_one(sited, monkeypatch):
     engine = _engine(sited, monkeypatch, horizon=[(0.0, 5.0), (180.0, 5.0)])
     _scripted(sited, monkeypatch, FAILED, synth.obstructed_frame())
 
-    await engine._hold_for_light(_target(name="drawn-site"), None, dict(FAILED))
+    await engine._hold_for_light(_target(name="drawn-site"), None, _judged(FAILED, synth.obstructed_frame()))
 
     lines = _lines("drawn-site", "obstruction")
     assert len(lines) == 1, lines
@@ -209,7 +209,7 @@ async def test_a_waiting_suggestion_is_named_in_the_hold(sited, monkeypatch):
         site_horizon.LEARNER.note(FrameClass.OBSTRUCTED, 37.0, az, time.time())
 
     await engine._hold_for_light(_target(name="learned-site"), None,
-                                 dict(FAILED))
+                                 _judged(FAILED, synth.obstructed_frame()))
 
     lines = _lines("learned-site", "obstruction")
     assert len(lines) == 1, lines

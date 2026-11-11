@@ -1,5 +1,7 @@
 # Licence audit completion report
 
+> Superseded in part by the #638 ruling D-F (2026-10-23, WP 1.12, main 5137bb7f): WCSLIB is not shipped in any build since 0.3.46, and the GCC runtime exception is recorded. This file stays as the dated record of the artifact it inspected; where it names WCSLIB as shipped or open, read it as the state on its own date.
+
 The October audit is complete for the artifact evidence available locally.
 This branch corrects notices/credits, preserves current primary-source terms,
 and adds checks that expose unresolved distribution findings. It does not

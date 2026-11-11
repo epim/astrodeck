@@ -1,4 +1,5 @@
 {
+  "superseded_note": "Frozen baseline of the executable built at source_base, BEFORE the #638 ruling D-F (2026-10-23, main 5137bb7f). It still lists astropy/wcs/_wcs.pyd and astropy-8.0.1.dist-info/licenses/licenses/WCSLIB_LICENSE.rst, which no shipped build contains any more and which audit_frozen.py now reports as findings if they appear. A build made from main will therefore show those members as missing against this file. The baseline has not been regenerated because that needs a real frozen build; regenerate it from the first build without WCSLIB and review the delta (#1159). Until then treat those two members and the dropped astropy.wcs data as expected differences.",
   "schema_version": 1,
   "artifact": ".probe/licence-deps/clean-dist/astrodeck.exe",
   "build_kind": "fresh local Windows x86_64 clean private venv, current source; not a published release certificate",
