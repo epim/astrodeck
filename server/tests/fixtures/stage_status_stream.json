@@ -173,5 +173,110 @@
         "n2": "done"
       }
     }
+  ],
+  "recorded_lane": "tests/test_w10_1_lane_nodes.py::test_the_recorded_lane_stream_is_what_the_engine_publishes, a clocked simulator night of a TARGET n2 whose lane is SLEW n3, AUTOFOCUS n4, GUIDE n5 and one CAPTURE LOOP n6, beside a REPORT n12, the sequence payloads reduced to state, session and stages and de-duplicated",
+  "lane_frames": [
+    {
+      "state": "running",
+      "session": {
+        "id": "181a120052f649dfa83d40d11d6cc7de"
+      }
+    },
+    {
+      "state": "running",
+      "session": {
+        "id": "181a120052f649dfa83d40d11d6cc7de"
+      },
+      "stages": {
+        "n3": "running"
+      }
+    },
+    {
+      "state": "running",
+      "session": {
+        "id": "181a120052f649dfa83d40d11d6cc7de"
+      },
+      "stages": {
+        "n3": "done"
+      }
+    },
+    {
+      "state": "running",
+      "session": {
+        "id": "181a120052f649dfa83d40d11d6cc7de"
+      },
+      "stages": {
+        "n3": "done",
+        "n4": "running"
+      }
+    },
+    {
+      "state": "running",
+      "session": {
+        "id": "181a120052f649dfa83d40d11d6cc7de"
+      },
+      "stages": {
+        "n3": "done",
+        "n4": "done"
+      }
+    },
+    {
+      "state": "running",
+      "session": {
+        "id": "181a120052f649dfa83d40d11d6cc7de"
+      },
+      "stages": {
+        "n3": "done",
+        "n4": "done",
+        "n5": "running"
+      }
+    },
+    {
+      "state": "running",
+      "session": {
+        "id": "181a120052f649dfa83d40d11d6cc7de"
+      },
+      "stages": {
+        "n3": "done",
+        "n4": "done",
+        "n5": "done"
+      }
+    },
+    {
+      "state": "running",
+      "session": {
+        "id": "181a120052f649dfa83d40d11d6cc7de"
+      },
+      "stages": {
+        "n3": "done",
+        "n4": "done",
+        "n5": "done",
+        "n2": "running",
+        "n6": "running"
+      }
+    },
+    {
+      "state": "running",
+      "session": {
+        "id": "181a120052f649dfa83d40d11d6cc7de"
+      },
+      "stages": {
+        "n3": "done",
+        "n4": "done",
+        "n5": "done",
+        "n2": "done",
+        "n6": "done"
+      }
+    },
+    {
+      "state": "complete",
+      "stages": {
+        "n3": "done",
+        "n4": "done",
+        "n5": "done",
+        "n2": "done",
+        "n6": "done"
+      }
+    }
   ]
 }

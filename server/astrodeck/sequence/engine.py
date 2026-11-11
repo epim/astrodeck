@@ -11474,6 +11474,11 @@ class SequenceEngine:
         # a prior gated wait published (wave-3 §2).
         self._set_state(target=target.name, target_index=ti, detail=f"slewing to {target.name}",
                         schedule=None)
+        # THE SLEW NODE IS RUNNING FROM HERE (#1231): it compiles to no step,
+        # so it is named where the slew and the centring are done. It says how
+        # they ended just before the group's checks below, or is failed by the
+        # scheduler's departure when a stop above raises first.
+        self._say_lane(target, "slew", "running")
         if self._site_timed() and (self._group_of(target) is not None or
                                    self._follower_group_active is not None):
             # THE HOP THAT ENDS A MERIDIAN WAIT starts at the crossing, so its
@@ -12023,6 +12028,9 @@ class SequenceEngine:
                 raise StopTarget(
                     f"centring at acquisition: {SOLVE_REASON_SOLVER_MISSING}")
 
+        self._say_lane(target, "slew", "failed" if hop_miss is not None
+                       else "done")
+
         # [group] THE HOP'S OWN CHECKS (#189 S2, spec 5.6 step 4). After the
         # idle watch has learned the mount is on this panel, so a deferral
         # leaves it watched, and before the focus sweep and the guider start,
@@ -12134,6 +12142,7 @@ class SequenceEngine:
             self._hop_guide_started = False
             self._guide_ran_this_hop = False
             if guider is None or not getattr(guider, "connected", False):
+                self._say_lane(target, "guide", "failed")
                 why = ("no guider is connected" if guider is None else
                        f"the guider ({getattr(guider, 'name', 'guider')}) "
                        "is not connected")
@@ -12183,12 +12192,14 @@ class SequenceEngine:
                 # fresh calibration needs minutes, and the flat 180 s used to
                 # cut one (see `_guide_start_bound`).
                 bound_s, bound_what, bound_note = await self._guide_start_bound()
+                self._say_lane(target, "guide", "running")
                 try:
                     await _bounded(self.hub.guider.start_guiding(),
                                    bound_s, bound_what, note=bound_note)
                 except SafetyAbort:
                     raise
                 except Exception as e:
+                    self._say_lane(target, "guide", "failed")
                     if defers:
                         raise PanelDeferred("guiding did not start",
                                             kind="guide_start",
@@ -12227,6 +12238,7 @@ class SequenceEngine:
                     # the hop's own setup.
                     self._hop_guide_started = True
                     self._guide_ran_this_hop = True
+                    self._say_lane(target, "guide", "done")
                     if member is not None:
                         # A guider that starts is not dead, so a group that
                         # went unguided defers failures again.
@@ -12297,6 +12309,7 @@ class SequenceEngine:
         # guider start are not idle time to charge against the frame loop.
         self._idle_since = time.time()
         self._progress_expected = True
+        self._finish_lane(target)
 
     def _arm_meridian_flip(self, target: Target) -> None:
         """Set the flip latch for the target just acquired (see below)."""
@@ -12996,18 +13009,52 @@ class SequenceEngine:
         now, so a panel deferred before any step of its stage was entered
         still says so."""
         self._scheduler_left[target.id] = word
-        self._refresh_stages([s.stage for s in target.steps] + [target.block])
+        # An action of this target's lane still running when the scheduler
+        # leaves it never finished: it was the action that stopped the target
+        # (a slew that did not arrive, a centring that missed).
+        stopped = {n.id: "failed" for n in target.lane
+                   if self._stage_status.get(n.id) == "running"}
+        self._refresh_stages([s.stage for s in target.steps] + [target.block],
+                             also=stopped)
 
-    def _refresh_stages(self, entered=()) -> None:
+    def _lane_node_ids(self) -> set[str]:
+        """The canvas ids of every lane node the plan carries (SLEW, AUTOFOCUS,
+        GUIDE: `Target.lane`). They own no step, so a word read off the steps
+        would call each of them done: the engine says theirs where it performs
+        the action (`_say_lane`), and the readers of the steps leave them out."""
+        plan = self.plan
+        return ({n.id for t in plan.targets for n in t.lane}
+                if plan is not None else set())
+
+    def _say_lane(self, target: Target | None, kind: str, word: str) -> None:
+        """Publish ``word`` for the lane nodes of ``kind`` that ``target``'s
+        block holds (#1231). A SLEW, AUTOFOCUS or GUIDE node compiles to no step,
+        so it is named where the engine does what it stands for, not by a step.
+        Nothing for a target whose plan names no lane."""
+        lane = target.lane if target is not None else []
+        self._publish_stages({n.id: word for n in lane if n.kind == kind})
+
+    def _finish_lane(self, target: Target) -> None:
+        """The end of ``target``'s setup: every lane node it holds that has not
+        failed is done. An action that was not due (a hop whose focus is still
+        fresh, a guide a plan does not ask for) is done, never skipped:
+        skipped draws amber, and reusing a fresh focus is the normal case."""
+        self._publish_stages({n.id: "done" for n in target.lane
+                              if self._stage_status.get(n.id) != "failed"})
+
+    def _refresh_stages(self, entered=(), also: dict[str, str] | None = None
+                        ) -> None:
         """Publish the word of every stage and block already named, and of
         ``entered`` (the node ids a step or a departure names now), from the
-        plan and the engine's records. A stage whose step raised keeps
-        "failed" until its own step is entered again: nothing else it owes has
-        happened since."""
+        plan and the engine's records, with the lane words in ``also`` in the
+        same publish. A stage whose step raised keeps "failed" until its own
+        step is entered again: nothing else it owes has happened since."""
         plan = self.plan
         if plan is None:
             return
-        names = {n for n, w in self._stage_status.items() if w != "failed"}
+        lane = self._lane_node_ids()
+        names = {n for n, w in self._stage_status.items()
+                 if w != "failed" and n not in lane}
         names.update(n for n in entered if n)
         owned: dict[str, list[tuple[Target, Any]]] = {n: [] for n in names}
         for t in plan.targets:
@@ -13015,18 +13062,24 @@ class SequenceEngine:
                 for n in (s.stage, t.block):
                     if n in owned:
                         owned[n].append((t, s))
-        self._publish_stages({n: self._stage_word(p) for n, p in owned.items()})
+        self._publish_stages({**(also or {}),
+                              **{n: self._stage_word(p)
+                                 for n, p in owned.items()}})
 
     def _settle_stages(self) -> dict[str, str]:
         """The map for the run's terminal state (#1231): every stage and block
         named reads what it left off at, never "running" or "waiting".
         Finished is "done", dropped or set aside is "skipped", and whatever
         else still owes frames is "deferred": the ledger keeps them and a
-        later run takes them up. "failed" stays."""
+        later run takes them up. A lane node (SLEW, AUTOFOCUS, GUIDE) still
+        running was cut off mid-action and is done again by the next run: it
+        reads "deferred" too. "failed" stays."""
         plan = self.plan
         if plan is not None:
+            lane = self._lane_node_ids()
             owned: dict[str, list[tuple[Target, Any]]] = {
-                n: [] for n, w in self._stage_status.items() if w != "failed"}
+                n: [] for n, w in self._stage_status.items()
+                if w != "failed" and n not in lane}
             for t in plan.targets:
                 for s in t.steps:
                     for n in (s.stage, t.block):
@@ -13035,7 +13088,9 @@ class SequenceEngine:
             self._stage_status = {
                 **self._stage_status,
                 **{n: self._stage_word(p, settled=True)
-                   for n, p in owned.items()}}
+                   for n, p in owned.items()},
+                **{n: "deferred" for n, w in self._stage_status.items()
+                   if n in lane and w == "running"}}
         return dict(self._stage_status)
 
     def _pair_state(self, target: Target, step) -> str:
@@ -23609,6 +23664,29 @@ class SequenceEngine:
     async def _autofocus(self, label: str, *, step=None,
                          target: Target | None = None,
                          resweep: bool = False) -> bool | None:
+        """Run one autofocus (`_autofocus_sweep`, which says what its return
+        means) and name the lane's AUTOFOCUS node while it runs (#1231): the
+        node compiles to no step, and every sweep passes here, the hop's, the
+        frame loop's refocus, the post-flip one and a rule's. It reads
+        "running" through the sweep, then "done", or "failed" when the sweep
+        found no focus or raised. A sweep cut off by a cancel or a safety
+        abort says nothing more: the terminal settle reads it."""
+        self._say_lane(target, "autofocus", "running")
+        try:
+            found = await self._autofocus_sweep(label, step=step, target=target,
+                                                resweep=resweep)
+        except SafetyAbort:
+            raise
+        except Exception:
+            self._say_lane(target, "autofocus", "failed")
+            raise
+        self._say_lane(target, "autofocus", "failed" if found is False
+                       else "done")
+        return found
+
+    async def _autofocus_sweep(self, label: str, *, step=None,
+                               target: Target | None = None,
+                               resweep: bool = False) -> bool | None:
         """Run one autofocus. Returns True if it found focus, False if it tried
         and did not (including a second consecutive sweep abandoned on a
         trailing field, see MAX_TRAIL_ABANDONS), None if it did not try, or

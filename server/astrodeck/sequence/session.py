@@ -36,7 +36,7 @@ from ..events import night_key
 from ..naming import panel_label
 from ..persist import (harden_private_file, list_json, read_json,
                        read_json_or, safe_id_path, write_private_text_atomic)
-from .models import SequencePlan
+from .models import LaneNode, SequencePlan
 
 SESSION_SCHEMA = 1
 MAX_SESSIONS = 200
@@ -330,25 +330,49 @@ class Session(BaseModel):
     # Additive with SESSION_SCHEMA still 1: a build that predates them ignores
     # the keys (no ``extra="forbid"``), and this build reads a file without
     # them as naming nothing, which is today's behaviour for it.
+    #
+    # ``flow_lanes`` is the same for the SLEW, AUTOFOCUS and GUIDE nodes a
+    # block's lane holds, which compile to no step and so have no stage:
+    # ``{target_id: [[node_id, kind], ...]}`` in lane order (``Target.lane``,
+    # also excluded from every dump). A session created before it has none, and
+    # names no lane node until a CONTINUE compiles it afresh from its flow;
+    # nothing is derived from the old file, and loading it rewrites nothing.
     flow_blocks: dict[str, Any] = Field(default_factory=dict)
     flow_stages: dict[str, Any] = Field(default_factory=dict)
+    flow_lanes: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _name_the_stages(self) -> "Session":
         """Put the recorded names back on the plan's targets and steps, where
         the plan names nothing. A plan that already names its own (one a flow
         has just compiled) is left alone."""
-        if not (self.flow_blocks or self.flow_stages):
+        if not (self.flow_blocks or self.flow_stages or self.flow_lanes):
             return self
         for target in self.plan.targets:
             block = self.flow_blocks.get(target.id)
             if target.block is None and isinstance(block, str) and block:
                 target.block = block
+            if not target.lane:
+                target.lane = self._recorded_lane(target.id)
             for step in target.steps:
                 stage = self.flow_stages.get(f"{target.id}:{step.id}")
                 if step.stage is None and isinstance(stage, str) and stage:
                     step.stage = stage
         return self
+
+    def _recorded_lane(self, target_id: str) -> list[LaneNode]:
+        """The lane recorded for a target: the entries that are a node id and
+        a kind the engine knows, in order. A malformed record names nothing."""
+        recorded = self.flow_lanes.get(target_id)
+        lane: list[LaneNode] = []
+        for entry in recorded if isinstance(recorded, list) else ():
+            if not (isinstance(entry, (list, tuple)) and len(entry) == 2):
+                continue
+            try:
+                lane.append(LaneNode(id=entry[0], kind=entry[1]))
+            except ValidationError:
+                continue
+        return lane
 
     def note_stages(self) -> None:
         """Record the names the plan carries, replacing what was recorded:
@@ -359,6 +383,8 @@ class Session(BaseModel):
         self.flow_stages = {f"{t.id}:{s.id}": s.stage
                             for t in self.plan.targets for s in t.steps
                             if s.stage}
+        self.flow_lanes = {t.id: [[n.id, n.kind] for n in t.lane]
+                           for t in self.plan.targets if t.lane}
 
     # ---- nights and arming (derived; nothing here is written) --------------
     def observing_nights(self) -> list[str]:

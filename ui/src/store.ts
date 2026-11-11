@@ -2203,7 +2203,9 @@ export const useStore = create<AppState>((set, get, storeApi) => ({
 // `stages` on the sequence state (server `SequenceEngine._publish_stages`:
 // canvas node id to running, done, skipped, failed, deferred or waiting), at
 // every transition, so the WS event and the snapshot a reload reads carry the
-// same answer.
+// same answer. A stage names a step; a SLEW, AUTOFOCUS or GUIDE node in a
+// block's lane owns no step and is named where the engine does what it stands
+// for (running, done or failed, #1231).
 // `flows.statuses` is that answer in the canvases' own words (busy, ok, warn,
 // bad), kept by the one subscription below and by nothing else: it holds the
 // stages of the OPEN flow's live run, and is empty whenever there is none, so
@@ -2211,9 +2213,9 @@ export const useStore = create<AppState>((set, get, storeApi) => ({
 //
 // THE SELECTOR is `stageStatusOf`: every card's status word and LED, the
 // phone stage list's pill and every wire's source stage read it, on both
-// canvases. A stage the engine has said nothing about (an AUTOFOCUS node, a
-// REPORT) draws no status while the open flow's run is live (null), because
-// idle is false then, and reads idle where it is true.
+// canvases. A node the engine has said nothing about (a REPORT, an AUTOFOCUS
+// wired to no block) draws no status while the open flow's run is live (null),
+// because idle is false then, and reads idle where it is true.
 //
 // TWO WORDS HAVE NO CANVAS WORD OF THEIR OWN (#1231). `deferred` (the group
 // driver will take the panel up again tonight) reads as `warn`, the look
