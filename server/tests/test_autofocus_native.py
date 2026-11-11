@@ -11,6 +11,7 @@ The whole module is skipped when the Rust wheel is absent, so the suite stays
 green without ``maturin develop``.
 """
 import pytest
+from _w10_5_rich_field import install_rich_field
 
 from astrodeck import providers
 from astrodeck.devices.sim import build_sim_rig
@@ -641,26 +642,26 @@ def _blank_beyond(cam, foc, limit: int):
 
 
 async def test_a_curve_that_ran_out_of_range_is_accepted_not_discarded(monkeypatch):
+    # THE FIELD IS FIXED (WP 10.5, #1227): ``_w10_5_rich_field`` draws 400 stars
+    # at fixed pixels, mags 3 to 9, so the curve's tip is measured from
+    # dozens of stars at any sub-pixel position of the field. The sim's default
+    # catalog gave a tip of a dozen, and this test's verdict moved with the
+    # pixel phase of the field (a 0.3 px shift of every star failed it).
     rig, cam, foc = await _connected_sim()
+    install_rich_field(cam)
     start = await foc.get_position()
     step, side = 350, 4
     # The far end of what this sweep reaches, so the curve is complete before
     # the unmeasurable point arrives.
     seen = _blank_beyond(cam, foc, start + step * 6)
 
-    # BIN 2, because the salvage this models needs a TIP worth salvaging. The
-    # NGC 5907 run it comes from measured 460 stars at its best point and 2 at
-    # the eleventh, and `curve_verdict` refuses a tip under THIN_POINT_STARS
-    # for exactly that reason. The sim's bin-1 frame is a 1216x912 postage
-    # stamp whose best point resolves nine sources — itself a thin tip, so it
-    # fails the gate on its own merits. At bin 2 the same field resolves 21-28
-    # and the fixture is the shape it claims to be.
-    #
-    # (It passed at bin 1 until 2026-09-08 only because the per-point Rust
-    # `detect_and_measure` counted 11-15 detections on that frame where
-    # `star_size` resolves nine. That pass is gone — it cost 27 s a point on
-    # the rig — and the count now comes from the metric that measures the size.
-    # On a real 26 MP field the fine path answers with hundreds either way.)
+    # BIN 2: with the fixed rich field its V is 0.8 px deep and measured from
+    # about eighty stars at the tip, well over `curve_verdict`'s
+    # THIN_POINT_STARS; at bin 1 the same sweep's right wing rises 0.88 px
+    # against the 1.30 px `curve_verdict` asks of a wing, a statement about
+    # that field's bloat and not about the salvage this test grades. (The NGC
+    # 5907 run this models measured 460 stars at its best point and 2 at the
+    # eleventh.)
     result = await run_native_autofocus(
         cam, foc, exposure_s=0.05, gain=200, step=step,
         steps_each_side=side, binning=2)
@@ -671,6 +672,10 @@ async def test_a_curve_that_ran_out_of_range_is_accepted_not_discarded(monkeypat
     assert result.success, (
         f"a sweep with a measured V was thrown away because one endpoint could "
         f"not be measured: {result.message}")
+    # By the curve verdict's own rail, the one this test is about. A rich
+    # field is ALSO accepted by the bracketed-minimum rail that follows it
+    # (#1077), which would pass the test with the verdict's rail removed.
+    assert result.message.startswith("accepted on curve shape"), result.message
     assert result.best_position is not None
     # It must land on the curve's TIP, not on the position it gave up at and
     # not back at the start. Anchored to the measured minimum rather than to

@@ -434,7 +434,9 @@ def test_the_route_names_no_sky_coordinate(client):
         assert ra_dec not in blob
 
 # ----------------------------------------------- one sim frame, end to end
-SIM_SCALE_ARCSEC = 1.55         # what the simulator's solver stamps
+# what the sim camera renders and its solver stamps
+from astrodeck.devices.sim import (  # noqa: E402
+    SIM_PIXEL_SCALE_ARCSEC as SIM_SCALE_ARCSEC)
 
 
 def _sim_star_frame(east_deg: float, north_deg: float):
@@ -516,13 +518,6 @@ def test_a_sim_frames_star_lands_where_its_stamped_wcs_puts_it(tmp_path):
     assert (v - h / 2.0) * scale == pytest.approx(-eta, abs=4 * scale),         "north is not above the picture's centre (or the distance is off)"
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "the simulator's camera and its solver disagree by half a turn: the camera "
-    "renders east to the RIGHT and north toward row 0 (px = w/2 + dx, py = h/2 "
-    "- dy), the solver stamps CD1_1 < 0 and CD2_2 > 0 (x runs west, y runs "
-    "north), and its plate scale (1.55) is not the one the camera renders "
-    "(FOV_DEG / width). Fixing devices/sim.py turns this into a pass, and "
-    "strict makes that visible."))
 def test_the_sim_camera_and_the_sim_solver_agree_on_which_way_is_east(tmp_path):
     data, _cam = _sim_star_frame(east_deg=0.2, north_deg=0.15)
     path, _canvas, _scale, (grow, gcol), factor = _saved_stacked_assembled(

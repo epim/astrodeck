@@ -566,10 +566,38 @@ class SimRig:
         self.dec_deg = dec_deg
 
 
+#: The plate scale of an unbinned sim frame, arcsec per pixel: the 1.4 degrees
+#: the camera has always drawn across its 1216 pixels. The camera renders at it
+#: and the solver stamps it, so a sim frame and its solution share one scale;
+#: a binned frame's pixel is ``binning`` times as large.
+SIM_PIXEL_SCALE_ARCSEC = 1.4 * 3600.0 / 1216
+
+
+def sim_camera_sky_pa_deg(rig) -> float:
+    """The sky position angle the sim camera is clocked at: the rotator's
+    mechanical angle plus how the camera sits on it. Both are 0.0 on a rig that
+    never touches the rotator. The one number the camera renders at and the
+    solver reports, in the sense of FITS CROTA2 (the one a real solve reports,
+    ``solve/astap.py``): it increases from north through west."""
+    return (getattr(rig, "rotator_mech_deg", 0.0)
+            + getattr(rig, "rotator_pa_offset_deg", 0.0)) % 360.0
+
+
+def sim_cd_matrix(scale_arcsec: float, rot_deg: float) -> tuple[float, float, float, float]:
+    """The CD matrix ``(cd11, cd12, cd21, cd22)``, degrees per pixel, of a
+    standard sky solution: CDELT1 = -scale (east toward lower columns, so a
+    pixel's x runs west), CDELT2 = +scale (y runs north, so array row 0 is the
+    south edge), turned by CROTA2 = ``rot_deg`` (FITS WCS Paper II eq. 189).
+    The solver stamps this and the camera inverts it, so they cannot disagree."""
+    scale = scale_arcsec / 3600.0
+    rot = math.radians(rot_deg)
+    return (-scale * math.cos(rot), -scale * math.sin(rot),
+            -scale * math.sin(rot), scale * math.cos(rot))
+
+
 class SimCamera(Camera):
     """Renders stars from a deterministic per-sky-tile catalog."""
 
-    FOV_DEG = 1.4  # diagonal field of view at bin 1
     AMBIENT_C = 12.3  # uncooled sensor temperature; also the cooler-power baseline
     #: how fast the simulated sensor follows the TEC (°C per REAL second), and
     #: how fast it drifts back up when nothing is holding it. The upward figure
@@ -788,9 +816,16 @@ class SimCamera(Camera):
         field = np.zeros((h, w), dtype=np.float64)
         ra_deg = self.rig.ra_hours * 15.0
         dec_deg = self.rig.dec_deg
-        fov = self.FOV_DEG
-        half = fov / 2.0
+        # THE SAME SKY THE SOLVER STAMPS (#1227): the plate scale and the
+        # rotator's sky angle give the CD matrix ``SimSolver`` writes into the
+        # frame's WCS, and each star is placed by inverting it. A binned
+        # frame's pixel is ``binning`` times as large and the field is the same.
+        cd11, cd12, cd21, cd22 = sim_cd_matrix(
+            SIM_PIXEL_SCALE_ARCSEC * binning, sim_camera_sky_pa_deg(self.rig))
+        det = cd11 * cd22 - cd12 * cd21
+        half = math.hypot(w, h) / 2.0 * SIM_PIXEL_SCALE_ARCSEC * binning / 3600.0
         cosd = max(0.05, math.cos(math.radians(dec_deg)))
+        ra0, dec0 = math.radians(ra_deg), math.radians(dec_deg)
 
         # focus quality: sigma grows with distance from best focus.
         # The 1.8 floor is seeing: even perfect focus never beats the sky.
@@ -810,15 +845,16 @@ class SimCamera(Camera):
         tx1 = int((ra_deg + half / cosd) / 0.5) + 1
         ty0 = int((dec_deg + 90 - half) / 0.5) - 1
         ty1 = int((dec_deg + 90 + half) / 0.5) + 1
-        scale_px = w / fov  # px per degree (x)
 
         for tx in range(tx0, tx1 + 1):
             for ty in range(ty0, ty1 + 1):
                 for sra, sdec, mag in self._stars_for_tile(tx, ty):
-                    dx = (sra - ra_deg) * cosd
-                    dy = sdec - dec_deg
-                    px = w / 2 + dx * scale_px
-                    py = h / 2 - dy * scale_px
+                    xi_eta = self._tangent_offset_deg(ra0, dec0, sra, sdec)
+                    if xi_eta is None:
+                        continue
+                    xi, eta = xi_eta
+                    px = (w - 1) / 2.0 + (cd22 * xi - cd12 * eta) / det
+                    py = (h - 1) / 2.0 + (cd11 * eta - cd21 * xi) / det
                     if not (-20 < px < w + 20 and -20 < py < h + 20):
                         continue
                     flux = 10 ** (-0.4 * (mag - 16.0)) * seconds * (1 + gain / 100.0)
@@ -827,6 +863,24 @@ class SimCamera(Camera):
 
         field += rng.poisson(np.clip(field, 0, None)) - field  # shot noise
         return field
+
+    @staticmethod
+    def _tangent_offset_deg(ra0: float, dec0: float, ra_deg: float,
+                            dec_deg: float) -> tuple[float, float] | None:
+        """Where a star is on the tangent plane of the field centre
+        (``ra0``, ``dec0`` in radians): ``(xi, eta)`` in degrees, east and
+        north. The TAN projection the solver's WCS declares. None for a star
+        on the far side of the sky."""
+        d = math.radians(dec_deg)
+        dra = math.radians(ra_deg) - ra0
+        denom = (math.sin(dec0) * math.sin(d)
+                 + math.cos(dec0) * math.cos(d) * math.cos(dra))
+        if denom <= 0.0:
+            return None
+        xi = math.cos(d) * math.sin(dra) / denom
+        eta = (math.cos(dec0) * math.sin(d)
+               - math.sin(dec0) * math.cos(d) * math.cos(dra)) / denom
+        return math.degrees(xi), math.degrees(eta)
 
     @staticmethod
     def _add_star(field: np.ndarray, px: float, py: float, flux: float,

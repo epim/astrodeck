@@ -13,6 +13,7 @@ about the LIFECYCLE: what gets written, what gets read, and what gets thrown
 away.
 """
 import pytest
+from _w10_5_rich_field import install_rich_field
 
 import astrodeck.config as config_mod
 from astrodeck.config import load_focus_calibration
@@ -79,33 +80,27 @@ async def test_a_successful_sweep_measures_the_span_for_the_next_one():
 async def test_a_fast_scope_gets_a_narrower_second_sweep():
     """THE PAYOFF, on a rig steep enough to need one.
 
-    The sim's default optics are gentle — ±1400 steps only doubles the star, so
-    the derivation asks for MORE and is held to what worked. A real f/5 train is
-    nothing like that: 2.96 px at focus and 27 px at ±350 on 2026-08-17. Set the
-    sim to that steepness and the loop does what it was built for: the first
-    sweep measures the slope, the second is a fraction of the width, and it
-    still finds focus.
+    A real f/5 train is nothing like the sim's default optics: 2.96 px at
+    focus and 27 px at +-350 on 2026-08-17. Set the sim to that steepness (40
+    focuser steps per pixel of star size) and the loop does what it was built
+    for: the first sweep measures the slope, the second is a fraction of the
+    width, and it still finds focus.
 
-    Steepened to 250 rather than to the rig's own rate: at the real thing's
-    bloat the ±1400 sweep does not survive its own wings on a sim frame — the
-    outer stars run off the sensor and the run dies `not_enough_spread`, which
-    is precisely the failure this change exists to stop but is no use as a
-    fixture for measuring the narrowing.
-
-    250 rather than the 200 this used until 2026-09-08, one notch further in
-    for a related reason. At 200 steps/px the NARROWED ±700 sweep bloats its own
-    outer point by 3.5 px, where the sim's 1216x912 field resolves two sources —
-    so that point was dropped, the run aborted, and the whole test rested on
-    `curve_verdict` salvaging a tip the size metric measures NINE sources at. It
-    did, because the per-point Rust pass counted fifteen detections on that same
-    frame and `counts` took the larger. That pass is gone (27 s a point on the
-    rig's 26 MP frames) and the count now comes from the metric that measures
-    the size, so nine is under the tip gate. At 250 the narrow sweep measures
-    every point it asks for, which is what "the narrowed sweep still works" was
-    always meant to mean.
+    THE FIELD IS FIXED (WP 10.5, #1227). This test used to run on the sim's
+    default catalog, whose dozen detectable stars could not survive a steep
+    sweep's wings: the first sweep ended early, and the "narrowing" it saw was
+    the hold to the half-span that sweep happened to cover, so it moved with the
+    sub-pixel phase of the field (a 0.3 px shift of every star failed it) and
+    had to be run at a gentle 250 steps per pixel. It now draws
+    ``_w10_5_rich_field``: 400 stars at fixed pixels, mags 3 to 9, so every
+    point of a +-1400 sweep measures dozens of stars and the slope is measured
+    from the whole curve. The narrowing asserted below comes from that
+    measured slope, and the test's point is unchanged: the second sweep must
+    be narrower than the first, and still find focus.
     """
     rig, cam, foc = await _connected_sim()
-    rig.defocus_steps_per_px = 250.0
+    install_rich_field(cam)
+    rig.defocus_steps_per_px = 40.0
     rig.best_focus = await foc.get_position()
 
     import astrodeck.focus.native as N

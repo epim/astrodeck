@@ -27,7 +27,8 @@ from pathlib import Path
 
 from astropy.io import fits
 
-from ..devices.sim import _sim_delay
+from ..devices.sim import (SIM_PIXEL_SCALE_ARCSEC, _sim_delay,
+                           sim_camera_sky_pa_deg, sim_cd_matrix)
 from .base import PlateSolver, SolveResult, WcsSolution
 
 log = logging.getLogger(__name__)
@@ -108,23 +109,24 @@ def _inside_solve_fault(ra_h: float, dec: float) -> bool:
 def _sim_wcs(fits_path: Path, ra_hours: float, dec_deg: float,
              rot_deg: float, scale_arcsec: float) -> WcsSolution:
     """A valid TAN WcsSolution centered on the sim pointing (hips_local idiom:
-    ctype RA---TAN/DEC--TAN, crval, crpix at image center, CD from scale+rot)."""
+    ctype RA---TAN/DEC--TAN, crval, crpix at image center, CD from scale+rot).
+
+    ``scale_arcsec`` is the UNBINNED plate scale; a frame saved binned (its
+    XBINNING card) has pixels that many times as large, so the stamped scale
+    follows the file, as a real solve's does. The CD matrix is the one the sim
+    camera renders through (``sim_cd_matrix``)."""
+    binning = 1
     try:
         with fits.open(fits_path) as hdul:
             ny, nx = hdul[0].data.shape[-2:]
+            binning = max(1, int(hdul[0].header.get("XBINNING", 1)))
     except Exception:
         nx = ny = 1000                       # tolerate a not-yet-written path
-    scale = scale_arcsec / 3600.0
-    rot = math.radians(rot_deg)
-    # Canonical CD matrix from CDELT1=-scale (RA flip), CDELT2=+scale, CROTA2=rot
-    # (FITS WCS Paper II eq. 189; verified against astropy's pixel_scale_matrix).
-    # The off-diagonals carry the SAME sign as CD1_1's -scale, so a non-zero
-    # rotation turns the sky in the standard (CROTA) sense; rot=0 is unaffected.
+    cd11, cd12, cd21, cd22 = sim_cd_matrix(scale_arcsec * binning, rot_deg)
     return WcsSolution(
         crval1=ra_hours * 15.0, crval2=dec_deg,
         crpix1=(nx + 1) / 2.0, crpix2=(ny + 1) / 2.0,
-        cd11=-scale * math.cos(rot), cd12=-scale * math.sin(rot),
-        cd21=-scale * math.sin(rot), cd22=scale * math.cos(rot))
+        cd11=cd11, cd12=cd12, cd21=cd21, cd22=cd22)
 
 
 class SimSolver(PlateSolver):
@@ -182,20 +184,22 @@ class SimSolver(PlateSolver):
             return SolveResult(False, message=SOLVE_FAULT_MESSAGE)
         if self.sim_rig is not None:
             # Physical truth: the camera's sky PA is the rotator's mechanical
-            # angle plus how the camera is clocked on it. Both default 0.0, so
-            # rigs/tests that never touch the rotator see rotation 0.0 exactly
-            # as before.
-            rot_pa = (getattr(self.sim_rig, "rotator_mech_deg", 0.0)
-                      + getattr(self.sim_rig, "rotator_pa_offset_deg", 0.0)) % 360.0
+            # angle plus how the camera is clocked on it, the angle the sim
+            # camera rendered the frame at. Both default 0.0, so rigs/tests
+            # that never touch the rotator see rotation 0.0 exactly as before.
+            rot_pa = sim_camera_sky_pa_deg(self.sim_rig)
+            wcs = _sim_wcs(fits_path, self.sim_rig.ra_hours,
+                           self.sim_rig.dec_deg, rot_pa, SIM_PIXEL_SCALE_ARCSEC)
             return SolveResult(True, ra_hours=self.sim_rig.ra_hours,
                                dec_deg=self.sim_rig.dec_deg,
-                               rotation_deg=rot_pa, pixel_scale_arcsec=1.55,
-                               wcs=_sim_wcs(fits_path, self.sim_rig.ra_hours,
-                                            self.sim_rig.dec_deg, rot_pa, 1.55),
-                               message="solved (simulator)")
+                               rotation_deg=rot_pa,
+                               pixel_scale_arcsec=wcs.pixel_scale_arcsec(),
+                               wcs=wcs, message="solved (simulator)")
         if ra_hint is not None and dec_hint is not None:
+            wcs = _sim_wcs(fits_path, ra_hint, dec_hint, 0.0,
+                           SIM_PIXEL_SCALE_ARCSEC)
             return SolveResult(True, ra_hours=ra_hint, dec_deg=dec_hint,
-                               rotation_deg=0.0, pixel_scale_arcsec=1.55,
-                               wcs=_sim_wcs(fits_path, ra_hint, dec_hint, 0.0, 1.55),
-                               message="solved (simulator, from hint)")
+                               rotation_deg=0.0,
+                               pixel_scale_arcsec=wcs.pixel_scale_arcsec(),
+                               wcs=wcs, message="solved (simulator, from hint)")
         return SolveResult(False, message="simulator solver needs a hint or sim rig")
