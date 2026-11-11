@@ -49,8 +49,9 @@ from ..sequence.models import (ActionKind, DuskFlatsPlan, SequencePlan,
                                TriggerKind)
 from ..sequence.schedule import sun_window_needs_a_site
 from . import identity, tonight
-from .compile import (compile_plan, lane_order_refusals, lane_refusals,
-                      ordered_lanes, pool_strategy_of)
+from .compile import (OWNER_TYPES, compile_plan, lane_order_refusals,
+                      lane_refusals, ordered_lanes, panel_lane,
+                      pool_strategy_of)
 from .models import FlowGraph
 from .nodes import (DUSK_FLATS_METHODS, MEASURE_ANGLE, NODE_DEFS,
                     QUICK_AUTOFOCUS, QUICK_DITHER_EVERY, target_angle)
@@ -742,6 +743,39 @@ def _phases(entry: dict, lanes: dict[str, list[str]] | None) -> list[int]:
     if sorted(lane) != sorted(stages):
         return []
     return [lane.index(stage) for stage in stages]
+
+
+#: The lane nodes that compile to no step but that the run performs an action
+#: for, and so names (#1231): the action is the slew, the focus sweep and the
+#: guide start.
+LANE_ACTIONS: tuple[str, ...] = ("slew", "autofocus", "guide")
+
+
+def _lane_nodes(graph: FlowGraph | None) -> dict[str, list[dict]]:
+    """``{block id: [{"id", "kind"}, ...]}``: the SLEW, AUTOFOCUS and GUIDE
+    nodes each TARGET or POOL owns, in the order its lane draws them
+    (``compile.panel_lane``). A node wired to nothing, or past a node that ends
+    the lane, is no block's and is in none. Empty with no graph: the compiled
+    dicts do not carry node types."""
+    if graph is None:
+        return {}
+    graph = graph.with_defaults()
+    return {block.id: [{"id": n.id, "kind": n.type}
+                       for n in panel_lane(graph, block)
+                       if n.type in LANE_ACTIONS]
+            for block in graph.nodes if block.type in OWNER_TYPES}
+
+
+def _name_lane(targets: list[dict], entry: dict,
+               lane_nodes: dict[str, list[dict]]) -> None:
+    """Put the block's lane on each of its targets, in place: every panel of a
+    mosaic and every member of a pool carries the lane of the block it was
+    compiled from. A block with no such node writes nothing, which is every
+    target of a plan with no lane."""
+    lane = lane_nodes.get(str(entry.get("node_id") or ""))
+    if lane:
+        for target in targets:
+            target["lane"] = copy.deepcopy(lane)
 
 
 def _steps(entry: dict, target_name: str, out: list[dict],
@@ -2214,6 +2248,7 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
     for r in lane_order_refusals(graph) if graph is not None else ():
         unmapped.append(_note(f"lane.{r['node_id']}", r["text"], "danger"))
     lanes = ordered_lanes(graph) if graph is not None else None
+    lane_nodes = _lane_nodes(graph)
     # Each POOL node's strategy, for its group: with no graph a pool is "best",
     # as a node that carries no strategy reads.
     strategies = ({n.id: pool_strategy_of(n.params) for n in graph.nodes
@@ -2268,6 +2303,7 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
                 group_of[str(entry.get("node_id") or "")] = {
                     **group, "when_waiting": entry["mosaic"].get(
                         "when_waiting")}
+            _name_lane(panels, entry, lane_nodes)
             targets.extend(panels)
             target_blocks.extend(_block_label(entry) for _ in panels)
             dusk_fields.extend(_dusk_fields(base_schedule, entry)
@@ -2317,6 +2353,7 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
                     entry, flow_id=flow_id,
                     strategy=strategies.get(node_id, "best"))
             target["mosaic_group"] = pool_groups[node_id]["id"]
+        _name_lane([target], entry, lane_nodes)
         targets.append(target)
         target_blocks.append(_block_label(entry))
         dusk_fields.append(_dusk_fields(base_schedule, entry))

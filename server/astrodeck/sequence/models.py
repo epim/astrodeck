@@ -154,6 +154,14 @@ class Schedule(BaseModel):
     on_missed: Literal["wait", "skip"] = "wait"
 
 
+class LaneNode(BaseModel):
+    """A flow node in a block's lane that compiles to no step: its canvas node
+    id and what the engine does for it. The engine names it when it performs
+    that action (``Target.lane``)."""
+    id: str = Field(min_length=1)
+    kind: Literal["slew", "autofocus", "guide"]
+
+
 class Target(BaseModel):
     # stable identity for multi-night session ledgers (sessions spec §1).
     id: str = Field(default_factory=lambda: uuid4().hex)
@@ -182,6 +190,14 @@ class Target(BaseModel):
     # block's. None for a plan not made from a flow, and excluded from every
     # dump (see ``ExposureStep.stage``).
     block: str | None = Field(None, exclude=True)
+    # The SLEW, AUTOFOCUS and GUIDE nodes in that block's lane, in lane order
+    # (#1231): nodes the compile folds into this target's fields and gives no
+    # step, so nothing else carries their canvas ids, which the run names when
+    # it slews, sweeps and starts the guider. Every panel and pool member
+    # carries its block's. Empty for a plan not made from a flow. EXCLUDED FROM
+    # EVERY DUMP, like ``block``: dumping it would move every stored plan and
+    # plan hash of a flow with an AUTOFOCUS or GUIDE in its lane.
+    lane: list[LaneNode] = Field(default_factory=list, exclude=True)
     # --- acquisition order (additive; "blocks" is what every existing plan does)
     #
     # "blocks" runs each step to completion before the next: 45 L, then 45 R,
