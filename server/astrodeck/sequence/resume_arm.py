@@ -2007,7 +2007,12 @@ class ResumeArm:
         # answer for the rest of the night with the mount parked: so it
         # disarms, in an error line (the level the alert pipeline delivers),
         # and the operator arms it again once a solver is installed.
-        solver = self.hub.solver_refusal(self._owed_plan(armed))
+        # Asked the way ``arm_refusal`` is asked below: a hub that has no
+        # such question (the stand-ins the ladder's tests drive) is not
+        # refused. The real Hub always has it.
+        solver_refusal = getattr(self.hub, "solver_refusal", None)
+        solver = (solver_refusal(self._owed_plan(armed))
+                  if solver_refusal is not None else None)
         if solver is not None:
             self._disarm_no_solver(armed, solver)
             return
