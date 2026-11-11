@@ -8269,22 +8269,32 @@ class Hub:
                 result = await solver.solve(tmp, ra_hint=ra_hint,
                                             dec_hint=dec_hint,
                                             fov_deg_hint=fov_hint)
+            except Exception as e:
+                # The frame rides the failure so the caller can say why it
+                # found nothing (`_solve_frame_keys`).
+                e.solve_frame = frame
+                raise
             finally:
                 await _retire_solve_frame(tmp, "solve")
         finally:
             bus.publish("mount", action="solve_activity", activity=None)
-        if not result.success:
-            # SAY WHETHER LIGHT REACHED THE SENSOR (#251). ASTAP says "Not
-            # enough stars" under cloud and through a cap in the same words,
-            # and auto-resume retried a capped optic every ten minutes for a
-            # night on them. The frame tells the two apart; a no-light verdict
-            # raises ``NoLightError`` (a DeviceError), which the recovery
-            # ladder backs off on. Only a FAILED solve is judged: the median
-            # of a full frame is not worth paying on every centring attempt.
-            from .solve import light as _light
-            raise await _light.failed_solve_error(
-                frame, result, prefix="plate solve failed", hub=self,
-                narrowband_filter=through)
+        try:
+            if not result.success:
+                # SAY WHETHER LIGHT REACHED THE SENSOR (#251). ASTAP says "Not
+                # enough stars" under cloud and through a cap in the same words,
+                # and auto-resume retried a capped optic every ten minutes for a
+                # night on them. The frame tells the two apart; a no-light verdict
+                # raises ``NoLightError`` (a DeviceError), which the recovery
+                # ladder backs off on. Only a FAILED solve is judged: the median
+                # of a full frame is not worth paying on every centring attempt.
+                from .solve import light as _light
+                raise await _light.failed_solve_error(
+                    frame, result, prefix="plate solve failed", hub=self,
+                    narrowband_filter=through)
+        except DeviceError as e:
+            # The frame rides the failure (`_solve_frame_keys`).
+            e.solve_frame = frame
+            raise
         # ASTAP returns J2000. Sync the mount in the frame IT expects (JNOW for a
         # real Alpaca mount, else unchanged) so a plate-solve sync does not corrupt
         # a JNOW mount's alignment model by ~20 arcmin. The returned dict stays
@@ -9864,6 +9874,7 @@ class Hub:
                         | ({"solve_reason": reason}
                            if reason is not None else {})
                         | solve_light_keys(e)
+                        | await self._solve_frame_keys(e)
                         | arrival_keys)
             from .catalog.coords import angular_sep_deg
             try:
@@ -10625,6 +10636,32 @@ class Hub:
         if probe.cancelled():
             return None, False
         return probe.result(), True
+
+    async def _solve_frame_keys(self, exc: BaseException) -> dict:
+        """What the frame a failed solve ran on showed (#1182): its
+        `imaging.frame_class` verdict as ``solve_frame_class``, the class's
+        value. Judged HERE, from the frame the solve carried on its failure
+        (``solve_frame``), because ``last_frame`` is replaced by every
+        preview, guide frame and capture and the engine's later read of it
+        could name another field. A word, not the frame: the result is
+        logged and serialised, and a frame held on the result as well would
+        cost memory on a small board. Empty when the failure carries no frame
+        (the solve never exposed one) and when the verdict could not be
+        reached, which every reader takes as no verdict."""
+        frame = getattr(exc, "solve_frame", None)
+        if frame is None:
+            return {}
+        # The failure lets go of the frame once it has been asked for: an
+        # exception kept by a caller or a traceback must not keep a full
+        # frame alive with it.
+        exc.solve_frame = None
+        from .imaging.frame_class import classify
+        try:
+            cls = await asyncio.to_thread(classify, frame)
+        except Exception as e:      # noqa: BLE001
+            self.say_swallowed("judging the frame a failed solve ran on", e)
+            return {}
+        return {"solve_frame_class": cls.value}
 
     def say_swallowed(self, what: str, exc: BaseException, *,
                       site_derived: bool = False) -> None:
