@@ -387,6 +387,7 @@ class TestTheCompileCommandsEachPanelItsOwnAngle:
                 t.pop("rotation_deg")
             for g in d["groups"]:
                 g.pop("angle_tolerance_deg")
+                g["geometry"].pop("fixed_tolerance_deg", None)
             return d
 
         assert bare(on) == bare(off)

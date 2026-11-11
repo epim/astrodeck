@@ -173,17 +173,22 @@ class TestAGroupThatNeverCorrected:
 
 class TestTheConvergenceTermIsRead:
     def test_a_missing_panel_is_a_missing_seam_not_a_crash(self):
-        """A skipped panel is not a member. The seams that remain still
-        charge their convergence, and the answer stays finite and between 0
-        and the group's tolerance."""
+        """A skipped panel is not a member. For a group stored before the
+        compile recorded the doctor's number (``fixed_tolerance_deg``, #1175)
+        the seams that remain still charge their convergence, and the answer
+        stays finite and between 0 and the group's tolerance."""
         group, members = _compiled(dec="+75 00 00")
+        group.geometry.pop("fixed_tolerance_deg")
         kept = [m for m in members if m.panel_col != 1]
         got = allowed_error(group, kept, rotating=False)
         assert math.isfinite(got)
         assert 0.0 <= got <= group.angle_tolerance_deg
 
     def test_members_with_no_row_or_column_charge_nothing(self):
+        """For a group stored before ``fixed_tolerance_deg`` (#1175): with
+        the number recorded the members are not read at all."""
         group, members = _compiled(dec="+75 00 00")
+        group.geometry.pop("fixed_tolerance_deg")
         loose = [m.model_copy(update={"panel_row": None, "panel_col": None})
                  for m in members]
         assert allowed_error(group, loose, rotating=False) == (

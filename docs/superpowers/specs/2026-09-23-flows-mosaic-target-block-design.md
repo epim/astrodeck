@@ -600,7 +600,7 @@ class TargetGroup(BaseModel):
     rotate: bool = False                     # members carry rotation_deg = pa_deg
     angle_tolerance_deg: float | None = None # None disables the angle check
     skipped_ids: list[str] = []              # target ids of skipped panels (5.9)
-    geometry: dict = {}                      # provenance only: rows, cols, overlap, fov, key
+    geometry: dict = {}                      # rows, cols, overlap, fov, key; a corrected block adds fixed_tolerance_deg (A.2)
 
 class VisitBound:                            # sequence/group_rules.py; engine-internal, never persisted
     passes: int | None                       # rounds per visit (group members)
@@ -1557,6 +1557,8 @@ For a single row or column no hole can open between panels, so the same formula 
 | 4x1 | 10% | 75 | 0 | 38.9% | 2.12 deg | 0.47 deg |
 
 The 4x1 case (4 columns by 1 row) at Dec 75 spends 38.9% plus 50% of its overlap under the old rule. Under the combined rule it keeps 0.47 deg of angle tolerance, which a fixed camera will rarely meet, and M6 has already warned. The 3x3 at Dec 75 turned to 90 deg keeps 3.61 deg. Weighed along its rows alone, as A.1 was until #321, it would have been given 6.24 deg that its column seams do not leave it.
+
+**As built** (WP 9.6, #1175). A skipped panel is a tile of the layout for this number: skip is outside the block's identity and a skipped panel may hold banked frames, so every seam of the grid counts, and the engine's fixed-camera tolerance is the number the doctor prints. A block whose panels are each commanded their own angle records it in `TargetGroup.geometry["fixed_tolerance_deg"]` (`framing.angle_tolerance_deg` of the whole grid), and `angle_check.allowed_error` answers it with rotation off for the night; a group stored without the key reads its members as before.
 
 ### A.3 Budgets
 
