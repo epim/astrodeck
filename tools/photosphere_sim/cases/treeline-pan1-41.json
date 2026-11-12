@@ -17,12 +17,12 @@
     },
     "no_unresolved_boundary": {
       "max_bins": 36,
-      "why": "26 of 720 bins are unresolved (17 Low, 6 Unknown, 3 Tall), each published closed at 90 degrees, and 5 of the Low bins are truth bins with a range over 2 degrees. 36 bins is 5 percent of the profile, the safe-direction share the scorer already tolerates for Measured bins that are not visible; measured_share still asks for 85 percent of the expected bins (#1059)."
+      "why": "30 of 720 bins are unresolved (17 Low, 10 Unknown, 3 Tall), each published closed at 90 degrees, and 5 of the Low bins are truth bins with a range over 2 degrees. 36 bins is 5 percent of the profile, the safe-direction share the scorer already tolerates for Measured bins that are not visible; measured_share still asks for 85 percent of the expected bins (#1059)."
     },
     "measured_is_honest": {
       "known_failure": true,
       "issue": 1058,
-      "why": "p99 reads 4.28 against 2.0 because Measured bins 273 to 275 publish 10.7 to 11.1 degrees where the truth maximum is 27.1 to 29.5, and bins 436 and 591 are 14.0 and 8.6 degrees off: false-open Measured bins away from a step, the class of #1058, which the tracer has not been fixed for. Capping the line cannot excuse them, so no limit is ruled; the ruling goes stale, and fails the case, when the gate passes (#1059)."
+      "why": "p99 reads 3.43 against 2.0 because Measured bin 591 publishes 12.7 degrees where the truth maximum is 21.4 and bin 707 13.4 where it is 17.4 (an edge that falls inside the bin), and bin 436 is 14.0 degrees too high; the rest of the p99 is the 2 to 5 degree error of canopy edges. Bins 273 to 275 (10.7 to 11.1 where the truth is 27.1 to 29.5, a crown 11 degrees tall over open sky) are no longer Measured since #1058: a bin is Measured only where a step was observed, so a dark structure the walk could not account for above the boundary makes the bin Unknown. Capping the line cannot excuse the remaining bins, so no limit is ruled; the ruling goes stale, and fails the case, when the gate passes (#1059)."
     }
   },
   "realism": {

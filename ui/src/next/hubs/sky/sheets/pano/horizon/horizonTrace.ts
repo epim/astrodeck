@@ -50,6 +50,9 @@
 //     an open column has no boundary and so no contrast;
 //   - the states are decided in the order UnknownUnseen, UnknownDark, Tall, UnknownContrast, Low, Measured; the
 //     first three need no contrast, and Tall (the top of the evidence) outranks everything about the boundary;
+//   - a column that would be Measured is Measured only where a step was observed (#1058, `stepObserved`): the boundary
+//     is the row the departure was noticed at, give or take a stripe, and no dark structure the walk could not account
+//     for stands above it. Otherwise it is UnknownContrast, with its traced altitude kept and published as 90;
 //   - `columns` is half-open, [x0, x1), and wraps; `lowLight` is read over the columns asked for;
 //   - texture is the mean of the 3 x 3 Immerkaer response over 5 rows, read against the window model's roughness
 //     rather than followed down the column, and never below 4 sigma of the response to white noise;
@@ -334,6 +337,9 @@ interface ColumnRun {
   /** The row the departure was NOTICED at, at or below `top`. The sky lies above `top`, the surface below
    *  `from`; between them is the transition, which is neither. */
   from: number;
+  /** The row the walk first saw the departure at, wherever `top` ended up: `from` is `top` when the boundary was settled
+   *  below it, and the rows between are then rows that departed from the sky and sit above the boundary. */
+  noticed: number;
 }
 interface Noise { lum: number; blue: number; texFloor: number }
 interface Analysis {
@@ -487,7 +493,7 @@ function columnRuns(col: ColData, seed: SkyModel, lumFrac: number, blueFrac: num
       while (top < end && !(betweenSkyAnd(lum[top], here.lum, bodyLum, here.lumTol)
         && betweenSkyAnd(blue[top], here.blue, bodyBlue, here.blueTol))) top++;
       top = settleOnStep(lum, top, start, end, bodyLum);
-      runs.push({ top, end, from: Math.max(top, start), grounded, qualifies });
+      runs.push({ top, end, from: Math.max(top, start), noticed: start, grounded, qualifies });
       if (qualifies) return runs;
       // Stepped over: the run's rows never enter the window, and the model at each is the one standing when the
       // run began.
@@ -504,7 +510,7 @@ function columnRuns(col: ColData, seed: SkyModel, lumFrac: number, blueFrac: num
         if (!off(row, lagged)) { stays = false; break; }
       }
       if (stays) {
-        runs.push({ top: walkBack(start, lagged, here.lum, here.blue), end: last, from: start, grounded: true, qualifies: true });
+        runs.push({ top: walkBack(start, lagged, here.lum, here.blue), end: last, from: start, noticed: start, grounded: true, qualifies: true });
         return runs;
       }
     }
@@ -896,6 +902,27 @@ function floatingBright(col: ColData, sky: SkyModel, run: ColumnRun): boolean {
   return medianRange(col.lum, run.from, Math.min(run.end, run.from + SKY_WINDOW - 1)) > sky.lum;
 }
 
+/** Rows that departed from the sky and sit above the boundary it was settled on, past which the boundary is not where the
+ *  sky ends: 4 degrees, the thickest stripe the skip in `columnRuns` was written for (a bright band lying on a wall). A
+ *  glint or a stripe over a wall is skipped by a few rows; more than this is another surface above the one the boundary was
+ *  placed on (a low wall over its ground). */
+const SKIPPED_ROWS_MAX = 4 * R;
+
+/** Was the boundary of `chosen` a step the walk saw, sky above and the surface under it (#1058)? Two things say it was not:
+ *   - the boundary sits more than `SKIPPED_ROWS_MAX` rows under the row the departure was noticed at, so those rows
+ *     departed from the sky and are not the sky above the boundary, which `offRows` and so `skyAbove` do not count;
+ *   - the wide pass saw, above the boundary row, a dark departure at least `AZ_PERSIST_ROWS` tall that stands on nothing
+ *     and that nothing vouched for. Taller than a marking (a disc, a wire, a stripe: the floor `settle` already keeps) and
+ *     shorter than a structure that stands on its own (`PERSIST_ROWS`, which would be the boundary itself): a roof, a crown, a
+ *     branch with sky under it. Whether it is one of those or a disc the size of one cannot be told from the raster, and the
+ *     two errors are not alike: published open under it, a bin tells the planner a target is visible through a tree.
+ *     A bright one is a stripe or a cloud edge (`floatingBright`, the call `standsOut` makes) and is not asked about.
+ *  Either way the bin is not Measured: when unsure it is not. */
+function stepObserved(chosen: ColumnRun, col: ColData, sky: SkyModel, wide: readonly ColumnRun[], boundaryRow: number): boolean {
+  if (chosen.top - chosen.noticed > SKIPPED_ROWS_MAX) return false;
+  return !wide.some(r => r.end < boundaryRow && !r.qualifies && r.end - r.top + 1 >= AZ_PERSIST_ROWS && !floatingBright(col, sky, r));
+}
+
 /** Rows of the wide pass that are inside a departure, by absolute row: the rows that do NOT match the sky. */
 function offRows(runs: readonly ColumnRun[]): Uint8Array {
   const marked = new Uint8Array(PANO_H);
@@ -908,7 +935,8 @@ function offRows(runs: readonly ColumnRun[]): Uint8Array {
  * with NaN everywhere; a column asked for carries the traced altitude A in `alt` wherever a walk found a boundary
  * (UnknownUnseen and UnknownDark have none, and neither has a column whose walk found no boundary at all: S51 reads
  * that UnknownContrast with `alt` and `contrastSigma` NaN, where it used to read Measured at altitude 0), and the
- * state of 5.2. The caller publishes `alt` for Measured and 90 for everything else. A column whose
+ * state of 5.2 (UnknownContrast also for a boundary that is not a step observed, `stepObserved`, which keeps its `alt`).
+ * The caller publishes `alt` for Measured and 90 for everything else. A column whose
  * window model is not the ring's sky (RING SKY, above) is walked against the ring sky: it is Tall, and its `alt` is
  * where the obstruction reaches the top of the photo, not the ground under it.
  */
@@ -965,6 +993,12 @@ function extract(p: BandPanoramaLike, o: ExtractOptions): ColumnHorizon {
     } else if ((chosen !== null && !(contrast >= TRACE.measuredContrast)) || skyAbove < TRACE.skyAboveMeasuredDeg
       || !(sigma <= TRACE.measuredMaxSigmaDeg)) {
       out.state[x] = ColState.Low;
+    } else if (!stepObserved(chosen, a.col, a.model, a.wide, boundaryRow)) {
+      // #1058: a bin is Measured only where the walk saw the sky end. Here the boundary is not that step: rows that
+      // departed from the sky stand above it, or a structure the walk could not account for does. The column is Unknown,
+      // as one whose boundary is too faint to read is. The traced altitude stays in `alt` and so in the draft's
+      // `suggested`, which only a Low bin offers; an Unknown bin publishes 90.
+      out.state[x] = ColState.UnknownContrast;
     } else {
       out.state[x] = ColState.Measured;
     }
