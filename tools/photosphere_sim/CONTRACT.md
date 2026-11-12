@@ -923,6 +923,23 @@ which scanners exist.
   lists the bins in Low, Unknown or Tall. Bin `i` covers
   `[i / 2, (i + 1) / 2)` degrees. `points` is the published polyline, linear
   between points and wrapped at 360.
+- **A bin is Measured only where a step was observed in it** (#1058). The `pano`
+  tracer reads a column Measured when its walk found a boundary, the boundary
+  has contrast, sky above it and a placement sigma to trust, and the boundary is
+  a step the walk saw: sky above it and the surface under it, with no row that
+  departed from the sky between them (more than 4 degrees of such rows means the
+  boundary landed on another surface under the one that was noticed, a low wall
+  over its ground) and no dark structure at least 6 degrees tall above it that
+  stands on nothing and that neither the column nor its neighbours vouched for
+  (a roof, a crown, a branch with sky under it; a marking under 6 degrees and a
+  bright stripe are not asked about). A column that fails the last test is
+  Unknown with `ColState.UnknownContrast`, and so is a bin of them: it publishes
+  90 in `profile`, keeps its traced altitude in `profile_traced`, and appears in
+  `uncertain_bins`. Only Low bins offer their traced altitude to the user. When
+  unsure, a bin is not Measured: a false-closed bin costs a little sky and a
+  false-open one tells the planner a target is visible through a tree. A stored
+  horizon is never re-read from its raster, so one saved before this rule keeps
+  the states it was saved with, and no field changes meaning.
 - `columns.json`: legacy only.
 - `events.jsonl`: the legacy fields
   `{t_ms, frame_id, compass_ready, tilt_ready, aim, basis, frame_count, cue}`,
@@ -1314,7 +1331,10 @@ unruled rule said. The HTML report lists the rulings beside the gates table.
 `treeline-pan1-41` rules three gates: `horizon_p95_lt_1` at 2.5 with `tau_max_deg`
 1.5 (the gate's 1.0 plus the 1.5 rung the 180 vertex cap forces on a canopy edge),
 `no_unresolved_boundary` at 36 bins (5 percent), and `measured_is_honest` a known
-failure of #1058 (false-open Measured bins).
+failure of #1058: bins 273 to 275 are no longer Measured (a crown 11 degrees tall
+above them), and what is left is two bins whose edge falls inside the bin (591 and
+707), one too high (436) and the 2 to 5 degree error of canopy edges, p99 3.43
+against 2.0.
 
 ### Version 2 corruptions
 

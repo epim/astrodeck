@@ -181,6 +181,10 @@ test('azimuth support raises a column to a floating band and the surface under i
   near(h.alt[nearWall], 59.3, 0.7, 'a column of F beside the wall:');
   assert.ok(h.alt[nearWall] > 55, `the band was lowered to ${h.alt[nearWall]}`);
   assert.equal(h.state[nearWall], ColState.Measured);
+  // #1058: the far end of F, more than 4 degrees from the wall, has the band above its ground and nothing vouching for
+  // the band. It used to publish the ground at 5 as Measured, a false open under a band the walk had seen; it is
+  // Unknown now, with the ground still traced at 5.
+  assert.equal(h.state[farEnd], ColState.UnknownContrast, 'the far end of F:');
   near(h.alt[farEnd], 5, 0.7, 'the far end of F, more than 4 degrees from the wall, is its ground alone:');
   near(h.alt[col(106)], 60, 0.7, 'the wall itself:');
   // Every promoted column is at the band; none of the column's other candidates has dragged it down.
@@ -196,7 +200,11 @@ test('a floating obstruction 12 degrees tall stands on its own; 10 degrees needs
   const high = extract(scene(floating(14)));
   near(high.alt[col(30)], 60.3, 0.7, 'a 14 degree branch:');
   const low = extract(scene(floating(10)));
-  near(low.alt[col(30)], 0, 100 / 299 + 1e-4, 'a 10 degree branch with sky under it is a marking or a disc: the ground at 0');
+  // #1058: a 10 degree branch with sky under it used to be a marking or a disc, and the column published the ground at 0 as
+  // Measured. The raster cannot tell a disc that size from a roof or a crown, and a false open costs a night: the column
+  // is Unknown, the ground still traced at 0. A marking under 6 degrees is still a marking (w11_3MeasuredNeedsAStep.test.ts).
+  assert.equal(low.state[col(30)], ColState.UnknownContrast, 'a 10 degree branch with sky under it is not a step observed');
+  near(low.alt[col(30)], 0, 100 / 299 + 1e-4, 'the ground it was published as');
 });
 
 test('azimuth support is silent below 72 degrees observed and awake from it', () => {
@@ -208,7 +216,11 @@ test('azimuth support is silent below 72 degrees observed and awake from it', ()
     if (inSector(az, 42, 54)) return { lum: alt <= 59 && alt > 50 ? WALL : alt < 0 ? GROUND : SKY };
     return { lum: alt < 0 ? GROUND : SKY };
   };
-  near(extract(scene(roofScene(57))).alt[col(43)], 0, 100 / 299 + 1e-4, 'the roof is not raised: the ground at 0');
+  // #1058: the roof is not raised, and the ground at 0 under it is not published as Measured either (a false open under a
+  // roof the walk saw): the column is Unknown, the ground still traced.
+  const silent = extract(scene(roofScene(57)));
+  assert.equal(silent.state[col(43)], ColState.UnknownContrast, 'the roof is not raised, and the ground under it is not published');
+  near(silent.alt[col(43)], 0, 100 / 299 + 1e-4, 'the roof is not raised: the ground at 0');
   near(extract(scene(roofScene(72))).alt[col(43)], 59.3, 0.7);
 });
 
