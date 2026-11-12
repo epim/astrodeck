@@ -36,7 +36,14 @@ permissions:
 
 jobs:
   sim:
-    runs-on: ubuntu-latest
+    # Windows, the platform the fixtures were recorded on. The first hosted
+    # run was on ubuntu-latest: the Chromium rebuild matched, but 13 older
+    # tests that byte-compare float JSON (observations.jsonl,
+    # trajectory.jsonl) differed in the last digits, because the two
+    # platforms' maths libraries round sin and cos differently. Until those
+    # files are compared with a tolerance the suite is graded where it was
+    # recorded.
+    runs-on: windows-latest
     # The suite took 646 s here (607 tests, on a machine shared with three
     # other agents); a cold runner adds the Chromium download. 30 leaves room.
     timeout-minutes: 30
