@@ -9,7 +9,7 @@
   "native/crates/astro-star/Cargo.toml": "069abe1dfcf31871dda7a239ef27b2e810ef27bf36a81db82c96754fb6ad3ba5",
   "native/crates/astro-tppa/Cargo.toml": "fc26efa6fa15d95107742b35d260ea10771600ea4e008021324281be0a294e13",
   "native/crates/astrodeck-native/Cargo.toml": "7927b7d8952eb94b2b3aa177b1d83c5002ccaad9db32b2b4ea3893b9bb40768f",
-  "server/pyproject.toml": "ef036f9fd45d09ac1a15973056155774737776a4d61eccbdeb7c1afa2400d4c5",
+  "server/pyproject.toml": "370c78b1f6ba10186a08060edcfd33cf1481e0ed9167793f8cd4ccc561a4f33b",
   "tools/credits_registry.py": "e3482796fd32dd315b9ad920139705cc56c2489bb84151ec24b77c2ec08f1ba1",
   "tools/gen_credits.py": "ee5ed5043eaf292997b4cd5da1df66cd8d8cfb1ba5201f4e32e17a496c48c7c0",
   "tools/licence/bundled-components.json": "2167b6afbfbc17027eb9f917445e9930d21fb3cea62b9b66e4e5adac8f77d9fb",
@@ -47,7 +47,7 @@
  },
  "project": {
   "name": "AstroDeck",
-  "version": "0.3.49",
+  "version": "0.3.50",
   "spdx": "Apache-2.0",
   "copyright": "Copyright (c) 2026 James Penick"
  },
