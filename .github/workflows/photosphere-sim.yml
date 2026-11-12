@@ -1,0 +1,65 @@
+name: photosphere-sim
+
+# The photosphere simulator's own tests (#1156): `tools/photosphere_sim/tests`,
+# including the rebuild of every committed fixture with Three.js in headless
+# Chromium, compared with what is committed. The suite needs Playwright and a
+# Chromium, which the server and ui jobs of ci.yml do not have, so it ran in
+# no workflow at all.
+#
+# Its own workflow with `paths:`, so a change elsewhere does not pay for it.
+# The pano scanner sources are listed because the simulator exists to grade
+# them; the workflow file is listed so that editing it runs it.
+#
+# `workflow_call` lets ci.yml run this same file as a job behind its area
+# filter, reporting into `ci-ok` (the one check the merge reads). A workflow
+# that runs on some paths cannot be a required check by itself: a pull request
+# that does not touch them would wait for a check that never starts. No
+# `concurrency` block, because a called workflow shares its caller's context
+# and a group here would cancel the caller's own run.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/photosphere_sim/**'
+      - 'ui/src/next/hubs/sky/sheets/pano/**'
+      - '.github/workflows/photosphere-sim.yml'
+  pull_request:
+    paths:
+      - 'tools/photosphere_sim/**'
+      - 'ui/src/next/hubs/sky/sheets/pano/**'
+      - '.github/workflows/photosphere-sim.yml'
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sim:
+    runs-on: ubuntu-latest
+    # The suite took 646 s here (607 tests, on a machine shared with three
+    # other agents); a cold runner adds the Chromium download. 30 leaves room.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      # Versions the committed manifests record (python 3.12.10, numpy 2.5.0,
+      # pillow 12.3.0, Chromium 149.0.7827.55, which is what playwright 1.61.0
+      # downloads). A fixture is byte-compared with a rebuild, so a drift in
+      # any of them is a change made here, on purpose, with the fixtures.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12.10'
+      - run: pip install numpy==2.5.0 pillow==12.3.0 playwright==1.61.0
+      - run: python -m playwright install --with-deps chromium
+      # Node runs the texture hash script and the renderer's `three` import.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tools/photosphere_sim/package-lock.json
+      - run: npm ci
+        working-directory: tools/photosphere_sim
+      # CI is set by the runner: with it, a test that needs Chromium fails
+      # when Chromium is missing instead of skipping.
+      - name: Run the simulator tests
+        run: python -m unittest discover -s tools/photosphere_sim/tests -t tools/photosphere_sim -v

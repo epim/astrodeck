@@ -26,9 +26,17 @@ def open_renderer(scene, camera):
     """
     try:
         return render_module.ThreeRenderer(scene, camera)
-    except ImportError as error:
-        raise unittest.SkipTest(f"playwright is not installed: {error!r}")
-    except Exception as error:  # noqa: BLE001 - classified below, never swallowed
-        if any(text in str(error) for text in LAUNCH_FAILURES):
-            raise unittest.SkipTest(f"headless Chromium unavailable: {error!r}")
-        raise
+    except Exception as error:  # noqa: BLE001 - classified by as_skip, never swallowed
+        skip = as_skip(error)
+        if skip is None:
+            raise
+        raise skip from error
+
+
+def as_skip(error: Exception):
+    """The named :class:`unittest.SkipTest` for an environment error, else None."""
+    if isinstance(error, ImportError):
+        return unittest.SkipTest(f"playwright is not installed: {error!r}")
+    if any(text in str(error) for text in LAUNCH_FAILURES):
+        return unittest.SkipTest(f"headless Chromium unavailable: {error!r}")
+    return None
