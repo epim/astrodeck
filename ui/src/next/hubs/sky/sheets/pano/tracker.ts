@@ -910,6 +910,11 @@ export class Tracker {
     // S46 (issue 1030): a rate that came from the orientation chord shares its pump-age jitter with the residual r, and the
     // fit would read that as latency. Gyro rates only.
     if (!a.omegaGyro || !b.omegaGyro) return;
+    // Issue 1056: a pair across a reversal (rates of opposite signs) is no lag measurement. A camera's stabiliser sits on its crop
+    // margin on the side the turn is going, so the image's offset from the gyro changes sign with the turn: a jump of twice the
+    // margin, which the pair's dOmega (30 to 40 deg/s at a reversal) turns into 100 ms or more of apparent latency, and which a
+    // fit on dOmega cannot tell from lag.
+    if (a.omega * b.omega < 0) return;
     const dOmega = b.omega - a.omega;
     if (!(Math.abs(dOmega) > 0)) return;
     const tauUsed = (b.tauMs * b.omega - a.tauMs * a.omega) / dOmega;
