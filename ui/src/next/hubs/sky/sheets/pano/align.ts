@@ -34,6 +34,16 @@
 // which would keep the 'mismatch' cue (2.12, a mismatch is textured && !ok) from ever firing. The ratio of spreads is
 // what the two images agree on whether or not they are aligned.
 //
+// Step scale (#1051, S45): the aligner adds no scale to a step. At the true focal it reads one to within 0.03 degrees at every
+// magnitude, direction, pitch and roll tried (0.008 degrees with no roll in the step; the roll about the optical axis, which the
+// frame constrains least, is the worst), the mean ratio of measured to true over steps of 2 degrees and more is 0.9998, and steps
+// read long as often as short (alignStepScale.test.ts holds the table). The 0.2 to 0.4 % short that T28 recorded was read at a
+// focal 2 % short of the true one. A rotation fitted to the pixel motion through a pinhole whose focal is F times too short is
+// F (1 + X^2) / (1 + F^2 X^2) of the step at a pixel X focal lengths from the centre, so over the frame it reads F times the step
+// less 0.15 % at the level and 0.45 % at the ring pitch for F = 1.02 (1.1 % at F = 1.05). That is geometry, which Horn's fit on
+// exact correspondences reproduces with no image, and LK agrees with it to 0.25 %. A caller that sets a step read at an unlocked
+// focal beside a gyro angle carries that shortfall; the aligner has nothing to correct.
+//
 // Allocation: the per-size work buffers and the two phase-correlation scratches are made once and reused, so a call
 // allocates only its result, the correspondences and a few small arrays.
 import { pixelLuminance } from '../photosphereGeometry';
