@@ -72,7 +72,7 @@ import {
 // renders too, and which still carries em-dashes in `keptSummary` and
 // `materializeDisabledReason` - is normalised for the new UI. Writing a second
 // copy of a punctuation rule is how two screens drift.
-import { hyphenateOrNull } from "../report/reportModel";
+import { groupLine, hyphenateOrNull } from "../report/reportModel";
 // The count and its noun, shared with the Now screen and the desktop column so
 // "1 sub" is spelled once (#468). A static import of the Now side costs
 // nothing: that module is on the first paint, and this sheet is the one loaded
@@ -1271,9 +1271,7 @@ function BundlePanel({ session, row, reports, canCapture, desktop }: {
                     <div key={`${g.dir}-${i}`}
                       style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "4px 0", borderBottom: "1px solid var(--line)" }}>
                       <Mono size={10.5}>
-                        {[g.target, g.filter ?? "NoFilter", `${g.exposure_s}s`,
-                          g.gain != null ? `g${g.gain}` : "", g.binning != null ? `bin${g.binning}` : ""]
-                          .filter(Boolean).join(" · ")}
+                        {groupLine(g)}
                       </Mono>
                       <Mono size={10} tone="dim">
                         {`${g.light_count} lights`}

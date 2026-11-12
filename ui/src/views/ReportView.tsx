@@ -33,6 +33,7 @@ import {
 import { accessPhrase, useCanControlCapture } from "../lib/caps";
 import { BASE } from "../lib/base";
 import { groupTargetsByMosaic, type MosaicTarget } from "../next/hubs/session/report/FilterRows";
+import { groupLine } from "../next/hubs/session/report/reportModel";
 import type {
   BundleGroupSummary,
   BundleMaterializeResult,
@@ -90,15 +91,9 @@ function TargetBlock({ t, heading, testid }: {
  *  `M42 · Ha · 300s · g100 · 42 lights · Dark ✓ · Flat ✓ · Bias —`. Master
  *  status uses Icon + kind (never color-only): check when matched, x when not. */
 function BundleGroupRow({ g }: { g: BundleGroupSummary }) {
-  const parts = [g.target, g.filter ?? "NoFilter", `${g.exposure_s}s`];
-  if (g.gain != null) parts.push(`g${g.gain}`);
-  if (g.binning != null) parts.push(`bin${g.binning}`);
-  // A mosaic's panel names its mosaic and its place: one panel of several that
-  // are stitched, never co-added (#188, #830).
-  if (g.mosaic) parts.push(g.panel ? `mosaic ${g.mosaic} panel ${g.panel}` : `mosaic ${g.mosaic}`);
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs py-1.5 border-b border-line/40 last:border-0">
-      <span className="mono text-ink shrink-0">{parts.join(" · ")}</span>
+      <span className="mono text-ink shrink-0">{groupLine(g)}</span>
       <span className="text-dim">
         {g.light_count} lights
         {g.accepted_count !== g.light_count && ` (${g.accepted_count} accepted)`}

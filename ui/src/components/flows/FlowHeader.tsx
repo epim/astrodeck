@@ -215,6 +215,7 @@ export function saveStateClass(dirty: boolean, readonly: boolean, saving: boolea
 
 export default function FlowHeader({ tier }: { tier: FlowTier }): JSX.Element {
   const phone = tier === "phone";
+  const tablet = tier === "tablet";
   const screen = useScreen();
   const editor = screen === "editor";
 
@@ -276,7 +277,10 @@ export default function FlowHeader({ tier }: { tier: FlowTier }): JSX.Element {
   // (§C.3). Stage and frames are deliberately NOT here — they live on the phone
   // MONITOR panel only.
   const showValid = editor && !phone && !running;
-  const showProv = !phone;
+  // The tablet row has no width for the badge: the app header above it
+  // carries the same one (`backendBadge`), and at 700 px the row overflowed
+  // with it (#770, measured).
+  const showProv = !phone && !tablet;
   const phoneTitle = phone && editor;
   // Desktop only: see the header comment. Below it the canvas carries them.
   const showHistory = editor && tier === "desktop";
@@ -403,6 +407,10 @@ export default function FlowHeader({ tier }: { tier: FlowTier }): JSX.Element {
       {/* 8 — validation chip. Never colour alone: the WORD changes with the
           state, and the border takes currentColor with it. */}
       {showValid && (
+        // The Tooltip's own root is a shrinkable flex item, so `shrink-0` on
+        // its trigger does not stop the row squeezing the chip to nothing
+        // while its text paints over the save pill (#770, measured).
+        <span className="shrink-0 inline-flex">
         <Tooltip
           side="bottom"
           label={chipText}
@@ -426,6 +434,7 @@ export default function FlowHeader({ tier }: { tier: FlowTier }): JSX.Element {
             {chipText}
           </span>
         </Tooltip>
+        </span>
       )}
 
       {/* 8b — the save-state pill: SAVING / SAVED / UNSAVED EDITS (READ ONLY for
@@ -486,10 +495,10 @@ export default function FlowHeader({ tier }: { tier: FlowTier }): JSX.Element {
         >
           <span
             title="Tonight: timeline, plain-English brief, compiled plan"
-            {...(phone ? { "aria-label": "TONIGHT" } : {})}
+            {...(phone || tablet ? { "aria-label": "TONIGHT" } : {})}
           >
             <span aria-hidden="true">◷</span>
-            {!phone && " TONIGHT"}
+            {!phone && !tablet && " TONIGHT"}
           </span>
         </HonestButton>
       )}
