@@ -78,15 +78,31 @@ export function rejectedLine(rejected: number): string | null {
   return rejected > 0 ? `${rejected} rejected` : null;
 }
 
+/** The folder a mosaic's groups are built under inside the bundle (`Veil`,
+ *  or `Veil_2` for the second mosaic of that name, #796), or null for a group
+ *  that has none. The server's group folder is always `target/filter/leaf`,
+ *  so whatever leads those three segments is the mosaic's folder. A `dir`
+ *  that is not bundle-relative (a drive letter, a leading slash, a backslash)
+ *  yields null: a row never prints a path that could carry a user name. */
+export function mosaicFolder(g: BundleGroupSummary): string | null {
+  if (/^[\\/]|^[A-Za-z]:|\\/.test(g.dir)) return null;
+  const lead = g.dir.split("/").slice(0, -3).join("/");
+  return lead === "" ? null : lead;
+}
+
 /** `M42 · Ha · 300s · g100 · bin1` - the group's identity, in the order the
  *  server's own directory name uses; a mosaic's panel then names its mosaic
  *  and its `r-c` place (`mosaic Veil panel 1-2` after a separator), because its stack is one
- *  panel of several that are stitched, never co-added (#188, #830). */
+ *  panel of several that are stitched, never co-added (#188, #830), and the
+ *  folder it is built in, the one thing two mosaics of the same name do not
+ *  share (#1205). */
 export function groupLine(g: BundleGroupSummary): string {
   const parts = [g.target, g.filter ?? "NoFilter", `${g.exposure_s}s`];
   if (g.gain != null) parts.push(`g${g.gain}`);
   if (g.binning != null) parts.push(`bin${g.binning}`);
   if (g.mosaic) parts.push(g.panel ? `mosaic ${g.mosaic} panel ${g.panel}` : `mosaic ${g.mosaic}`);
+  const folder = g.mosaic ? mosaicFolder(g) : null;
+  if (folder) parts.push(`folder ${folder}`);
   return parts.join(" · ");
 }
 
