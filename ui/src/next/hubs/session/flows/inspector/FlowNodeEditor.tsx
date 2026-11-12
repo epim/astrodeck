@@ -29,6 +29,7 @@ import type { CSSProperties, JSX, ReactNode } from "react";
 
 import { useStore } from "../../../../../store";
 import { NODE_DEFS, fieldValue } from "../../../../../components/flows/nodeDefs";
+import { redoReason, undoReason } from "../../../../../components/flows/flowsTypes";
 import { NxIcon } from "../../../../icons";
 import { ActionButton, Label, ListRow, LockNote, Mono } from "../../../../ui";
 import { openFlowFrame } from "../framing/FlowFrameSheet";
@@ -93,6 +94,8 @@ export function FlowNodeEditor({
         <span className="nx-flowins-cat">{def.cat}</span>
       </div>
 
+      {variant === "sheet" && <SheetHistoryRow onExplain={onExplain} />}
+
       <p className="nx-flowins-desc">{def.desc}</p>
 
       {/* The reason is stated on the surface that refuses, not only on the one
@@ -133,8 +136,8 @@ export function FlowNodeEditor({
           size={variant === "sheet" ? "lg" : "md"}
           full
           // Two-tap, unlike the legacy single-tap button: deleting a stage takes
-          // every wire into and out of it with it, there is no undo on this
-          // surface, and the same `arm` idiom already guards RUN. The first press
+          // every wire into and out of it with it, the docked column has no
+          // undo row of its own, and the same `arm` idiom already guards RUN. The first press
           // says what the second one will do.
           arm={{ label: "CONFIRM DELETE" }}
           onPress={onDelete}
@@ -161,6 +164,58 @@ export function FlowNodeEditor({
         </p>
       )}
     </>
+  );
+}
+
+/** UNDO and REDO side by side, each half the row, not shrunk by a long field
+ *  list (the sheet body is a scrolling flex column; see the stage sheet's
+ *  NO_SHRINK note). */
+const HISTORY_ROW_STYLE = { display: "flex", gap: 8, flexShrink: 0 } as const;
+
+/** UNDO and REDO at the top of the phone's stage sheet (#1153).
+ *
+ *  A field row writes through `flowsSetParam`, which commits to the flow's one
+ *  history, so an edit made here is already an undo step, and a burst on one
+ *  field is one step exactly as it is on the desktop (the slice's `commit`
+ *  joins writes of one kind to one field). What was missing was a way to take
+ *  it back without leaving the sheet, so these two press the same
+ *  `flowsUndo` and `flowsRedo` the stage list's pair and the toolbar press.
+ *  At the top, not under the fields: the sheet scrolls, and a slip in the last
+ *  field should not need a scroll to reach the control that fixes it. */
+function SheetHistoryRow({ onExplain }: {
+  onExplain?: (reason: string) => void;
+}): JSX.Element {
+  const undoWhy = useStore((s) => undoReason(s.flows));
+  const redoWhy = useStore((s) => redoReason(s.flows));
+  const undo = useStore((s) => s.flowsUndo);
+  const redo = useStore((s) => s.flowsRedo);
+  return (
+    <div style={HISTORY_ROW_STYLE}>
+      <ActionButton
+        kind="ghost"
+        size="lg"
+        full
+        data-testid="flow-node-undo"
+        lockedReason={undoWhy}
+        onExplain={onExplain}
+        onPress={undo}
+        ariaLabel="Undo the last edit"
+      >
+        UNDO
+      </ActionButton>
+      <ActionButton
+        kind="ghost"
+        size="lg"
+        full
+        data-testid="flow-node-redo"
+        lockedReason={redoWhy}
+        onExplain={onExplain}
+        onPress={redo}
+        ariaLabel="Redo the edit you undid"
+      >
+        REDO
+      </ActionButton>
+    </div>
   );
 }
 

@@ -90,12 +90,12 @@ const GROUP = {
 
 test("a mosaic panel's bundle row names its mosaic and its place", () => {
   const line = groupLine({ ...GROUP, mosaic: "Veil", panel: "1-2", mosaic_id: "g", panel_id: "p" } as any);
-  assert(line === "Veil 1-2 \u00b7 Ha \u00b7 300s \u00b7 g100 \u00b7 bin1 \u00b7 mosaic Veil panel 1-2", line);
+  assert(line === "Veil 1-2 \u00b7 Ha \u00b7 300s \u00b7 g100 \u00b7 bin1 \u00b7 mosaic Veil panel 1-2 · folder Veil", line);
 });
 
 test("a row with a mosaic and no panel, and a row with neither", () => {
   const some = groupLine({ ...GROUP, mosaic: "Veil", panel: null } as any);
-  assert(some.endsWith("\u00b7 mosaic Veil"), some);
+  assert(some.endsWith("\u00b7 mosaic Veil \u00b7 folder Veil"), some);
   const none = groupLine({ ...GROUP, mosaic: null, panel: null } as any);
   assert(none === "Veil 1-2 \u00b7 Ha \u00b7 300s \u00b7 g100 \u00b7 bin1", none);
   assert(groupLine(GROUP as any) === none, "an older server sends neither key");
